@@ -36,6 +36,50 @@ impl State {
             self.bookmarks.push(p);
         }
     }
+
+    /// Snapshot the live pane layout into this state (for persistence).
+    pub fn capture_panes(&mut self, p: &crate::config::PanesConfig) {
+        self.pane_order = Some(p.order.clone());
+        self.bookmarks_pane = PaneOverride {
+            visible: Some(p.bookmarks.visible),
+            width: p.bookmarks.width,
+            weight: Some(p.bookmarks.weight),
+        };
+        self.tree_pane = PaneOverride {
+            visible: Some(p.tree.visible),
+            width: p.tree.width,
+            weight: Some(p.tree.weight),
+        };
+        self.preview_pane = PaneOverride {
+            visible: Some(p.preview.visible),
+            width: p.preview.width,
+            weight: Some(p.preview.weight),
+        };
+    }
+
+    /// Merge persisted overrides back onto a (defaults+config) pane layout.
+    pub fn apply_to(&self, p: &mut crate::config::PanesConfig) {
+        if let Some(o) = &self.pane_order {
+            if o.len() == 3 {
+                p.order = o.clone();
+            }
+        }
+        Self::merge(&self.bookmarks_pane, &mut p.bookmarks);
+        Self::merge(&self.tree_pane, &mut p.tree);
+        Self::merge(&self.preview_pane, &mut p.preview);
+    }
+
+    fn merge(ov: &PaneOverride, pc: &mut crate::config::PaneConfig) {
+        if let Some(v) = ov.visible {
+            pc.visible = v;
+        }
+        if ov.width.is_some() {
+            pc.width = ov.width;
+        }
+        if let Some(w) = ov.weight {
+            pc.weight = w;
+        }
+    }
 }
 
 #[cfg(test)]
@@ -65,5 +109,22 @@ mod tests {
     fn bad_toml_yields_default() {
         let s = State::from_str("@@@");
         assert_eq!(s, State::default());
+    }
+
+    #[test]
+    fn capture_then_apply_roundtrips_panes() {
+        let mut cfg = crate::config::PanesConfig::default();
+        cfg.bookmarks.visible = true;
+        cfg.bookmarks.width = Some(30);
+        cfg.tree.weight = 5;
+        cfg.order = vec!["preview".into(), "tree".into(), "bookmarks".into()];
+        let mut st = State::default();
+        st.capture_panes(&cfg);
+        let mut fresh = crate::config::PanesConfig::default();
+        st.apply_to(&mut fresh);
+        assert!(fresh.bookmarks.visible);
+        assert_eq!(fresh.bookmarks.width, Some(30));
+        assert_eq!(fresh.tree.weight, 5);
+        assert_eq!(fresh.order[0], "preview");
     }
 }

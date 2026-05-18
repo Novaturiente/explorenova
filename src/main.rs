@@ -76,11 +76,12 @@ fn main() -> Result<()> {
     let args = Args::parse();
 
     let sp = state_path();
-    let mut state = std::fs::read_to_string(&sp)
+    let state = std::fs::read_to_string(&sp)
         .map(|s| State::from_str(&s))
         .unwrap_or_default();
 
     let mut config = load_config();
+    state.apply_to(&mut config.panes);
     if args.tree_only {
         config.panes.bookmarks.visible = false;
         config.panes.preview.visible = false;
@@ -281,7 +282,9 @@ fn main() -> Result<()> {
     }
 
     app.state.last_cwd = Some(start.clone());
-    app.state.bookmarks = app.state.bookmarks.clone();
+    if !args.tree_only {
+        app.state.capture_panes(&app.config.panes);
+    }
     if let Some(parent) = sp.parent() {
         let _ = std::fs::create_dir_all(parent);
     }

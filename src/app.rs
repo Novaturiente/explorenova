@@ -128,6 +128,10 @@ impl App {
             }
             Action::Quit => self.should_quit = true,
             Action::Cancel => self.mode = Mode::Normal,
+            Action::ResizeShrink => self.resize_focus(-1),
+            Action::ResizeGrow => self.resize_focus(1),
+            Action::ReorderLeft => self.reorder_focus(-1),
+            Action::ReorderRight => self.reorder_focus(1),
             // ToggleHidden is handled in main::handle() (rebuilds arena so
             // cached children re-scan); intentionally a no-op in the pure reducer.
             _ => {}
@@ -227,6 +231,55 @@ impl App {
         self.pending = None;
         self.mode = Mode::Normal;
     }
+
+    fn focus_name(&self) -> &'static str {
+        match self.focus {
+            Pane::Bookmarks => "bookmarks",
+            Pane::Tree => "tree",
+            Pane::Preview => "preview",
+        }
+    }
+
+    fn focus_cfg(&mut self) -> &mut crate::config::PaneConfig {
+        match self.focus {
+            Pane::Bookmarks => &mut self.config.panes.bookmarks,
+            Pane::Tree => &mut self.config.panes.tree,
+            Pane::Preview => &mut self.config.panes.preview,
+        }
+    }
+
+    fn resize_focus(&mut self, dir: i32) {
+        let pc = self.focus_cfg();
+        match pc.width {
+            Some(w) => {
+                let nw = if dir < 0 {
+                    w.saturating_sub(2)
+                } else {
+                    w.saturating_add(2)
+                };
+                pc.width = Some(nw.clamp(4, 200));
+            }
+            None => {
+                let nw = if dir < 0 {
+                    pc.weight.saturating_sub(1)
+                } else {
+                    pc.weight.saturating_add(1)
+                };
+                pc.weight = nw.clamp(1, 100);
+            }
+        }
+    }
+
+    fn reorder_focus(&mut self, dir: i32) {
+        let name = self.focus_name();
+        let order = &mut self.config.panes.order;
+        if let Some(i) = order.iter().position(|n| n == name) {
+            let j = i as i32 + dir;
+            if j >= 0 && (j as usize) < order.len() {
+                order.swap(i, j as usize);
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -293,5 +346,25 @@ mod tests {
         a.enter_mode(Mode::Input, "seed");
         assert_eq!(a.input, "seed");
         assert_eq!(a.mode, Mode::Input);
+    }
+
+    #[test]
+    fn resize_focus_changes_fixed_pane_width() {
+        let mut a = app();
+        a.focus = Pane::Bookmarks; // default width Some(24)
+        a.apply(Action::ResizeGrow);
+        assert_eq!(a.config.panes.bookmarks.width, Some(26));
+        a.apply(Action::ResizeShrink);
+        assert_eq!(a.config.panes.bookmarks.width, Some(24));
+    }
+
+    #[test]
+    fn reorder_focus_moves_pane_left() {
+        let mut a = app();
+        a.focus = Pane::Tree; // default order ["bookmarks","tree","preview"], tree idx 1
+        let before = a.config.panes.order.clone();
+        a.apply(Action::ReorderLeft);
+        assert_ne!(a.config.panes.order, before);
+        assert_eq!(a.config.panes.order[0], "tree");
     }
 }

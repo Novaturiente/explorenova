@@ -25,9 +25,12 @@ The binary is `target/release/explorenova`.
 `~/.config/explorenova/config.toml`) — pane order/visibility/width,
 `[keys]`, preview size limits. Written with defaults on first run.
 
-Runtime state (bookmarks, last cwd):
+Runtime state (bookmarks, last cwd, and the runtime pane
+layout — visibility, width/weight, order):
 `$XDG_DATA_HOME/explorenova/state.toml` (default
-`~/.local/share/explorenova/state.toml`).
+`~/.local/share/explorenova/state.toml`). Runtime pane
+changes persist across restarts, except under `--tree-only`
+(a non-persisted session override).
 
 ## Keys
 
@@ -38,6 +41,7 @@ Runtime state (bookmarks, last cwd):
 | Open default / with | `o` / `O` |
 | Pane focus / toggle | `Tab`, `B` bookmarks, `P` preview |
 | Pane resize | `<` / `>` |
+| Pane reorder | `[` / `]` (move focused pane left/right) |
 | Create | `a` (trailing `/` → directory) |
 | Copy / cut / paste | `yy` / `dd` / `p` |
 | Rename | `r` |
