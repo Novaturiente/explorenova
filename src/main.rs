@@ -199,6 +199,74 @@ fn main() -> Result<()> {
                         chord.clear();
                     }
                 }
+                Mode::Search | Mode::Input
+                    if matches!(
+                        app.dialog,
+                        explorenova::app::Dialog::AppPick { .. }
+                    ) =>
+                {
+                    use explorenova::app::Dialog;
+                    let (len, sel) = match &app.dialog {
+                        Dialog::AppPick { items, sel } => (items.len() + 1, *sel),
+                        _ => (1, 0),
+                    };
+                    match k.code {
+                        KeyCode::Esc => {
+                            app.mode = Mode::Normal;
+                            app.pending = None;
+                            app.dialog = Dialog::None;
+                        }
+                        KeyCode::Up => {
+                            if let Dialog::AppPick { sel, .. } = &mut app.dialog {
+                                *sel = explorenova::ui::modal::wrap_nav(
+                                    *sel, len, false,
+                                );
+                            }
+                        }
+                        KeyCode::Down => {
+                            if let Dialog::AppPick { sel, .. } = &mut app.dialog {
+                                *sel = explorenova::ui::modal::wrap_nav(
+                                    *sel, len, true,
+                                );
+                            }
+                        }
+                        KeyCode::Enter => {
+                            if sel == len - 1 {
+                                // "Custom command…" → typed-command path
+                                app.input.clear();
+                                app.pending = Some(Action::OpenWith);
+                                app.mode = Mode::Input;
+                                app.dialog = Dialog::Input;
+                            } else {
+                                let entry = if let Dialog::AppPick {
+                                    items,
+                                    ..
+                                } = &app.dialog
+                                {
+                                    items.get(sel).cloned()
+                                } else {
+                                    None
+                                };
+                                if let (Some(entry), Some(&id)) =
+                                    (entry, app.visible.get(app.selected))
+                                {
+                                    let path =
+                                        app.arena.nodes[id].path.clone();
+                                    if let Err(e) =
+                                        explorenova::apps::spawn(&entry, &path)
+                                    {
+                                        app.status =
+                                            format!("open failed: {e}");
+                                    }
+                                }
+                                app.mode = Mode::Normal;
+                                app.pending = None;
+                                app.dialog = Dialog::None;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
                 Mode::Search | Mode::Input => match k.code {
                     KeyCode::Esc => {
                         app.mode = Mode::Normal;
@@ -443,8 +511,14 @@ fn handle(
             }
         }
         Action::OpenWith => {
-            app.pending = Some(Action::OpenWith);
-            app.enter_mode(Mode::Input, "");
+            if let Some(&id) = app.visible.get(app.selected) {
+                let path = app.arena.nodes[id].path.clone();
+                let items = explorenova::apps::apps_for(&path);
+                app.mode = Mode::Input;
+                app.pending = Some(Action::OpenWith);
+                app.status.clear();
+                app.dialog = explorenova::app::Dialog::AppPick { items, sel: 0 };
+            }
         }
         Action::ShellOnce => {
             app.pending = Some(Action::ShellOnce);

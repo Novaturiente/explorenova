@@ -217,6 +217,35 @@ pub fn render_frame(
     // Modal overlay (input / confirm) centered over the body.
     match (&app.mode, &app.dialog) {
         (_, crate::app::Dialog::None) => {}
+        (_, crate::app::Dialog::AppPick { items, sel }) => {
+            let rows = items.len() + 1;
+            let r = crate::ui::modal::centered_rect(
+                50,
+                (rows.min(14) as u16) + 1,
+                body,
+            );
+            f.render_widget(ratatui::widgets::Clear, r);
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .title("Open with");
+            let inner = block.inner(r);
+            f.render_widget(block, r);
+            let mut lines: Vec<ratatui::text::Line> = Vec::new();
+            for (i, a) in items.iter().enumerate() {
+                let marker = if i == *sel { "> " } else { "  " };
+                lines.push(ratatui::text::Line::from(format!(
+                    "{marker}{}",
+                    a.name
+                )));
+            }
+            lines.push(ratatui::text::Line::from("  ──────────────"));
+            let ci = items.len();
+            let cmarker = if *sel == ci { "> " } else { "  " };
+            lines.push(ratatui::text::Line::from(format!(
+                "{cmarker}Custom command…"
+            )));
+            f.render_widget(Paragraph::new(lines), inner);
+        }
         (crate::keymap::Mode::Search | crate::keymap::Mode::Input, _) => {
             let title = match app.mode {
                 crate::keymap::Mode::Search => "Search".to_string(),
