@@ -100,7 +100,6 @@ fn main() -> Result<()> {
 
     let arena = Arena::new(&start)?;
     let mut app = App::new(arena, config, state.clone());
-    app.state = state.clone();
     let keymap = Keymap::build(&app.config.keys);
     let mut preview_cache = PreviewCache::default();
 
