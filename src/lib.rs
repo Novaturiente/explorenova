@@ -1,4 +1,5 @@
 pub mod app;
+pub mod apps;
 pub mod cli;
 pub mod config;
 pub mod fs_ops;
@@ -9,5 +10,6 @@ pub mod preview;
 pub mod search;
 pub mod shell;
 pub mod state;
+pub mod textinput;
 pub mod tree;
 pub mod ui;

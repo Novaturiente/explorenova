@@ -1,3 +1,4 @@
+pub mod modal;
 pub mod panes;
 pub mod theme;
 
@@ -210,20 +211,96 @@ pub fn render_frame(
         }
     }
 
-    let prompt = match app.mode {
-        crate::keymap::Mode::Search => format!("/{}", app.input),
-        crate::keymap::Mode::Input => {
-            let label = match app.pending {
-                Some(crate::keymap::Action::PathInput) => ":",
-                Some(crate::keymap::Action::Create) => "create: ",
-                Some(crate::keymap::Action::Rename) => "rename: ",
-                Some(crate::keymap::Action::OpenWith) => "open with: ",
-                Some(crate::keymap::Action::ShellOnce) => "!",
-                _ => "> ",
-            };
-            format!("{label}{}", app.input)
+    // Status row: transient messages only.
+    f.render_widget(Paragraph::new(app.status.clone()), prompt_area);
+
+    // Modal overlay (input / confirm) centered over the body.
+    match (&app.mode, &app.dialog) {
+        (_, crate::app::Dialog::None) => {}
+        (_, crate::app::Dialog::AppPick { items, sel }) => {
+            let rows = items.len() + 1;
+            let r = crate::ui::modal::centered_rect(
+                50,
+                (rows.min(14) as u16) + 1,
+                body,
+            );
+            f.render_widget(ratatui::widgets::Clear, r);
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .title("Open with");
+            let inner = block.inner(r);
+            f.render_widget(block, r);
+            let mut lines: Vec<ratatui::text::Line> = Vec::new();
+            for (i, a) in items.iter().enumerate() {
+                let marker = if i == *sel { "> " } else { "  " };
+                lines.push(ratatui::text::Line::from(format!(
+                    "{marker}{}",
+                    a.name
+                )));
+            }
+            lines.push(ratatui::text::Line::from("  ──────────────"));
+            let ci = items.len();
+            let cmarker = if *sel == ci { "> " } else { "  " };
+            lines.push(ratatui::text::Line::from(format!(
+                "{cmarker}Custom command…"
+            )));
+            f.render_widget(Paragraph::new(lines), inner);
         }
-        _ => app.status.clone(),
-    };
-    f.render_widget(Paragraph::new(prompt), prompt_area);
+        (crate::keymap::Mode::Search | crate::keymap::Mode::Input, _) => {
+            let title = match app.mode {
+                crate::keymap::Mode::Search => "Search".to_string(),
+                _ => match app.pending {
+                    Some(crate::keymap::Action::PathInput) => "Go to path".to_string(),
+                    Some(crate::keymap::Action::Create) => "Create".to_string(),
+                    Some(crate::keymap::Action::Rename) => "Rename".to_string(),
+                    Some(crate::keymap::Action::OpenWith) => {
+                        "Open with (command)".to_string()
+                    }
+                    Some(crate::keymap::Action::ShellOnce) => "Shell".to_string(),
+                    _ => "Input".to_string(),
+                },
+            };
+            let r = crate::ui::modal::centered_rect(55, 1, body);
+            f.render_widget(ratatui::widgets::Clear, r);
+            let block = Block::default().borders(Borders::ALL).title(title);
+            let inner = block.inner(r);
+            f.render_widget(block, r);
+            let val = app.input.value();
+            let w = inner.width.max(1) as usize;
+            let nchars = val.chars().count();
+            let (shown, cursor_col): (String, u16) = if nchars < w {
+                (val.clone(), app.input.caret() as u16)
+            } else {
+                let caret = app.input.caret();
+                let start = caret.saturating_sub(w - 1);
+                let s: String = val.chars().skip(start).take(w - 1).collect();
+                (s, (caret - start) as u16)
+            };
+            f.render_widget(Paragraph::new(shown), inner);
+            f.set_cursor_position((inner.x + cursor_col, inner.y));
+        }
+        (crate::keymap::Mode::Confirm, _) => {
+            let name = app
+                .visible
+                .get(app.selected)
+                .map(|&id| {
+                    app.arena.nodes[id]
+                        .path
+                        .file_name()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_default()
+                })
+                .unwrap_or_default();
+            let r = crate::ui::modal::centered_rect(50, 2, body);
+            f.render_widget(ratatui::widgets::Clear, r);
+            let block = Block::default().borders(Borders::ALL).title("Delete");
+            let inner = block.inner(r);
+            f.render_widget(block, r);
+            f.render_widget(
+                Paragraph::new(format!("{name}\n[y] yes   [n] no")),
+                inner,
+            );
+        }
+        (crate::keymap::Mode::Normal, _) => {}
+    }
 }

@@ -199,6 +199,74 @@ fn main() -> Result<()> {
                         chord.clear();
                     }
                 }
+                Mode::Search | Mode::Input
+                    if matches!(
+                        app.dialog,
+                        explorenova::app::Dialog::AppPick { .. }
+                    ) =>
+                {
+                    use explorenova::app::Dialog;
+                    let (len, sel) = match &app.dialog {
+                        Dialog::AppPick { items, sel } => (items.len() + 1, *sel),
+                        _ => (1, 0),
+                    };
+                    match k.code {
+                        KeyCode::Esc => {
+                            app.mode = Mode::Normal;
+                            app.pending = None;
+                            app.dialog = Dialog::None;
+                        }
+                        KeyCode::Up => {
+                            if let Dialog::AppPick { sel, .. } = &mut app.dialog {
+                                *sel = explorenova::ui::modal::wrap_nav(
+                                    *sel, len, false,
+                                );
+                            }
+                        }
+                        KeyCode::Down => {
+                            if let Dialog::AppPick { sel, .. } = &mut app.dialog {
+                                *sel = explorenova::ui::modal::wrap_nav(
+                                    *sel, len, true,
+                                );
+                            }
+                        }
+                        KeyCode::Enter => {
+                            if sel == len - 1 {
+                                // "Custom command…" → typed-command path
+                                app.input.clear();
+                                app.pending = Some(Action::OpenWith);
+                                app.mode = Mode::Input;
+                                app.dialog = Dialog::Input;
+                            } else {
+                                let entry = if let Dialog::AppPick {
+                                    items,
+                                    ..
+                                } = &app.dialog
+                                {
+                                    items.get(sel).cloned()
+                                } else {
+                                    None
+                                };
+                                if let (Some(entry), Some(&id)) =
+                                    (entry, app.visible.get(app.selected))
+                                {
+                                    let path =
+                                        app.arena.nodes[id].path.clone();
+                                    if let Err(e) =
+                                        explorenova::apps::spawn(&entry, &path)
+                                    {
+                                        app.status =
+                                            format!("open failed: {e}");
+                                    }
+                                }
+                                app.mode = Mode::Normal;
+                                app.pending = None;
+                                app.dialog = Dialog::None;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
                 Mode::Search | Mode::Input => match k.code {
                     KeyCode::Esc => {
                         app.mode = Mode::Normal;
@@ -214,7 +282,7 @@ fn main() -> Result<()> {
                             Some(Action::Rename) => app.commit_rename(),
                             Some(Action::Create) => app.commit_create(),
                             Some(Action::PathInput) => {
-                                let target = explorenova::nav::expand(&app.input);
+                                let target = explorenova::nav::expand(&app.input.value());
                                 match app.arena.reveal(std::path::Path::new(&target)) {
                                     Ok(Some(id)) => {
                                         app.visible = app.arena.flatten();
@@ -231,14 +299,18 @@ fn main() -> Result<()> {
                             Some(Action::OpenWith) => {
                                 if let Some(&id) = app.visible.get(app.selected) {
                                     let p = app.arena.nodes[id].path.clone();
-                                    let _ = std::process::Command::new(&app.input)
-                                        .arg(&p)
-                                        .spawn();
+                                    if let Err(e) =
+                                        std::process::Command::new(app.input.value())
+                                            .arg(&p)
+                                            .spawn()
+                                    {
+                                        app.status = format!("open failed: {e}");
+                                    }
                                 }
                                 app.mode = Mode::Normal;
                             }
                             Some(Action::ShellOnce) => {
-                                let cmd = app.input.clone();
+                                let cmd = app.input.value();
                                 app.mode = Mode::Normal;
                                 if let Err(e) = explorenova::shell::run_once(&start, &cmd) {
                                     app.status = format!("shell failed: {e}");
@@ -252,16 +324,25 @@ fn main() -> Result<()> {
                         if app.mode == Mode::Input
                             && app.pending == Some(Action::PathInput)
                         {
-                            let c = explorenova::nav::completions(&app.input);
+                            let c = explorenova::nav::completions(&app.input.value());
                             if let Some(lcp) =
-                                explorenova::nav::longest_common(&app.input, &c)
+                                explorenova::nav::longest_common(&app.input.value(), &c)
                             {
-                                app.input = lcp;
+                                app.input.set(&lcp);
                             }
                         }
                     }
-                    KeyCode::Backspace => app.backspace_input(),
-                    KeyCode::Char(ch) => app.push_input(ch),
+                    KeyCode::Left => app.input.left(),
+                    KeyCode::Right => app.input.right(),
+                    KeyCode::Home => app.input.home(),
+                    KeyCode::End => app.input.end(),
+                    KeyCode::Delete => app.input.delete(),
+                    KeyCode::Backspace => app.input.backspace(),
+                    // Some terminals send Backspace as DEL (0x7f) or Ctrl-H (0x08).
+                    KeyCode::Char('\u{7f}') | KeyCode::Char('\u{8}') => {
+                        app.input.backspace()
+                    }
+                    KeyCode::Char(ch) if !ch.is_control() => app.input.insert(ch),
                     _ => {}
                 },
                 Mode::Confirm => match k.code {
@@ -274,6 +355,17 @@ fn main() -> Result<()> {
                 },
             }
         }
+
+        app.dialog = match app.mode {
+            Mode::Normal => explorenova::app::Dialog::None,
+            Mode::Confirm => explorenova::app::Dialog::Confirm,
+            Mode::Search | Mode::Input => match std::mem::take(&mut app.dialog) {
+                explorenova::app::Dialog::AppPick { items, sel } => {
+                    explorenova::app::Dialog::AppPick { items, sel }
+                }
+                _ => explorenova::app::Dialog::Input,
+            },
+        };
 
         if app.should_quit {
             break;
@@ -423,8 +515,14 @@ fn handle(
             }
         }
         Action::OpenWith => {
-            app.pending = Some(Action::OpenWith);
-            app.enter_mode(Mode::Input, "");
+            if let Some(&id) = app.visible.get(app.selected) {
+                let path = app.arena.nodes[id].path.clone();
+                let items = explorenova::apps::apps_for(&path);
+                app.mode = Mode::Input;
+                app.pending = Some(Action::OpenWith);
+                app.status.clear();
+                app.dialog = explorenova::app::Dialog::AppPick { items, sel: 0 };
+            }
         }
         Action::ShellOnce => {
             app.pending = Some(Action::ShellOnce);
