@@ -18,9 +18,9 @@ fn around_terminal<F: FnOnce() -> io::Result<()>>(f: F) -> io::Result<()> {
     execute!(io::stdout(), LeaveAlternateScreen)?;
     let r = f();
     print!("\n[press Enter to return to explorenova] ");
-    io::stdout().flush()?;
+    let _ = io::stdout().flush();
     let mut s = String::new();
-    io::stdin().read_line(&mut s)?;
+    let _ = io::stdin().read_line(&mut s);
     enable_raw_mode()?;
     execute!(io::stdout(), EnterAlternateScreen)?;
     r
