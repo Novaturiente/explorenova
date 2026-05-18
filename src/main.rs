@@ -204,7 +204,6 @@ fn main() -> Result<()> {
                         app.mode = Mode::Normal;
                         app.input.clear();
                         app.pending = None;
-                        app.dialog = explorenova::app::Dialog::None;
                     }
                     KeyCode::Enter => match app.mode {
                         Mode::Search => {

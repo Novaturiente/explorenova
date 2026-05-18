@@ -152,10 +152,11 @@ impl App {
     }
 
     pub fn enter_mode(&mut self, m: Mode, seed: &str) {
+        // `dialog` is derived from `mode` by the sync block in main's event
+        // loop — keep this the single source of truth, don't set it here.
         self.mode = m;
         self.input.set(seed);
         self.status.clear();
-        self.dialog = Dialog::Input;
     }
 
     pub fn push_input(&mut self, c: char) {
