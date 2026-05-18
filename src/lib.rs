@@ -1,4 +1,5 @@
 pub mod app;
+pub mod apps;
 pub mod cli;
 pub mod config;
 pub mod fs_ops;
