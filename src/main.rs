@@ -116,10 +116,11 @@ fn main() -> Result<()> {
         });
     }
 
+    let mut picker = ui::make_picker();
     let _guard = TermGuard::new()?;
     let mut term = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     let mut chord = String::new();
-    let mut picker = ui::make_picker();
+    let mut img_cache = ui::ImageCache::default();
 
     loop {
         while let Ok(map) = git_res_rx.try_recv() {
@@ -130,7 +131,9 @@ fn main() -> Result<()> {
             }
         }
 
-        term.draw(|f| ui::render_frame(f, &mut app, &mut preview_cache, &mut picker))?;
+        term.draw(|f| {
+            ui::render_frame(f, &mut app, &mut preview_cache, &mut picker, &mut img_cache)
+        })?;
 
         if !event::poll(Duration::from_millis(200))? {
             continue;

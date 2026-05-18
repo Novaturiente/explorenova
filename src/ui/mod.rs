@@ -85,15 +85,39 @@ pub fn make_picker() -> Picker {
     Picker::from_query_stdio().unwrap_or_else(|_| Picker::from_fontsize((8, 16)))
 }
 
-/// Render an image file into `area` using the detected protocol.
-pub fn render_image(f: &mut Frame, area: Rect, picker: &mut Picker, path: &std::path::Path) {
-    match image::ImageReader::open(path).map(|r| r.decode()) {
-        Ok(Ok(img)) => {
-            let mut proto: StatefulProtocol = picker.new_resize_protocol(img);
-            let widget = StatefulImage::default().resize(Resize::Fit(None));
-            f.render_stateful_widget(widget, area, &mut proto);
+/// Caches the decoded image protocol so it is rebuilt only when the
+/// previewed file (path or mtime) changes — not every frame.
+#[derive(Default)]
+pub struct ImageCache {
+    key: Option<(std::path::PathBuf, std::time::SystemTime)>,
+    proto: Option<StatefulProtocol>,
+}
+
+/// Render an image file into `area`, caching the protocol by (path, mtime).
+pub fn render_image(
+    f: &mut Frame,
+    area: Rect,
+    picker: &mut Picker,
+    cache: &mut ImageCache,
+    path: &std::path::Path,
+) {
+    let mtime = std::fs::metadata(path)
+        .and_then(|m| m.modified())
+        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+    let key = (path.to_path_buf(), mtime);
+    if cache.key.as_ref() != Some(&key) {
+        match image::ImageReader::open(path).map(|r| r.decode()) {
+            Ok(Ok(img)) => cache.proto = Some(picker.new_resize_protocol(img)),
+            _ => cache.proto = None,
         }
-        _ => {
+        cache.key = Some(key);
+    }
+    match &mut cache.proto {
+        Some(proto) => {
+            let widget = StatefulImage::default().resize(Resize::Fit(None));
+            f.render_stateful_widget(widget, area, proto);
+        }
+        None => {
             f.render_widget(
                 Paragraph::new(format!("[unreadable image] {}", path.display())),
                 area,
@@ -102,7 +126,13 @@ pub fn render_image(f: &mut Frame, area: Rect, picker: &mut Picker, path: &std::
     }
 }
 
-pub fn render_frame(f: &mut Frame, app: &mut App, cache: &mut PreviewCache, picker: &mut Picker) {
+pub fn render_frame(
+    f: &mut Frame,
+    app: &mut App,
+    cache: &mut PreviewCache,
+    picker: &mut Picker,
+    img_cache: &mut ImageCache,
+) {
     let cons: Vec<_> = layout_constraints(&app.config.panes);
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -149,7 +179,7 @@ pub fn render_frame(f: &mut Frame, app: &mut App, cache: &mut PreviewCache, pick
                                 Block::default().borders(Borders::ALL).title("preview");
                             let inner = block.inner(area);
                             f.render_widget(block, area);
-                            render_image(f, inner, picker, &p);
+                            render_image(f, inner, picker, img_cache, &p);
                         }
                         PreviewKind::Text(t) | PreviewKind::Meta(t) => {
                             f.render_widget(
