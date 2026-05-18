@@ -6,6 +6,7 @@ pub mod keymap;
 pub mod nav;
 pub mod preview;
 pub mod search;
+pub mod shell;
 pub mod state;
 pub mod tree;
 pub mod ui;
