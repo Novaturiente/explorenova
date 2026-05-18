@@ -19,7 +19,7 @@ use ratatui::Terminal;
 use std::io;
 use std::path::PathBuf;
 use std::sync::mpsc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// RAII guard: always restores the terminal, even on panic/early return.
 struct TermGuard;
@@ -116,11 +116,21 @@ fn main() -> Result<()> {
         });
     }
 
+    use notify::{RecursiveMode, Watcher};
+    let (fs_tx, fs_rx) = mpsc::channel();
+    let mut watcher = notify::recommended_watcher(move |res| {
+        if let Ok(ev) = res {
+            let _ = fs_tx.send(ev);
+        }
+    })?;
+    watcher.watch(&start, RecursiveMode::Recursive)?;
+
     let mut picker = ui::make_picker();
     let _guard = TermGuard::new()?;
     let mut term = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     let mut chord = String::new();
     let mut img_cache = ui::ImageCache::default();
+    let mut fs_dirty_since: Option<Instant> = None;
 
     loop {
         while let Ok(map) = git_res_rx.try_recv() {
@@ -128,6 +138,43 @@ fn main() -> Result<()> {
                 if let Some(s) = map.get(&n.path) {
                     n.git = *s;
                 }
+            }
+        }
+
+        let mut fs_changed = false;
+        while fs_rx.try_recv().is_ok() {
+            fs_changed = true;
+        }
+        if fs_changed && fs_dirty_since.is_none() {
+            fs_dirty_since = Some(Instant::now());
+        }
+        if let Some(t0) = fs_dirty_since {
+            if t0.elapsed() >= Duration::from_millis(150) {
+                let sel_path = app
+                    .visible
+                    .get(app.selected)
+                    .map(|&id| app.arena.nodes[id].path.clone());
+                if let Ok(new_arena) = Arena::new(&start) {
+                    let prev_hidden = app.arena.show_hidden;
+                    app.arena = new_arena;
+                    if prev_hidden {
+                        app.arena.show_hidden = true;
+                        app.arena.nodes[app.arena.root].children = None;
+                        let _ = app.arena.load_children(app.arena.root);
+                        app.arena.nodes[app.arena.root].expanded = true;
+                    }
+                    app.visible = app.arena.flatten();
+                    if let Some(p) = sel_path {
+                        if let Ok(Some(id)) = app.arena.reveal(&p) {
+                            app.visible = app.arena.flatten();
+                            if let Some(i) = app.visible.iter().position(|&n| n == id) {
+                                app.selected = i;
+                            }
+                        }
+                    }
+                }
+                let _ = git_tx.send(());
+                fs_dirty_since = None;
             }
         }
 
