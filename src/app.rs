@@ -113,9 +113,6 @@ impl App {
             Action::TogglePreviewPane => {
                 self.config.panes.preview.visible = !self.config.panes.preview.visible;
             }
-            Action::ToggleHidden => {
-                self.arena.show_hidden = !self.arena.show_hidden;
-            }
             Action::ToggleBookmark => {
                 if let Some(id) = self.sel_id() {
                     self.state.toggle_bookmark(self.arena.nodes[id].path.clone());
@@ -123,6 +120,8 @@ impl App {
             }
             Action::Quit => self.should_quit = true,
             Action::Cancel => self.mode = Mode::Normal,
+            // ToggleHidden is handled in main::handle() (rebuilds arena so
+            // cached children re-scan); intentionally a no-op in the pure reducer.
             _ => {}
         }
     }
