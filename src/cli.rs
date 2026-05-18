@@ -11,16 +11,22 @@ pub struct Args {
     pub tree_only: bool,
 }
 
-/// Resolve start dir: explicit arg > last cwd > $PWD.
+/// Resolve start dir. Precedence: explicit arg (with `~`/`$VAR` expansion)
+/// > the launch directory ($PWD) > persisted last_cwd (last resort, only
+/// when $PWD is not a usable directory).
 pub fn resolve_start_dir(
     arg: Option<PathBuf>,
     last_cwd: Option<PathBuf>,
     pwd: PathBuf,
 ) -> PathBuf {
     if let Some(p) = arg {
-        if p.is_dir() {
-            return p;
+        let expanded = PathBuf::from(crate::nav::expand(&p.to_string_lossy()));
+        if expanded.is_dir() {
+            return expanded;
         }
+    }
+    if pwd.is_dir() {
+        return pwd;
     }
     if let Some(p) = last_cwd {
         if p.is_dir() {
@@ -50,6 +56,23 @@ mod tests {
             pwd.clone(),
         );
         assert_eq!(got, pwd);
+    }
+
+    #[test]
+    fn pwd_wins_over_last_cwd_when_no_arg() {
+        // Regression: launching `cd ~/X && explorenova` must open X,
+        // not the persisted last_cwd.
+        let pwd = std::env::temp_dir();
+        let got = resolve_start_dir(None, Some(PathBuf::from("/")), pwd.clone());
+        assert_eq!(got, pwd);
+    }
+
+    #[test]
+    fn tilde_arg_is_expanded() {
+        let home = std::env::temp_dir();
+        std::env::set_var("HOME", &home);
+        let got = resolve_start_dir(Some(PathBuf::from("~")), None, PathBuf::from("/nope"));
+        assert_eq!(got, home);
     }
 
     #[test]
