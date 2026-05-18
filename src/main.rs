@@ -260,8 +260,17 @@ fn main() -> Result<()> {
                             }
                         }
                     }
-                    KeyCode::Backspace => app.backspace_input(),
-                    KeyCode::Char(ch) => app.push_input(ch),
+                    KeyCode::Left => app.input.left(),
+                    KeyCode::Right => app.input.right(),
+                    KeyCode::Home => app.input.home(),
+                    KeyCode::End => app.input.end(),
+                    KeyCode::Delete => app.input.delete(),
+                    KeyCode::Backspace => app.input.backspace(),
+                    // Some terminals send Backspace as DEL (0x7f) or Ctrl-H (0x08).
+                    KeyCode::Char('\u{7f}') | KeyCode::Char('\u{8}') => {
+                        app.input.backspace()
+                    }
+                    KeyCode::Char(ch) if !ch.is_control() => app.input.insert(ch),
                     _ => {}
                 },
                 Mode::Confirm => match k.code {
