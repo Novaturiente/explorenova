@@ -135,6 +135,37 @@ pub fn apps_for(path: &Path) -> Vec<AppEntry> {
 /// Build the argv to launch `app` on `file`. Strips `%i %c %k`, replaces
 /// `%f %F %u %U` with the file path, splits the remainder on whitespace.
 /// If `app.terminal`, wraps as `$TERM -e <argv>` (falls back to direct).
+/// Resolve a real terminal-emulator binary: `$TERMINAL` if set, else the
+/// first known emulator found on `$PATH`. (`$TERM` is a terminfo name, not
+/// an executable, so it must NOT be used here.)
+fn terminal_cmd() -> Option<String> {
+    if let Ok(t) = std::env::var("TERMINAL") {
+        if !t.is_empty() {
+            return Some(t);
+        }
+    }
+    let path = std::env::var("PATH").unwrap_or_default();
+    let candidates = [
+        "x-terminal-emulator",
+        "kitty",
+        "alacritty",
+        "ghostty",
+        "wezterm",
+        "foot",
+        "gnome-terminal",
+        "konsole",
+        "xterm",
+    ];
+    for cand in candidates {
+        for dir in path.split(':').filter(|s| !s.is_empty()) {
+            if std::path::Path::new(dir).join(cand).is_file() {
+                return Some(cand.to_string());
+            }
+        }
+    }
+    None
+}
+
 pub fn argv(app: &AppEntry, file: &Path) -> Vec<String> {
     let fpath = file.to_string_lossy().to_string();
     let mut out: Vec<String> = Vec::new();
@@ -149,12 +180,10 @@ pub fn argv(app: &AppEntry, file: &Path) -> Vec<String> {
         out.push(fpath.clone());
     }
     if app.terminal {
-        if let Ok(term) = std::env::var("TERM") {
-            if !term.is_empty() {
-                let mut wrapped = vec![term, "-e".to_string()];
-                wrapped.extend(out);
-                return wrapped;
-            }
+        if let Some(term) = terminal_cmd() {
+            let mut wrapped = vec![term, "-e".to_string()];
+            wrapped.extend(out);
+            return wrapped;
         }
     }
     out
@@ -223,5 +252,18 @@ mod tests {
             argv(&b, Path::new("/tmp/p.png")),
             vec!["viewer", "/tmp/p.png"]
         );
+    }
+
+    #[test]
+    fn argv_wraps_terminal_app_via_terminal_env() {
+        std::env::set_var("TERMINAL", "fake_term");
+        let a = AppEntry {
+            name: "Vim".into(),
+            exec: "vim %F".into(),
+            terminal: true,
+        };
+        let v = argv(&a, Path::new("/tmp/x.rs"));
+        assert_eq!(v, vec!["fake_term", "-e", "vim", "/tmp/x.rs"]);
+        std::env::remove_var("TERMINAL");
     }
 }
