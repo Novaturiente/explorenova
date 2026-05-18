@@ -55,11 +55,26 @@ Rejected: tokio async loop (needless complexity for this IO profile); Cursive
 | Image preview | `ratatui-image` + `image` (kitty/sixel/iTerm2 auto, halfblock fallback) |
 | PDF preview | shell `pdftoppm` (poppler-utils) → PNG → `ratatui-image`; fallback to metadata |
 | Text preview | `syntect` syntax highlighting (lazy, size-capped) |
+| CLI args | `clap` (derive) |
 | Config / state | `serde` + `toml` |
 | Errors | `anyhow` internal, `thiserror` at boundaries |
 
 External runtime dependency: `poppler-utils` (`pdftoppm`) for PDF preview only;
 absence degrades gracefully to metadata.
+
+## Command-Line Interface
+
+Parsed with `clap` (derive) in `main.rs`.
+
+| Flag | Effect |
+|---|---|
+| `[PATH]` (positional) | Start in this directory (default: last cwd from state, else `$PWD`) |
+| `--tree-only` / `-t` | Launch with the tree pane only — bookmarks and preview forced hidden for this session |
+
+`--tree-only` is a **session override**: it overrides config/state pane
+visibility at startup but is not written back to the state file, so the next
+normal launch restores the saved layout. Panes can still be re-enabled at
+runtime (`B`/`P`) within the session.
 
 ## UI & Layout
 
@@ -182,9 +197,10 @@ on selection movement:
 - **`$XDG_DATA_HOME/explorenova/state.toml`** (default
   `~/.local/share/explorenova/state.toml`): bookmarks, last working directory,
   runtime pane overrides.
-- **Load order:** built-in defaults → merge user `config.toml` → merge state.
-  A malformed config loads defaults and emits a non-fatal warning rather than
-  failing to start.
+- **Load order:** built-in defaults → merge user `config.toml` → merge state
+  → apply CLI session overrides (e.g. `--tree-only`). Session overrides are not
+  persisted back to the state file. A malformed config loads defaults and emits
+  a non-fatal warning rather than failing to start.
 
 Example pane config:
 
@@ -218,7 +234,7 @@ Each module has a single purpose and a channel/struct interface; dependencies
 point inward toward `app`/`tree`.
 
 ```
-main.rs      bootstrap, terminal RAII, event loop
+main.rs      CLI parse (clap), bootstrap, terminal RAII, event loop
 app.rs       App state, Mode enum, action reducer
 tree/        arena, node, flatten, lazy load, expand/collapse
 git.rs       worker: repo scan, path→status map, directory aggregation
