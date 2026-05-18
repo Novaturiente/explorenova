@@ -65,16 +65,20 @@ pub fn paste(src: &Path, dst_dir: &Path, mode: PasteMode) -> io::Result<PathBuf>
             }
         }
         PasteMode::Move => {
-            if fs::rename(src, &dst).is_err() {
-                // cross-device fallback
-                if src.is_dir() {
-                    let opts = fs_extra::dir::CopyOptions::new().copy_inside(true);
-                    fs_extra::dir::move_dir(src, &dst, &opts)
-                        .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
-                } else {
-                    fs::copy(src, &dst)?;
-                    fs::remove_file(src)?;
+            match fs::rename(src, &dst) {
+                Ok(_) => {}
+                Err(e) if e.kind() == io::ErrorKind::CrossesDevices => {
+                    // cross-device fallback
+                    if src.is_dir() {
+                        let opts = fs_extra::dir::CopyOptions::new().copy_inside(true);
+                        fs_extra::dir::move_dir(src, &dst, &opts)
+                            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+                    } else {
+                        fs::copy(src, &dst)?;
+                        fs::remove_file(src)?;
+                    }
                 }
+                Err(e) => return Err(e),
             }
         }
     }
