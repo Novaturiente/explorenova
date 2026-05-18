@@ -6,8 +6,8 @@ use ratatui::layout::Rect;
 /// clamped inside `area`.
 pub fn centered_rect(pct_w: u16, lines: u16, area: Rect) -> Rect {
     let w = (area.width as u32 * pct_w as u32 / 100) as u16;
-    let w = w.clamp(10, area.width);
-    let h = (lines + 2).min(area.height.max(3));
+    let w = w.clamp(10u16.min(area.width), area.width);
+    let h = lines.saturating_add(2).min(area.height.max(3));
     let x = area.x + (area.width.saturating_sub(w)) / 2;
     let y = area.y + (area.height.saturating_sub(h)) / 2;
     Rect { x, y, width: w, height: h }
@@ -48,5 +48,14 @@ mod tests {
         assert_eq!(wrap_nav(2, 3, true), 0);
         assert_eq!(wrap_nav(1, 3, true), 2);
         assert_eq!(wrap_nav(0, 0, true), 0);
+    }
+
+    #[test]
+    fn centered_rect_narrow_area_does_not_panic() {
+        let area = Rect { x: 0, y: 0, width: 5, height: 4 };
+        let r = centered_rect(50, 3, area);
+        assert!(r.width <= area.width);
+        assert!(r.height <= area.height.max(3));
+        assert!(r.x + r.width <= area.x + area.width);
     }
 }
