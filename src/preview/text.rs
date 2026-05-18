@@ -1,8 +1,19 @@
 use std::path::Path;
+use std::sync::OnceLock;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::ThemeSet;
 use syntect::parsing::SyntaxSet;
 use syntect::util::as_24_bit_terminal_escaped;
+
+fn assets() -> &'static (SyntaxSet, ThemeSet) {
+    static ASSETS: OnceLock<(SyntaxSet, ThemeSet)> = OnceLock::new();
+    ASSETS.get_or_init(|| {
+        (
+            SyntaxSet::load_defaults_newlines(),
+            ThemeSet::load_defaults(),
+        )
+    })
+}
 
 /// Returns ANSI-highlighted text, or None if the file is not valid UTF-8.
 pub fn highlighted(path: &Path, max_bytes: u64) -> Option<String> {
@@ -11,8 +22,7 @@ pub fn highlighted(path: &Path, max_bytes: u64) -> Option<String> {
         return None;
     }
     let content = String::from_utf8(bytes).ok()?;
-    let ss = SyntaxSet::load_defaults_newlines();
-    let ts = ThemeSet::load_defaults();
+    let (ss, ts) = assets();
     let syntax = path
         .extension()
         .and_then(|e| e.to_str())
@@ -22,7 +32,7 @@ pub fn highlighted(path: &Path, max_bytes: u64) -> Option<String> {
     let mut h = HighlightLines::new(syntax, theme);
     let mut out = String::new();
     for line in content.lines().take(2000) {
-        let ranges = h.highlight_line(line, &ss).ok()?;
+        let ranges = h.highlight_line(line, ss).ok()?;
         out.push_str(&as_24_bit_terminal_escaped(&ranges[..], false));
         out.push('\n');
     }

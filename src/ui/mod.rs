@@ -76,8 +76,33 @@ use crate::preview::{PreviewCache, PreviewKind};
 use ratatui::layout::{Direction, Layout, Rect};
 use ratatui::widgets::{Block, Borders, Paragraph};
 use ratatui::Frame;
+use ratatui_image::picker::Picker;
+use ratatui_image::protocol::StatefulProtocol;
+use ratatui_image::{Resize, StatefulImage};
 
-pub fn render_frame(f: &mut Frame, app: &mut App, cache: &mut PreviewCache) {
+/// Lazily-built terminal graphics picker (kitty/sixel/iTerm2/halfblocks).
+pub fn make_picker() -> Picker {
+    Picker::from_query_stdio().unwrap_or_else(|_| Picker::from_fontsize((8, 16)))
+}
+
+/// Render an image file into `area` using the detected protocol.
+pub fn render_image(f: &mut Frame, area: Rect, picker: &mut Picker, path: &std::path::Path) {
+    match image::ImageReader::open(path).map(|r| r.decode()) {
+        Ok(Ok(img)) => {
+            let mut proto: StatefulProtocol = picker.new_resize_protocol(img);
+            let widget = StatefulImage::default().resize(Resize::Fit(None));
+            f.render_stateful_widget(widget, area, &mut proto);
+        }
+        _ => {
+            f.render_widget(
+                Paragraph::new(format!("[unreadable image] {}", path.display())),
+                area,
+            );
+        }
+    }
+}
+
+pub fn render_frame(f: &mut Frame, app: &mut App, cache: &mut PreviewCache, picker: &mut Picker) {
     let cons: Vec<_> = layout_constraints(&app.config.panes);
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
@@ -114,24 +139,37 @@ pub fn render_frame(f: &mut Frame, app: &mut App, cache: &mut PreviewCache) {
                     area,
                 );
             }
-            "preview" => {
-                let text = match app.visible.get(app.selected) {
-                    Some(&id) => match cache.get_or_render(
-                        &app.arena.nodes[id].path,
-                        app.config.preview_max_bytes,
-                    ) {
-                        PreviewKind::Text(t) => t,
-                        PreviewKind::Meta(m) => m,
-                        PreviewKind::Image(p) => format!("[image] {}", p.display()),
-                    },
-                    None => String::new(),
-                };
-                f.render_widget(
-                    Paragraph::new(text)
-                        .block(Block::default().borders(Borders::ALL).title("preview")),
-                    area,
-                );
-            }
+            "preview" => match app.visible.get(app.selected) {
+                Some(&id) => {
+                    let kind = cache
+                        .get_or_render(&app.arena.nodes[id].path, app.config.preview_max_bytes);
+                    match kind {
+                        PreviewKind::Image(p) => {
+                            let block =
+                                Block::default().borders(Borders::ALL).title("preview");
+                            let inner = block.inner(area);
+                            f.render_widget(block, area);
+                            render_image(f, inner, picker, &p);
+                        }
+                        PreviewKind::Text(t) | PreviewKind::Meta(t) => {
+                            f.render_widget(
+                                Paragraph::new(t).block(
+                                    Block::default().borders(Borders::ALL).title("preview"),
+                                ),
+                                area,
+                            );
+                        }
+                    }
+                }
+                None => {
+                    f.render_widget(
+                        Paragraph::new(String::new()).block(
+                            Block::default().borders(Borders::ALL).title("preview"),
+                        ),
+                        area,
+                    );
+                }
+            },
             _ => {}
         }
     }
