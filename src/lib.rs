@@ -9,5 +9,6 @@ pub mod preview;
 pub mod search;
 pub mod shell;
 pub mod state;
+pub mod textinput;
 pub mod tree;
 pub mod ui;
