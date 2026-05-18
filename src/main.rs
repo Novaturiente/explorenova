@@ -204,6 +204,7 @@ fn main() -> Result<()> {
                         app.mode = Mode::Normal;
                         app.input.clear();
                         app.pending = None;
+                        app.dialog = explorenova::app::Dialog::None;
                     }
                     KeyCode::Enter => match app.mode {
                         Mode::Search => {
@@ -214,7 +215,7 @@ fn main() -> Result<()> {
                             Some(Action::Rename) => app.commit_rename(),
                             Some(Action::Create) => app.commit_create(),
                             Some(Action::PathInput) => {
-                                let target = explorenova::nav::expand(&app.input);
+                                let target = explorenova::nav::expand(&app.input.value());
                                 match app.arena.reveal(std::path::Path::new(&target)) {
                                     Ok(Some(id)) => {
                                         app.visible = app.arena.flatten();
@@ -231,14 +232,14 @@ fn main() -> Result<()> {
                             Some(Action::OpenWith) => {
                                 if let Some(&id) = app.visible.get(app.selected) {
                                     let p = app.arena.nodes[id].path.clone();
-                                    let _ = std::process::Command::new(&app.input)
+                                    let _ = std::process::Command::new(app.input.value())
                                         .arg(&p)
                                         .spawn();
                                 }
                                 app.mode = Mode::Normal;
                             }
                             Some(Action::ShellOnce) => {
-                                let cmd = app.input.clone();
+                                let cmd = app.input.value();
                                 app.mode = Mode::Normal;
                                 if let Err(e) = explorenova::shell::run_once(&start, &cmd) {
                                     app.status = format!("shell failed: {e}");
@@ -252,11 +253,11 @@ fn main() -> Result<()> {
                         if app.mode == Mode::Input
                             && app.pending == Some(Action::PathInput)
                         {
-                            let c = explorenova::nav::completions(&app.input);
+                            let c = explorenova::nav::completions(&app.input.value());
                             if let Some(lcp) =
-                                explorenova::nav::longest_common(&app.input, &c)
+                                explorenova::nav::longest_common(&app.input.value(), &c)
                             {
-                                app.input = lcp;
+                                app.input.set(&lcp);
                             }
                         }
                     }
@@ -274,6 +275,17 @@ fn main() -> Result<()> {
                 },
             }
         }
+
+        app.dialog = match app.mode {
+            Mode::Normal => explorenova::app::Dialog::None,
+            Mode::Confirm => explorenova::app::Dialog::Confirm,
+            Mode::Search | Mode::Input => match std::mem::take(&mut app.dialog) {
+                explorenova::app::Dialog::AppPick { items, sel } => {
+                    explorenova::app::Dialog::AppPick { items, sel }
+                }
+                _ => explorenova::app::Dialog::Input,
+            },
+        };
 
         if app.should_quit {
             break;

@@ -1,8 +1,19 @@
+use crate::apps::AppEntry;
 use crate::config::Config;
 use crate::keymap::{Action, Mode};
 use crate::state::State;
+use crate::textinput::TextInput;
 use crate::tree::Arena;
 use std::path::PathBuf;
+
+#[derive(Debug, Default)]
+pub enum Dialog {
+    #[default]
+    None,
+    Input,
+    Confirm,
+    AppPick { items: Vec<AppEntry>, sel: usize },
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
@@ -22,10 +33,11 @@ pub struct App {
     pub clipboard: Option<(PathBuf, bool)>, // (path, is_cut)
     pub status: String,
     pub should_quit: bool,
-    pub input: String,
+    pub input: TextInput,
     pub search_results: Vec<(PathBuf, Vec<u32>)>,
     pub search_idx: usize,
     pub pending: Option<Action>,
+    pub dialog: Dialog,
 }
 
 impl App {
@@ -42,10 +54,11 @@ impl App {
             clipboard: None,
             status: String::new(),
             should_quit: false,
-            input: String::new(),
+            input: TextInput::new(),
             search_results: Vec::new(),
             search_idx: 0,
             pending: None,
+            dialog: Dialog::None,
         }
     }
 
@@ -140,22 +153,23 @@ impl App {
 
     pub fn enter_mode(&mut self, m: Mode, seed: &str) {
         self.mode = m;
-        self.input = seed.to_string();
+        self.input.set(seed);
         self.status.clear();
+        self.dialog = Dialog::Input;
     }
 
     pub fn push_input(&mut self, c: char) {
-        self.input.push(c);
+        self.input.insert(c);
     }
 
     pub fn backspace_input(&mut self) {
-        self.input.pop();
+        self.input.backspace();
     }
 
     pub fn run_search(&mut self) {
         let root = self.arena.nodes[self.arena.root].path.clone();
         let cands = crate::search::collect(&root, self.arena.show_hidden);
-        let ranked = crate::search::rank(&cands, &root, &self.input);
+        let ranked = crate::search::rank(&cands, &root, &self.input.value());
         self.search_results = ranked.into_iter().map(|(p, _, idx)| (p, idx)).collect();
         self.search_idx = 0;
         self.jump_to_search();
@@ -189,7 +203,7 @@ impl App {
         let base = self
             .sel_dir()
             .unwrap_or_else(|| self.arena.nodes[self.arena.root].path.clone());
-        let target = base.join(&self.input);
+        let target = base.join(self.input.value());
         match crate::fs_ops::create(&target) {
             Ok(_) => self.status = format!("created {}", target.display()),
             Err(e) => self.status = format!("create failed: {e}"),
@@ -200,7 +214,7 @@ impl App {
     pub fn commit_rename(&mut self) {
         if let Some(&id) = self.visible.get(self.selected) {
             let p = self.arena.nodes[id].path.clone();
-            match crate::fs_ops::rename(&p, &self.input) {
+            match crate::fs_ops::rename(&p, &self.input.value()) {
                 Ok(np) => self.status = format!("renamed -> {}", np.display()),
                 Err(e) => self.status = format!("rename failed: {e}"),
             }
@@ -344,7 +358,7 @@ mod tests {
     fn enter_mode_seeds_input() {
         let mut a = app();
         a.enter_mode(Mode::Input, "seed");
-        assert_eq!(a.input, "seed");
+        assert_eq!(a.input.value(), "seed");
         assert_eq!(a.mode, Mode::Input);
     }
 

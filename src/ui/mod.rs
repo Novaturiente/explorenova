@@ -212,7 +212,7 @@ pub fn render_frame(
     }
 
     let prompt = match app.mode {
-        crate::keymap::Mode::Search => format!("/{}", app.input),
+        crate::keymap::Mode::Search => format!("/{}", app.input.value()),
         crate::keymap::Mode::Input => {
             let label = match app.pending {
                 Some(crate::keymap::Action::PathInput) => ":",
@@ -222,7 +222,7 @@ pub fn render_frame(
                 Some(crate::keymap::Action::ShellOnce) => "!",
                 _ => "> ",
             };
-            format!("{label}{}", app.input)
+            format!("{label}{}", app.input.value())
         }
         _ => app.status.clone(),
     };
