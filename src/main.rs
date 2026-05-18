@@ -299,9 +299,13 @@ fn main() -> Result<()> {
                             Some(Action::OpenWith) => {
                                 if let Some(&id) = app.visible.get(app.selected) {
                                     let p = app.arena.nodes[id].path.clone();
-                                    let _ = std::process::Command::new(app.input.value())
-                                        .arg(&p)
-                                        .spawn();
+                                    if let Err(e) =
+                                        std::process::Command::new(app.input.value())
+                                            .arg(&p)
+                                            .spawn()
+                                    {
+                                        app.status = format!("open failed: {e}");
+                                    }
                                 }
                                 app.mode = Mode::Normal;
                             }
