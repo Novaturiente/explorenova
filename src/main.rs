@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
-use crossterm::event::{self, Event};
+use crossterm::event::{self, Event, KeyCode};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -152,11 +152,76 @@ fn main() -> Result<()> {
                         chord.clear();
                     }
                 }
-                _ => {
-                    if keymap.resolve(app.mode, &tok) == Some(Action::Cancel) {
+                Mode::Search | Mode::Input => match k.code {
+                    KeyCode::Esc => {
+                        app.mode = Mode::Normal;
+                        app.input.clear();
+                        app.pending = None;
+                    }
+                    KeyCode::Enter => match app.mode {
+                        Mode::Search => {
+                            app.run_search();
+                            app.mode = Mode::Normal;
+                        }
+                        Mode::Input => match app.pending.take() {
+                            Some(Action::Rename) => app.commit_rename(),
+                            Some(Action::Create) => app.commit_create(),
+                            Some(Action::PathInput) => {
+                                let target = explorenova::nav::expand(&app.input);
+                                match app.arena.reveal(std::path::Path::new(&target)) {
+                                    Ok(Some(id)) => {
+                                        app.visible = app.arena.flatten();
+                                        if let Some(i) =
+                                            app.visible.iter().position(|&n| n == id)
+                                        {
+                                            app.selected = i;
+                                        }
+                                    }
+                                    _ => app.status = "path not found".into(),
+                                }
+                                app.mode = Mode::Normal;
+                            }
+                            Some(Action::OpenWith) => {
+                                if let Some(&id) = app.visible.get(app.selected) {
+                                    let p = app.arena.nodes[id].path.clone();
+                                    let _ = std::process::Command::new(&app.input)
+                                        .arg(&p)
+                                        .spawn();
+                                }
+                                app.mode = Mode::Normal;
+                            }
+                            Some(Action::ShellOnce) => {
+                                let cmd = app.input.clone();
+                                app.mode = Mode::Normal;
+                                explorenova::shell::run_once(&start, &cmd)?;
+                            }
+                            _ => app.mode = Mode::Normal,
+                        },
+                        _ => {}
+                    },
+                    KeyCode::Tab => {
+                        if app.mode == Mode::Input
+                            && app.pending == Some(Action::PathInput)
+                        {
+                            let c = explorenova::nav::completions(&app.input);
+                            if let Some(lcp) =
+                                explorenova::nav::longest_common(&app.input, &c)
+                            {
+                                app.input = lcp;
+                            }
+                        }
+                    }
+                    KeyCode::Backspace => app.backspace_input(),
+                    KeyCode::Char(ch) => app.push_input(ch),
+                    _ => {}
+                },
+                Mode::Confirm => match k.code {
+                    KeyCode::Char('y') | KeyCode::Char('Y') => app.confirm_yes(),
+                    _ => {
+                        app.pending = None;
                         app.mode = Mode::Normal;
                     }
-                }
+                },
             }
         }
 
@@ -233,6 +298,85 @@ fn handle(
                     }
                 }
             }
+        }
+        Action::Search => app.enter_mode(Mode::Search, ""),
+        Action::SearchNext => app.search_cycle(true),
+        Action::SearchPrev => app.search_cycle(false),
+        Action::PathInput => {
+            app.pending = Some(Action::PathInput);
+            app.enter_mode(Mode::Input, "");
+        }
+        Action::Create => {
+            app.pending = Some(Action::Create);
+            app.enter_mode(Mode::Input, "");
+        }
+        Action::Rename => {
+            let seed = app
+                .visible
+                .get(app.selected)
+                .map(|&id| {
+                    app.arena.nodes[id]
+                        .path
+                        .file_name()
+                        .map(|s| s.to_string_lossy().to_string())
+                        .unwrap_or_default()
+                })
+                .unwrap_or_default();
+            app.pending = Some(Action::Rename);
+            app.enter_mode(Mode::Input, &seed);
+        }
+        Action::PermanentDelete => {
+            app.pending = Some(Action::PermanentDelete);
+            app.mode = Mode::Confirm;
+            app.status = "permanently delete? y/N".into();
+        }
+        Action::Copy => {
+            if let Some(&id) = app.visible.get(app.selected) {
+                app.clipboard = Some((app.arena.nodes[id].path.clone(), false));
+                app.status = "copied".into();
+            }
+        }
+        Action::Cut => {
+            if let Some(&id) = app.visible.get(app.selected) {
+                app.clipboard = Some((app.arena.nodes[id].path.clone(), true));
+                app.status = "cut".into();
+            }
+        }
+        Action::Paste => {
+            if let Some((src, is_cut)) = app.clipboard.clone() {
+                let dst_dir = app
+                    .visible
+                    .get(app.selected)
+                    .map(|&id| {
+                        let n = &app.arena.nodes[id];
+                        if n.is_dir() {
+                            n.path.clone()
+                        } else {
+                            n.path.parent().unwrap_or(cwd).to_path_buf()
+                        }
+                    })
+                    .unwrap_or_else(|| cwd.to_path_buf());
+                let mode = if is_cut {
+                    explorenova::fs_ops::PasteMode::Move
+                } else {
+                    explorenova::fs_ops::PasteMode::Copy
+                };
+                match explorenova::fs_ops::paste(&src, &dst_dir, mode) {
+                    Ok(p) => app.status = format!("pasted -> {}", p.display()),
+                    Err(e) => app.status = format!("paste failed: {e}"),
+                }
+                if is_cut {
+                    app.clipboard = None;
+                }
+            }
+        }
+        Action::OpenWith => {
+            app.pending = Some(Action::OpenWith);
+            app.enter_mode(Mode::Input, "");
+        }
+        Action::ShellOnce => {
+            app.pending = Some(Action::ShellOnce);
+            app.enter_mode(Mode::Input, "");
         }
         other => app.apply(other),
     }

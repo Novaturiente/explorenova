@@ -22,6 +22,10 @@ pub struct App {
     pub clipboard: Option<(PathBuf, bool)>, // (path, is_cut)
     pub status: String,
     pub should_quit: bool,
+    pub input: String,
+    pub search_results: Vec<(PathBuf, Vec<u32>)>,
+    pub search_idx: usize,
+    pub pending: Option<Action>,
 }
 
 impl App {
@@ -38,6 +42,10 @@ impl App {
             clipboard: None,
             status: String::new(),
             should_quit: false,
+            input: String::new(),
+            search_results: Vec::new(),
+            search_idx: 0,
+            pending: None,
         }
     }
 
@@ -125,6 +133,100 @@ impl App {
             _ => {}
         }
     }
+
+    pub fn enter_mode(&mut self, m: Mode, seed: &str) {
+        self.mode = m;
+        self.input = seed.to_string();
+        self.status.clear();
+    }
+
+    pub fn push_input(&mut self, c: char) {
+        self.input.push(c);
+    }
+
+    pub fn backspace_input(&mut self) {
+        self.input.pop();
+    }
+
+    pub fn run_search(&mut self) {
+        let root = self.arena.nodes[self.arena.root].path.clone();
+        let cands = crate::search::collect(&root, self.arena.show_hidden);
+        let ranked = crate::search::rank(&cands, &root, &self.input);
+        self.search_results = ranked.into_iter().map(|(p, _, idx)| (p, idx)).collect();
+        self.search_idx = 0;
+        self.jump_to_search();
+    }
+
+    pub fn jump_to_search(&mut self) {
+        if let Some((p, _)) = self.search_results.get(self.search_idx).cloned() {
+            if let Ok(Some(id)) = self.arena.reveal(&p) {
+                self.visible = self.arena.flatten();
+                if let Some(i) = self.visible.iter().position(|&n| n == id) {
+                    self.selected = i;
+                }
+            }
+        }
+    }
+
+    pub fn search_cycle(&mut self, forward: bool) {
+        if self.search_results.is_empty() {
+            return;
+        }
+        let n = self.search_results.len();
+        self.search_idx = if forward {
+            (self.search_idx + 1) % n
+        } else {
+            (self.search_idx + n - 1) % n
+        };
+        self.jump_to_search();
+    }
+
+    pub fn commit_create(&mut self) {
+        let base = self
+            .sel_dir()
+            .unwrap_or_else(|| self.arena.nodes[self.arena.root].path.clone());
+        let target = base.join(&self.input);
+        match crate::fs_ops::create(&target) {
+            Ok(_) => self.status = format!("created {}", target.display()),
+            Err(e) => self.status = format!("create failed: {e}"),
+        }
+        self.mode = Mode::Normal;
+    }
+
+    pub fn commit_rename(&mut self) {
+        if let Some(&id) = self.visible.get(self.selected) {
+            let p = self.arena.nodes[id].path.clone();
+            match crate::fs_ops::rename(&p, &self.input) {
+                Ok(np) => self.status = format!("renamed -> {}", np.display()),
+                Err(e) => self.status = format!("rename failed: {e}"),
+            }
+        }
+        self.mode = Mode::Normal;
+    }
+
+    fn sel_dir(&self) -> Option<PathBuf> {
+        let id = *self.visible.get(self.selected)?;
+        let n = &self.arena.nodes[id];
+        Some(if n.is_dir() {
+            n.path.clone()
+        } else {
+            n.path.parent()?.to_path_buf()
+        })
+    }
+
+    pub fn confirm_yes(&mut self) {
+        if let Some(Action::PermanentDelete) = self.pending {
+            if let Some(&id) = self.visible.get(self.selected) {
+                let p = self.arena.nodes[id].path.clone();
+                match crate::fs_ops::permanent_delete(&p) {
+                    Ok(_) => self.status = format!("deleted {}", p.display()),
+                    Err(e) => self.status = format!("delete failed: {e}"),
+                }
+            }
+        }
+        self.pending = None;
+        self.mode = Mode::Normal;
+    }
 }
 
 #[cfg(test)]
@@ -173,5 +275,23 @@ mod tests {
         assert_eq!(a.focus, Pane::Tree);
         a.apply(Action::FocusNext);
         assert_eq!(a.focus, Pane::Preview);
+    }
+
+    #[test]
+    fn permanent_delete_requires_confirm() {
+        let mut a = app();
+        a.pending = Some(Action::PermanentDelete);
+        a.mode = Mode::Confirm;
+        a.apply(Action::Cancel);
+        assert_eq!(a.mode, Mode::Normal);
+        assert!(a.status.is_empty(), "cancel must not perform deletion");
+    }
+
+    #[test]
+    fn enter_mode_seeds_input() {
+        let mut a = app();
+        a.enter_mode(Mode::Input, "seed");
+        assert_eq!(a.input, "seed");
+        assert_eq!(a.mode, Mode::Input);
     }
 }

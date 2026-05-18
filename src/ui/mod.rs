@@ -134,10 +134,16 @@ pub fn render_frame(
     img_cache: &mut ImageCache,
 ) {
     let cons: Vec<_> = layout_constraints(&app.config.panes);
+    let outer = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(0), Constraint::Length(1)])
+        .split(f.area());
+    let body = outer[0];
+    let prompt_area = outer[1];
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints(cons.iter().map(|(_, c)| *c).collect::<Vec<_>>())
-        .split(f.area());
+        .split(body);
     let theme = crate::ui::theme::Theme::default();
 
     for (i, (name, _)) in cons.iter().enumerate() {
@@ -203,4 +209,21 @@ pub fn render_frame(
             _ => {}
         }
     }
+
+    let prompt = match app.mode {
+        crate::keymap::Mode::Search => format!("/{}", app.input),
+        crate::keymap::Mode::Input => {
+            let label = match app.pending {
+                Some(crate::keymap::Action::PathInput) => ":",
+                Some(crate::keymap::Action::Create) => "create: ",
+                Some(crate::keymap::Action::Rename) => "rename: ",
+                Some(crate::keymap::Action::OpenWith) => "open with: ",
+                Some(crate::keymap::Action::ShellOnce) => "!",
+                _ => "> ",
+            };
+            format!("{label}{}", app.input)
+        }
+        _ => app.status.clone(),
+    };
+    f.render_widget(Paragraph::new(prompt), prompt_area);
 }
