@@ -430,6 +430,20 @@ fn handle(
             app.pending = Some(Action::ShellOnce);
             app.enter_mode(Mode::Input, "");
         }
+        Action::Toggle => {
+            // Enter: directories toggle expand/collapse (pure reducer);
+            // files open in the default application.
+            if let Some(&id) = app.visible.get(app.selected) {
+                if app.arena.nodes[id].is_dir() {
+                    app.apply(Action::Toggle);
+                } else {
+                    let p = app.arena.nodes[id].path.clone();
+                    if let Err(e) = open::that_detached(&p) {
+                        app.status = format!("open failed: {e}");
+                    }
+                }
+            }
+        }
         other => app.apply(other),
     }
     Ok(())
