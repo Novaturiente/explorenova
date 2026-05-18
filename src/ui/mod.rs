@@ -1,3 +1,4 @@
+pub mod modal;
 pub mod panes;
 pub mod theme;
 
