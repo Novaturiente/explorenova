@@ -193,7 +193,9 @@ fn main() -> Result<()> {
                             Some(Action::ShellOnce) => {
                                 let cmd = app.input.clone();
                                 app.mode = Mode::Normal;
-                                explorenova::shell::run_once(&start, &cmd)?;
+                                if let Err(e) = explorenova::shell::run_once(&start, &cmd) {
+                                    app.status = format!("shell failed: {e}");
+                                }
                             }
                             _ => app.mode = Mode::Normal,
                         },
@@ -220,6 +222,7 @@ fn main() -> Result<()> {
                     _ => {
                         app.pending = None;
                         app.mode = Mode::Normal;
+                        app.status.clear();
                     }
                 },
             }
