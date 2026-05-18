@@ -70,3 +70,69 @@ mod tests {
         assert_eq!(cons[2].0, "bookmarks");
     }
 }
+
+use crate::app::App;
+use crate::preview::{PreviewCache, PreviewKind};
+use ratatui::layout::{Direction, Layout, Rect};
+use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::Frame;
+
+pub fn render_frame(f: &mut Frame, app: &mut App, cache: &mut PreviewCache) {
+    let cons: Vec<_> = layout_constraints(&app.config.panes);
+    let chunks = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints(cons.iter().map(|(_, c)| *c).collect::<Vec<_>>())
+        .split(f.area());
+    let theme = crate::ui::theme::Theme::default();
+
+    for (i, (name, _)) in cons.iter().enumerate() {
+        let area: Rect = chunks[i];
+        match name.as_str() {
+            "tree" => {
+                let rows: Vec<_> = app
+                    .visible
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, &id)| {
+                        crate::ui::panes::tree_row(&app.arena, id, idx == app.selected, &theme)
+                    })
+                    .collect();
+                let p = Paragraph::new(rows)
+                    .block(Block::default().borders(Borders::ALL).title("tree"));
+                f.render_widget(p, area);
+            }
+            "bookmarks" => {
+                let items: Vec<_> = app
+                    .state
+                    .bookmarks
+                    .iter()
+                    .map(|b| ratatui::text::Line::from(b.display().to_string()))
+                    .collect();
+                f.render_widget(
+                    Paragraph::new(items)
+                        .block(Block::default().borders(Borders::ALL).title("bookmarks")),
+                    area,
+                );
+            }
+            "preview" => {
+                let text = match app.visible.get(app.selected) {
+                    Some(&id) => match cache.get_or_render(
+                        &app.arena.nodes[id].path,
+                        app.config.preview_max_bytes,
+                    ) {
+                        PreviewKind::Text(t) => t,
+                        PreviewKind::Meta(m) => m,
+                        PreviewKind::Image(p) => format!("[image] {}", p.display()),
+                    },
+                    None => String::new(),
+                };
+                f.render_widget(
+                    Paragraph::new(text)
+                        .block(Block::default().borders(Borders::ALL).title("preview")),
+                    area,
+                );
+            }
+            _ => {}
+        }
+    }
+}
