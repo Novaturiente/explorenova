@@ -245,7 +245,7 @@ pub fn render_frame(
                 let caret = app.input.caret();
                 let start = caret.saturating_sub(w - 1);
                 let s: String = val.chars().skip(start).take(w - 1).collect();
-                (s, (w - 1) as u16)
+                (s, (caret - start) as u16)
             };
             f.render_widget(Paragraph::new(shown), inner);
             f.set_cursor_position((inner.x + cursor_col, inner.y));
