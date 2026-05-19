@@ -10,6 +10,13 @@ pub struct Theme {
     pub git_untracked: Color,
     pub git_conflict: Color,
     pub match_hl: Color,
+    pub executable: Color,
+    pub symlink: Color,
+    pub media: Color,
+    pub archive: Color,
+    pub selection_bg: Color,
+    pub header: Color,
+    pub dim: Color,
 }
 
 impl Default for Theme {
@@ -23,6 +30,13 @@ impl Default for Theme {
             git_untracked: Color::Blue,
             git_conflict: Color::Red,
             match_hl: Color::Magenta,
+            executable: Color::Green,
+            symlink: Color::Cyan,
+            media: Color::Magenta,
+            archive: Color::Red,
+            selection_bg: Color::Rgb(45, 55, 72),
+            header: Color::Rgb(130, 170, 255),
+            dim: Color::DarkGray,
         }
     }
 }
