@@ -149,8 +149,17 @@ pub fn render_frame(
     {
         let root_path =
             app.arena.nodes[app.arena.root].path.display().to_string();
+        let w = header_area.width.max(1) as usize;
+        let chars: Vec<char> = root_path.chars().collect();
+        let shown = if chars.len() > w {
+            let start = chars.len() - (w - 1);
+            let tail: String = chars[start..].iter().collect();
+            format!("…{tail}")
+        } else {
+            root_path
+        };
         f.render_widget(
-            Paragraph::new(root_path).style(
+            Paragraph::new(shown).style(
                 ratatui::style::Style::default()
                     .fg(crate::ui::theme::Theme::default().header)
                     .add_modifier(ratatui::style::Modifier::BOLD),
