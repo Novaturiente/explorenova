@@ -411,6 +411,7 @@ fn ascend(app: &mut App) {
             }
             app.arena = na;
             app.visible = app.arena.flatten();
+            app.selected = 0;
             if let Ok(Some(id)) = app.arena.reveal(&root_path) {
                 app.visible = app.arena.flatten();
                 if let Some(i) = app.visible.iter().position(|&n| n == id) {
