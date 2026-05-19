@@ -14,7 +14,6 @@ pub struct Theme {
     pub symlink: Color,
     pub media: Color,
     pub archive: Color,
-    pub selection_bg: Color,
     pub header: Color,
     pub dim: Color,
 }
@@ -24,7 +23,7 @@ impl Default for Theme {
         Self {
             dir: Color::Cyan,
             file: Color::Gray,
-            selected_bg: Color::DarkGray,
+            selected_bg: Color::Rgb(45, 55, 72),
             git_modified: Color::Yellow,
             git_added: Color::Green,
             git_untracked: Color::Blue,
@@ -34,7 +33,6 @@ impl Default for Theme {
             symlink: Color::Cyan,
             media: Color::Magenta,
             archive: Color::Red,
-            selection_bg: Color::Rgb(45, 55, 72),
             header: Color::Rgb(130, 170, 255),
             dim: Color::DarkGray,
         }
