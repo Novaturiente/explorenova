@@ -186,9 +186,13 @@ fn main() -> Result<()> {
             continue;
         }
         if let Event::Key(k) = event::read()? {
-            let Some(tok) = key_token(&k) else { continue };
+            // `key_token` only maps chord-relevant keys; it returns None for
+            // Backspace/Home/End/etc. That gate belongs to Normal-mode chord
+            // building only — the Search/Input/Confirm/AppPick arms consume
+            // `k.code` directly and must see every key (esp. Backspace).
             match app.mode {
                 Mode::Normal => {
+                    let Some(tok) = key_token(&k) else { continue };
                     chord.push_str(&tok);
                     if let Some(action) = keymap.resolve(Mode::Normal, &chord) {
                         chord.clear();
