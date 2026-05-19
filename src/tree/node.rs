@@ -59,6 +59,7 @@ pub struct Node {
     pub git: GitStatus,
     pub depth: usize,
     pub parent: Option<NodeId>,
+    pub exec: bool,
 }
 
 impl Node {
@@ -71,6 +72,7 @@ impl Node {
             git: GitStatus::Clean,
             depth,
             parent,
+            exec: false,
         }
     }
 
