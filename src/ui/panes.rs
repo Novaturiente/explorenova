@@ -51,7 +51,7 @@ pub fn tree_row<'a>(
     let mut spans: Vec<Span> = Vec::new();
     spans.push(Span::raw(indent));
     let marker_style = if selected {
-        Style::default().fg(theme.dim)
+        Style::default()
     } else {
         Style::default().fg(theme.dim)
     };
