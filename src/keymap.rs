@@ -20,6 +20,8 @@ pub enum Action {
     Open,
     Collapse,
     Parent,
+    ToggleMark,
+    SelectAllVisible,
     Toggle,
     OpenDefault,
     OpenWith,
@@ -71,6 +73,8 @@ impl Action {
             "shell_once" => ShellOnce, "shell_drop" => ShellDrop,
             "toggle_hidden" => ToggleHidden, "refresh" => Refresh,
             "parent" => Parent,
+            "toggle_mark" => ToggleMark,
+            "select_all_visible" => SelectAllVisible,
             "quit" => Quit, "cancel" => Cancel,
             _ => return None,
         })
@@ -139,6 +143,8 @@ impl Keymap {
             (HalfDown, vec!["ctrl-d"]), (HalfUp, vec!["ctrl-u"]),
             (Open, vec!["l", "right"]), (Collapse, vec!["h", "left"]),
             (Parent, vec!["-"]),
+            (ToggleMark, vec![" "]),
+            (SelectAllVisible, vec!["ctrl-a"]),
             (Toggle, vec!["enter"]),
             (OpenDefault, vec!["o"]), (OpenWith, vec!["O"]),
             (FocusNext, vec!["tab"]),
@@ -242,5 +248,20 @@ mod tests {
         let km = Keymap::build(&std::collections::BTreeMap::new());
         assert_eq!(km.resolve(Mode::Normal, "-"), Some(Action::Parent));
         assert_eq!(Action::from_name("parent"), Some(Action::Parent));
+    }
+
+    #[test]
+    fn space_toggles_mark_and_ctrl_a_selects_all() {
+        let km = Keymap::build(&std::collections::BTreeMap::new());
+        assert_eq!(km.resolve(Mode::Normal, " "), Some(Action::ToggleMark));
+        assert_eq!(
+            km.resolve(Mode::Normal, "ctrl-a"),
+            Some(Action::SelectAllVisible)
+        );
+        assert_eq!(Action::from_name("toggle_mark"), Some(Action::ToggleMark));
+        assert_eq!(
+            Action::from_name("select_all_visible"),
+            Some(Action::SelectAllVisible)
+        );
     }
 }
