@@ -188,6 +188,7 @@ pub fn render_frame(
                             idx == app.selected,
                             &theme,
                             app.config.icons,
+                            app.marks.contains(&app.arena.nodes[id].path),
                         ))
                     })
                     .collect();
@@ -268,10 +269,16 @@ pub fn render_frame(
     }
 
     // Status row: transient messages only.
+    let marks_segment = if app.marks.is_empty() {
+        String::new()
+    } else {
+        format!("{} selected  ", app.marks.len())
+    };
     let footer = format!(
-        "{}/{}  {}",
+        "{}/{}  {}{}",
         app.selected + 1,
         app.visible.len().max(1),
+        marks_segment,
         app.status
     );
     f.render_widget(Paragraph::new(footer), prompt_area);
