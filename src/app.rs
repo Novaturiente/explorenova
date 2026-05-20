@@ -239,7 +239,9 @@ impl App {
                 let p = self.arena.nodes[id].path.clone();
                 match crate::fs_ops::permanent_delete(&p) {
                     Ok(_) => self.status = format!("deleted {}", p.display()),
-                    Err(e) => self.status = format!("delete failed: {e}"),
+                    Err(e) => {
+                        self.status = format!("delete failed: {}: {e}", p.display())
+                    }
                 }
             }
         }

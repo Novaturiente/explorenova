@@ -99,10 +99,17 @@ pub fn trash_path(path: &Path) -> anyhow::Result<()> {
 }
 
 /// Irreversible. Caller MUST gate with a confirmed prompt (see keymap Confirm mode).
+///
+/// Uses `symlink_metadata` (does NOT follow symlinks): only a *real* directory
+/// is recursively removed; a symlink (even one pointing at a directory) is
+/// unlinked, not recursed into. This matches the user expectation that X
+/// removes the visible entry, never the target of a link.
 pub fn permanent_delete(path: &Path) -> io::Result<()> {
-    if path.is_dir() {
+    let m = fs::symlink_metadata(path)?;
+    if m.file_type().is_dir() {
         fs::remove_dir_all(path)
     } else {
+        // Regular file OR symlink: unlink only.
         fs::remove_file(path)
     }
 }

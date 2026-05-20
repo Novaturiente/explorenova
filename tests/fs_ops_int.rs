@@ -1,6 +1,53 @@
-use explorenova::fs_ops::{create, paste, rename, trash_path, PasteMode};
+use explorenova::fs_ops::{create, paste, permanent_delete, rename, trash_path, PasteMode};
 use std::fs;
 use tempfile::tempdir;
+
+#[test]
+fn permanent_delete_removes_dir_with_contents() {
+    let d = tempdir().unwrap();
+    let sub = d.path().join("sub");
+    fs::create_dir_all(sub.join("nested")).unwrap();
+    fs::write(sub.join("a.txt"), "x").unwrap();
+    fs::write(sub.join("nested/b.txt"), "y").unwrap();
+    permanent_delete(&sub).unwrap();
+    assert!(!sub.exists(), "dir and contents should be removed");
+}
+
+#[test]
+fn permanent_delete_removes_file() {
+    let d = tempdir().unwrap();
+    let f = d.path().join("a.txt");
+    fs::write(&f, "x").unwrap();
+    permanent_delete(&f).unwrap();
+    assert!(!f.exists());
+}
+
+#[test]
+fn permanent_delete_nonexistent_path_errors() {
+    let d = tempdir().unwrap();
+    let nope = d.path().join("does_not_exist");
+    let r = permanent_delete(&nope);
+    assert!(r.is_err(), "deleting a missing path must error, not succeed");
+}
+
+#[cfg(unix)]
+#[test]
+fn permanent_delete_unlinks_symlink_not_target() {
+    use std::os::unix::fs::symlink;
+    let d = tempdir().unwrap();
+    let target_dir = d.path().join("target");
+    fs::create_dir(&target_dir).unwrap();
+    fs::write(target_dir.join("keep.txt"), "x").unwrap();
+    let link = d.path().join("link");
+    symlink(&target_dir, &link).unwrap();
+    permanent_delete(&link).unwrap();
+    assert!(!link.exists(), "symlink itself should be removed");
+    assert!(target_dir.exists(), "target dir must remain");
+    assert!(
+        target_dir.join("keep.txt").exists(),
+        "target contents must be preserved"
+    );
+}
 
 #[test]
 fn create_file_and_nested_dir() {
