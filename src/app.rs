@@ -4,6 +4,7 @@ use crate::keymap::{Action, Mode};
 use crate::state::State;
 use crate::textinput::TextInput;
 use crate::tree::Arena;
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 
 #[derive(Debug, Default)]
@@ -30,7 +31,8 @@ pub struct App {
     pub focus: Pane,
     pub config: Config,
     pub state: State,
-    pub clipboard: Option<(PathBuf, bool)>, // (path, is_cut)
+    pub clipboard: Option<(PathBuf, bool)>, // (path, is_cut) — widened in MS-5
+    pub marks: BTreeSet<PathBuf>,
     pub status: String,
     pub should_quit: bool,
     pub input: TextInput,
@@ -52,6 +54,7 @@ impl App {
             config,
             state,
             clipboard: None,
+            marks: BTreeSet::new(),
             status: String::new(),
             should_quit: false,
             input: TextInput::new(),
@@ -140,7 +143,10 @@ impl App {
                 }
             }
             Action::Quit => self.should_quit = true,
-            Action::Cancel => self.mode = Mode::Normal,
+            Action::Cancel => {
+                self.mode = Mode::Normal;
+                self.marks.clear();
+            }
             Action::ResizeShrink => self.resize_focus(-1),
             Action::ResizeGrow => self.resize_focus(1),
             Action::ReorderLeft => self.reorder_focus(-1),
@@ -221,6 +227,39 @@ impl App {
             }
         }
         self.mode = Mode::Normal;
+    }
+
+    pub fn toggle_mark(&mut self) {
+        if let Some(&id) = self.visible.get(self.selected) {
+            let p = self.arena.nodes[id].path.clone();
+            if self.marks.contains(&p) {
+                self.marks.remove(&p);
+            } else {
+                self.marks.insert(p);
+            }
+        }
+    }
+
+    pub fn clear_marks(&mut self) {
+        self.marks.clear();
+    }
+
+    pub fn select_all_visible(&mut self) {
+        for &id in &self.visible {
+            let p = self.arena.nodes[id].path.clone();
+            self.marks.insert(p);
+        }
+    }
+
+    /// Single chokepoint for the "selection-if-any-else-cursor" rule.
+    pub fn targets(&self) -> Vec<PathBuf> {
+        if !self.marks.is_empty() {
+            self.marks.iter().cloned().collect()
+        } else if let Some(&id) = self.visible.get(self.selected) {
+            vec![self.arena.nodes[id].path.clone()]
+        } else {
+            Vec::new()
+        }
     }
 
     fn sel_dir(&self) -> Option<PathBuf> {
@@ -383,5 +422,65 @@ mod tests {
         a.apply(Action::ReorderLeft);
         assert_ne!(a.config.panes.order, before);
         assert_eq!(a.config.panes.order[0], "tree");
+    }
+
+    #[test]
+    fn toggle_mark_inserts_then_removes() {
+        let mut a = app();
+        let p = a.arena.nodes[a.visible[a.selected]].path.clone();
+        a.toggle_mark();
+        assert!(a.marks.contains(&p));
+        a.toggle_mark();
+        assert!(!a.marks.contains(&p));
+    }
+
+    #[test]
+    fn clear_marks_empties() {
+        let mut a = app();
+        a.toggle_mark();
+        assert!(!a.marks.is_empty());
+        a.clear_marks();
+        assert!(a.marks.is_empty());
+    }
+
+    #[test]
+    fn select_all_visible_marks_every_visible_path() {
+        let mut a = app();
+        a.select_all_visible();
+        assert_eq!(a.marks.len(), a.visible.len());
+        for &id in &a.visible {
+            assert!(a.marks.contains(&a.arena.nodes[id].path));
+        }
+    }
+
+    #[test]
+    fn targets_returns_marks_when_nonempty_else_cursor() {
+        let mut a = app();
+        let cursor_path = a.arena.nodes[a.visible[a.selected]].path.clone();
+        assert_eq!(a.targets(), vec![cursor_path.clone()]);
+        a.toggle_mark();
+        let t = a.targets();
+        assert_eq!(t.len(), 1);
+        assert!(t.contains(&cursor_path));
+    }
+
+    #[test]
+    fn cancel_clears_marks() {
+        let mut a = app();
+        a.toggle_mark();
+        assert!(!a.marks.is_empty());
+        a.apply(Action::Cancel);
+        assert!(a.marks.is_empty());
+    }
+
+    #[test]
+    fn marks_survive_arena_rebuild_by_path() {
+        let mut a = app();
+        let p = a.arena.nodes[a.visible[a.selected]].path.clone();
+        a.toggle_mark();
+        let root_path = a.arena.nodes[a.arena.root].path.clone();
+        a.arena = crate::tree::Arena::new(&root_path).unwrap();
+        a.visible = a.arena.flatten();
+        assert!(a.marks.contains(&p), "marks are keyed by path, survive rebuild");
     }
 }
