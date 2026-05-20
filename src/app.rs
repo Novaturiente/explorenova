@@ -31,7 +31,7 @@ pub struct App {
     pub focus: Pane,
     pub config: Config,
     pub state: State,
-    pub clipboard: Option<(PathBuf, bool)>, // (path, is_cut) — widened in MS-5
+    pub clipboard: Option<(Vec<PathBuf>, bool)>, // (paths, is_cut) — batch
     pub marks: BTreeSet<PathBuf>,
     pub status: String,
     pub should_quit: bool,
@@ -274,15 +274,36 @@ impl App {
 
     pub fn confirm_yes(&mut self) {
         if let Some(Action::PermanentDelete) = self.pending {
-            if let Some(&id) = self.visible.get(self.selected) {
-                let p = self.arena.nodes[id].path.clone();
-                match crate::fs_ops::permanent_delete(&p) {
-                    Ok(_) => self.status = format!("deleted {}", p.display()),
-                    Err(e) => {
-                        self.status = format!("delete failed: {}: {e}", p.display())
-                    }
+            let targets = self.targets();
+            let n = targets.len();
+            let mut ok = 0usize;
+            let mut failed: Vec<String> = Vec::new();
+            for p in &targets {
+                match crate::fs_ops::permanent_delete(p) {
+                    Ok(_) => ok += 1,
+                    Err(_) => failed.push(p.display().to_string()),
                 }
             }
+            self.status = if failed.is_empty() {
+                if n == 1 {
+                    format!("deleted {}", targets[0].display())
+                } else {
+                    format!("deleted {n}")
+                }
+            } else {
+                let preview =
+                    failed.iter().take(2).cloned().collect::<Vec<_>>().join(", ");
+                let tail = if failed.len() > 2 { ", …" } else { "" };
+                format!(
+                    "deleted {}/{} ({} failed: {}{})",
+                    ok,
+                    n,
+                    failed.len(),
+                    preview,
+                    tail
+                )
+            };
+            self.marks.clear();
         }
         self.pending = None;
         self.mode = Mode::Normal;
