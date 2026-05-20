@@ -137,10 +137,36 @@ pub fn render_frame(
     let cons: Vec<_> = layout_constraints(&app.config.panes);
     let outer = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(0), Constraint::Length(1)])
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Min(0),
+            Constraint::Length(1),
+        ])
         .split(f.area());
-    let body = outer[0];
-    let prompt_area = outer[1];
+    let header_area = outer[0];
+    let body = outer[1];
+    let prompt_area = outer[2];
+    {
+        let root_path =
+            app.arena.nodes[app.arena.root].path.display().to_string();
+        let w = header_area.width.max(1) as usize;
+        let chars: Vec<char> = root_path.chars().collect();
+        let shown = if chars.len() > w {
+            let start = chars.len() - (w - 1);
+            let tail: String = chars[start..].iter().collect();
+            format!("…{tail}")
+        } else {
+            root_path
+        };
+        f.render_widget(
+            Paragraph::new(shown).style(
+                ratatui::style::Style::default()
+                    .fg(crate::ui::theme::Theme::default().header)
+                    .add_modifier(ratatui::style::Modifier::BOLD),
+            ),
+            header_area,
+        );
+    }
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
         .constraints(cons.iter().map(|(_, c)| *c).collect::<Vec<_>>())
@@ -151,17 +177,33 @@ pub fn render_frame(
         let area: Rect = chunks[i];
         match name.as_str() {
             "tree" => {
-                let rows: Vec<_> = app
+                let items: Vec<ratatui::widgets::ListItem> = app
                     .visible
                     .iter()
                     .enumerate()
                     .map(|(idx, &id)| {
-                        crate::ui::panes::tree_row(&app.arena, id, idx == app.selected, &theme)
+                        ratatui::widgets::ListItem::new(crate::ui::panes::tree_row(
+                            &app.arena,
+                            id,
+                            idx == app.selected,
+                            &theme,
+                            app.config.icons,
+                        ))
                     })
                     .collect();
-                let p = Paragraph::new(rows)
-                    .block(Block::default().borders(Borders::ALL).title("tree"));
-                f.render_widget(p, area);
+                let list = ratatui::widgets::List::new(items)
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_type(ratatui::widgets::BorderType::Rounded)
+                            .title("tree"),
+                    )
+                    .highlight_style(
+                        ratatui::style::Style::default().bg(theme.selected_bg),
+                    );
+                let mut st = ratatui::widgets::ListState::default();
+                st.select(Some(app.selected));
+                f.render_stateful_widget(list, area, &mut st);
             }
             "bookmarks" => {
                 let items: Vec<_> = app
@@ -171,8 +213,12 @@ pub fn render_frame(
                     .map(|b| ratatui::text::Line::from(b.display().to_string()))
                     .collect();
                 f.render_widget(
-                    Paragraph::new(items)
-                        .block(Block::default().borders(Borders::ALL).title("bookmarks")),
+                    Paragraph::new(items).block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_type(ratatui::widgets::BorderType::Rounded)
+                            .title("bookmarks"),
+                    ),
                     area,
                 );
             }
@@ -182,8 +228,10 @@ pub fn render_frame(
                         .get_or_render(&app.arena.nodes[id].path, app.config.preview_max_bytes);
                     match kind {
                         PreviewKind::Image(p) => {
-                            let block =
-                                Block::default().borders(Borders::ALL).title("preview");
+                            let block = Block::default()
+                                .borders(Borders::ALL)
+                                .border_type(ratatui::widgets::BorderType::Rounded)
+                                .title("preview");
                             let inner = block.inner(area);
                             f.render_widget(block, area);
                             render_image(f, inner, picker, img_cache, &p);
@@ -191,7 +239,12 @@ pub fn render_frame(
                         PreviewKind::Text(t) | PreviewKind::Meta(t) => {
                             f.render_widget(
                                 Paragraph::new(t).block(
-                                    Block::default().borders(Borders::ALL).title("preview"),
+                                    Block::default()
+                                        .borders(Borders::ALL)
+                                        .border_type(
+                                            ratatui::widgets::BorderType::Rounded,
+                                        )
+                                        .title("preview"),
                                 ),
                                 area,
                             );
@@ -201,7 +254,10 @@ pub fn render_frame(
                 None => {
                     f.render_widget(
                         Paragraph::new(String::new()).block(
-                            Block::default().borders(Borders::ALL).title("preview"),
+                            Block::default()
+                                .borders(Borders::ALL)
+                                .border_type(ratatui::widgets::BorderType::Rounded)
+                                .title("preview"),
                         ),
                         area,
                     );
@@ -212,7 +268,13 @@ pub fn render_frame(
     }
 
     // Status row: transient messages only.
-    f.render_widget(Paragraph::new(app.status.clone()), prompt_area);
+    let footer = format!(
+        "{}/{}  {}",
+        app.selected + 1,
+        app.visible.len().max(1),
+        app.status
+    );
+    f.render_widget(Paragraph::new(footer), prompt_area);
 
     // Modal overlay (input / confirm) centered over the body.
     match (&app.mode, &app.dialog) {
@@ -227,6 +289,7 @@ pub fn render_frame(
             f.render_widget(ratatui::widgets::Clear, r);
             let block = Block::default()
                 .borders(Borders::ALL)
+                .border_type(ratatui::widgets::BorderType::Rounded)
                 .title("Open with");
             let inner = block.inner(r);
             f.render_widget(block, r);
@@ -262,7 +325,10 @@ pub fn render_frame(
             };
             let r = crate::ui::modal::centered_rect(55, 1, body);
             f.render_widget(ratatui::widgets::Clear, r);
-            let block = Block::default().borders(Borders::ALL).title(title);
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_type(ratatui::widgets::BorderType::Rounded)
+                .title(title);
             let inner = block.inner(r);
             f.render_widget(block, r);
             let val = app.input.value();
@@ -293,7 +359,10 @@ pub fn render_frame(
                 .unwrap_or_default();
             let r = crate::ui::modal::centered_rect(50, 2, body);
             f.render_widget(ratatui::widgets::Clear, r);
-            let block = Block::default().borders(Borders::ALL).title("Delete");
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_type(ratatui::widgets::BorderType::Rounded)
+                .title("Delete");
             let inner = block.inner(r);
             f.render_widget(block, r);
             f.render_widget(

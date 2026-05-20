@@ -388,6 +388,43 @@ fn main() -> Result<()> {
 }
 
 /// Bridge actions that need IO to their modules; pure actions go through App::apply.
+/// Re-root the tree to the parent of the current root, selecting the
+/// directory just left. No-op at the filesystem root. Filesystem IO, so
+/// it lives here (not in the pure `App::apply`).
+fn ascend(app: &mut App) {
+    let root_path = app.arena.nodes[app.arena.root].path.clone();
+    let parent = match root_path.parent() {
+        Some(p) if p != root_path => p.to_path_buf(),
+        _ => {
+            app.status = "at filesystem root".into();
+            return;
+        }
+    };
+    let prev_hidden = app.arena.show_hidden;
+    match Arena::new(&parent) {
+        Ok(mut na) => {
+            if prev_hidden {
+                na.show_hidden = true;
+                na.nodes[na.root].children = None;
+                let _ = na.load_children(na.root);
+                na.nodes[na.root].expanded = true;
+            }
+            app.arena = na;
+            app.visible = app.arena.flatten();
+            app.selected = 0;
+            if let Ok(Some(id)) = app.arena.reveal(&root_path) {
+                app.visible = app.arena.flatten();
+                if let Some(i) = app.visible.iter().position(|&n| n == id) {
+                    app.selected = i;
+                }
+            }
+        }
+        Err(_) => {
+            app.status = format!("cannot open {}", parent.display());
+        }
+    }
+}
+
 fn handle(
     app: &mut App,
     action: Action,
@@ -544,6 +581,14 @@ fn handle(
                         app.status = format!("open failed: {e}");
                     }
                 }
+            }
+        }
+        Action::Parent => ascend(app),
+        Action::Collapse => {
+            if app.visible.get(app.selected).copied() == Some(app.arena.root) {
+                ascend(app);
+            } else {
+                app.apply(Action::Collapse);
             }
         }
         other => app.apply(other),

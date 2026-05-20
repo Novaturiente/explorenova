@@ -19,12 +19,21 @@ impl Arena {
         Ok(a)
     }
 
-    fn classify(p: &Path) -> NodeKind {
-        let meta = fs::symlink_metadata(p);
-        match meta {
-            Ok(m) if m.file_type().is_symlink() => NodeKind::Symlink,
-            Ok(m) if m.is_dir() => NodeKind::Dir,
-            _ => NodeKind::File,
+    fn classify(p: &Path) -> (NodeKind, bool) {
+        match fs::symlink_metadata(p) {
+            Ok(m) if m.file_type().is_symlink() => (NodeKind::Symlink, false),
+            Ok(m) if m.is_dir() => (NodeKind::Dir, false),
+            Ok(m) => {
+                #[cfg(unix)]
+                let ex = {
+                    use std::os::unix::fs::PermissionsExt;
+                    m.permissions().mode() & 0o111 != 0
+                };
+                #[cfg(not(unix))]
+                let ex = false;
+                (NodeKind::File, ex)
+            }
+            Err(_) => (NodeKind::File, false),
         }
     }
 
@@ -54,8 +63,9 @@ impl Arena {
         });
         let mut child_ids = Vec::with_capacity(entries.len());
         for p in entries {
-            let kind = Self::classify(&p);
-            let node = Node::new(p, kind, depth, Some(id));
+            let (kind, exec) = Self::classify(&p);
+            let mut node = Node::new(p, kind, depth, Some(id));
+            node.exec = exec;
             self.nodes.push(node);
             child_ids.push(self.nodes.len() - 1);
         }
@@ -196,5 +206,34 @@ mod tests {
         let id = a.reveal(&target).unwrap().unwrap();
         assert_eq!(a.nodes[id].path, target);
         assert!(a.flatten().contains(&id));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exec_bit_detected() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempfile::tempdir().unwrap();
+        let xp = d.path().join("run.sh");
+        std::fs::write(&xp, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&xp, std::fs::Permissions::from_mode(0o755))
+            .unwrap();
+        let pp = d.path().join("plain.txt");
+        std::fs::write(&pp, "x").unwrap();
+        std::fs::set_permissions(&pp, std::fs::Permissions::from_mode(0o644))
+            .unwrap();
+        let a = Arena::new(d.path()).unwrap();
+        let kids = a.nodes[a.root].children.as_ref().unwrap();
+        let run = kids
+            .iter()
+            .map(|&i| &a.nodes[i])
+            .find(|n| n.path.ends_with("run.sh"))
+            .unwrap();
+        let plain = kids
+            .iter()
+            .map(|&i| &a.nodes[i])
+            .find(|n| n.path.ends_with("plain.txt"))
+            .unwrap();
+        assert!(run.exec);
+        assert!(!plain.exec);
     }
 }

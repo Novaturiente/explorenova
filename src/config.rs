@@ -36,6 +36,10 @@ impl Default for PanesConfig {
     }
 }
 
+fn default_true() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(default)]
 pub struct Config {
@@ -43,12 +47,16 @@ pub struct Config {
     /// action name -> list of key chords
     pub keys: BTreeMap<String, Vec<String>>,
     pub preview_max_bytes: u64,
+    /// Show Nerd Font filetype icons in the tree.
+    #[serde(default = "default_true")]
+    pub icons: bool,
 }
 
 impl Config {
     pub fn with_defaults() -> Self {
         let mut c = Config { preview_max_bytes: 1_048_576, ..Default::default() };
         c.panes = PanesConfig::default();
+        c.icons = true;
         c
     }
 
@@ -97,5 +105,19 @@ mod tests {
         let (c, err) = Config::load_str("this is = = not toml");
         assert!(err.is_some());
         assert_eq!(c.panes.order.len(), 3);
+    }
+
+    #[test]
+    fn icons_defaults_true_via_with_defaults() {
+        assert!(Config::with_defaults().icons);
+    }
+
+    #[test]
+    fn icons_missing_in_toml_defaults_true_else_parses() {
+        let (c, e) = Config::load_str("preview_max_bytes = 99\n");
+        assert!(e.is_none());
+        assert!(c.icons, "missing icons key must default true");
+        let (c2, _) = Config::load_str("icons = false\n");
+        assert!(!c2.icons);
     }
 }

@@ -19,6 +19,7 @@ pub enum Action {
     HalfUp,
     Open,
     Collapse,
+    Parent,
     Toggle,
     OpenDefault,
     OpenWith,
@@ -69,6 +70,7 @@ impl Action {
             "path_input" => PathInput,
             "shell_once" => ShellOnce, "shell_drop" => ShellDrop,
             "toggle_hidden" => ToggleHidden, "refresh" => Refresh,
+            "parent" => Parent,
             "quit" => Quit, "cancel" => Cancel,
             _ => return None,
         })
@@ -136,6 +138,7 @@ impl Keymap {
             (Top, vec!["gg"]), (Bottom, vec!["G"]),
             (HalfDown, vec!["ctrl-d"]), (HalfUp, vec!["ctrl-u"]),
             (Open, vec!["l", "right"]), (Collapse, vec!["h", "left"]),
+            (Parent, vec!["-"]),
             (Toggle, vec!["enter"]),
             (OpenDefault, vec!["o"]), (OpenWith, vec!["O"]),
             (FocusNext, vec!["tab"]),
@@ -232,5 +235,12 @@ mod tests {
             parse_chord("ctrl-d"),
             Some((KeyModifiers::CONTROL, KeyCode::Char('d')))
         );
+    }
+
+    #[test]
+    fn dash_resolves_to_parent() {
+        let km = Keymap::build(&std::collections::BTreeMap::new());
+        assert_eq!(km.resolve(Mode::Normal, "-"), Some(Action::Parent));
+        assert_eq!(Action::from_name("parent"), Some(Action::Parent));
     }
 }

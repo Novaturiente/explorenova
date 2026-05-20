@@ -1,6 +1,6 @@
 use crate::tree::{Arena, NodeId};
 use crate::ui::theme::Theme;
-use ratatui::style::{Modifier, Style};
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 /// Build a styled line for one visible tree row.
@@ -9,11 +9,16 @@ pub fn tree_row<'a>(
     id: NodeId,
     selected: bool,
     theme: &Theme,
+    icons: bool,
 ) -> Line<'a> {
     let n = &arena.nodes[id];
     let indent = "  ".repeat(n.depth);
     let marker = if n.is_dir() {
-        if n.expanded { "▾ " } else { "▸ " }
+        if n.expanded {
+            "▾ "
+        } else {
+            "▸ "
+        }
     } else {
         "  "
     };
@@ -22,28 +27,50 @@ pub fn tree_row<'a>(
         .file_name()
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| n.path.display().to_string());
+
+    let kind = crate::icons::classify(n.kind, n.exec, &name);
+    let type_color = match kind {
+        crate::icons::Kind::Dir => theme.dir,
+        crate::icons::Kind::Symlink => theme.symlink,
+        crate::icons::Kind::Exec => theme.executable,
+        crate::icons::Kind::Media => theme.media,
+        crate::icons::Kind::Archive => theme.archive,
+        crate::icons::Kind::File => theme.file,
+    };
+
     let g = n.git.glyph();
-    let git_style = match n.git {
-        crate::tree::GitStatus::Modified => Style::default().fg(theme.git_modified),
-        crate::tree::GitStatus::Added => Style::default().fg(theme.git_added),
-        crate::tree::GitStatus::Untracked => Style::default().fg(theme.git_untracked),
-        crate::tree::GitStatus::Conflicted => Style::default().fg(theme.git_conflict),
-        _ => Style::default(),
+    let git_clean = matches!(n.git, crate::tree::GitStatus::Clean);
+    let git_color = match n.git {
+        crate::tree::GitStatus::Modified => theme.git_modified,
+        crate::tree::GitStatus::Added => theme.git_added,
+        crate::tree::GitStatus::Untracked => theme.git_untracked,
+        crate::tree::GitStatus::Conflicted => theme.git_conflict,
+        _ => theme.dim,
     };
-    let name_style = if n.is_dir() {
-        Style::default().fg(theme.dir)
+
+    let mut spans: Vec<Span> = Vec::new();
+    spans.push(Span::raw(indent));
+    let marker_style = if selected {
+        Style::default()
     } else {
-        Style::default().fg(theme.file)
+        Style::default().fg(theme.dim)
     };
-    let mut line = Line::from(vec![
-        Span::raw(format!("{indent}{marker}")),
-        Span::styled(format!("{g} "), git_style),
-        Span::styled(name, name_style),
-    ]);
-    if selected {
-        line = line.style(Style::default().bg(theme.selected_bg).add_modifier(Modifier::BOLD));
+    spans.push(Span::styled(marker.to_string(), marker_style));
+    if icons {
+        let ic = crate::icons::icon_for(n.kind, n.expanded, &name);
+        spans.push(Span::styled(
+            format!("{ic} "),
+            Style::default().fg(type_color),
+        ));
     }
-    line
+    let git_style = if git_clean && !selected {
+        Style::default().fg(theme.dim)
+    } else {
+        Style::default().fg(git_color)
+    };
+    spans.push(Span::styled(format!("{g} "), git_style));
+    spans.push(Span::styled(name, Style::default().fg(type_color)));
+    Line::from(spans)
 }
 
 #[cfg(test)]
@@ -57,7 +84,7 @@ mod tests {
         std::fs::write(d.path().join("z.txt"), "x").unwrap();
         let a = Arena::new(d.path()).unwrap();
         let child = a.nodes[a.root].children.as_ref().unwrap()[0];
-        let line = tree_row(&a, child, true, &Theme::default());
+        let line = tree_row(&a, child, true, &Theme::default(), true);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("z.txt"));
     }
