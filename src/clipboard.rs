@@ -43,21 +43,29 @@ fn build_payload(paths: &[PathBuf]) -> String {
 }
 
 fn write_to(cmd: &mut Command, payload: &str) -> std::io::Result<()> {
+    // wl-copy (and xclip) fork a daemon that keeps the clipboard alive
+    // after the parent exits. If we leave stderr piped, the daemon
+    // inherits our pipe and `wait_with_output` blocks forever waiting
+    // for EOF on stderr — which freezes the TUI. Discard stdout/stderr
+    // outright, and drop the stdin handle as soon as we've written the
+    // payload so the parent process sees EOF and can exit.
     let mut child = cmd
         .stdin(Stdio::piped())
         .stdout(Stdio::null())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::null())
         .spawn()?;
-    if let Some(mut stdin) = child.stdin.take() {
+    {
+        let mut stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| std::io::Error::other("clipboard tool: no stdin"))?;
         stdin.write_all(payload.as_bytes())?;
+        // explicit drop: closes the pipe so the child can exit
     }
-    let out = child.wait_with_output()?;
-    if !out.status.success() {
-        let err = String::from_utf8_lossy(&out.stderr).into_owned();
+    let status = child.wait()?;
+    if !status.success() {
         return Err(std::io::Error::other(format!(
-            "clipboard tool exited {}: {}",
-            out.status,
-            err.trim()
+            "clipboard tool exited {status}"
         )));
     }
     Ok(())
