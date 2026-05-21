@@ -660,6 +660,34 @@ fn handle(
         Action::Refresh => {
             let _ = git_tx.send(());
         }
+        Action::JumpHome => {
+            let home = match std::env::var_os("HOME") {
+                Some(h) => std::path::PathBuf::from(h),
+                None => {
+                    app.status = "$HOME not set".into();
+                    return Ok(());
+                }
+            };
+            let prev_hidden = app.arena.show_hidden;
+            match Arena::new(&home) {
+                Ok(mut na) => {
+                    if prev_hidden {
+                        na.show_hidden = true;
+                        na.nodes[na.root].children = None;
+                        let _ = na.load_children(na.root);
+                        na.nodes[na.root].expanded = true;
+                    }
+                    app.arena = na;
+                    app.visible = app.arena.flatten();
+                    app.selected = 0;
+                    app.status = format!("rooted at {}", home.display());
+                    let _ = git_tx.send(());
+                }
+                Err(e) => {
+                    app.status = format!("cannot open {}: {e}", home.display());
+                }
+            }
+        }
         Action::Trash => {
             let targets = app.targets();
             let n = targets.len();
