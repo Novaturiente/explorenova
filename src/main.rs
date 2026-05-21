@@ -316,10 +316,16 @@ fn main() -> Result<()> {
                             };
                             if let Some(d) = dev_opt {
                                 if let Some(mp) = d.mountpoint.clone() {
-                                    // mounted → cd then close
-                                    if let Ok(Some(id)) =
-                                        app.arena.reveal(&mp)
-                                    {
+                                    // mounted → cd then close. Try reveal
+                                    // within current arena first; if the
+                                    // mountpoint is outside (typical: /run/
+                                    // media/...), re-root the arena at the
+                                    // mountpoint.
+                                    let revealed_id = match app.arena.reveal(&mp) {
+                                        Ok(Some(id)) => Some(id),
+                                        _ => None,
+                                    };
+                                    if let Some(id) = revealed_id {
                                         app.visible = app.arena.flatten();
                                         if let Some(i) = app
                                             .visible
@@ -329,10 +335,30 @@ fn main() -> Result<()> {
                                             app.selected = i;
                                         }
                                     } else {
-                                        app.status = format!(
-                                            "cannot navigate to {}",
-                                            mp.display()
-                                        );
+                                        let prev_hidden = app.arena.show_hidden;
+                                        match Arena::new(&mp) {
+                                            Ok(mut na) => {
+                                                if prev_hidden {
+                                                    na.show_hidden = true;
+                                                    na.nodes[na.root].children = None;
+                                                    let _ = na.load_children(na.root);
+                                                    na.nodes[na.root].expanded = true;
+                                                }
+                                                app.arena = na;
+                                                app.visible = app.arena.flatten();
+                                                app.selected = 0;
+                                                app.status = format!(
+                                                    "rooted at {}",
+                                                    mp.display()
+                                                );
+                                            }
+                                            Err(e) => {
+                                                app.status = format!(
+                                                    "cannot open {}: {e}",
+                                                    mp.display()
+                                                );
+                                            }
+                                        }
                                     }
                                     app.mode = Mode::Normal;
                                     app.dialog = Dialog::None;
