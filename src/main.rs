@@ -216,6 +216,162 @@ fn main() -> Result<()> {
                 Mode::Search | Mode::Input
                     if matches!(
                         app.dialog,
+                        explorenova::app::Dialog::Devices { .. }
+                    ) =>
+                {
+                    use explorenova::app::Dialog;
+                    use crossterm::event::KeyCode;
+                    let len = match &app.dialog {
+                        Dialog::Devices { items, .. } => items.len(),
+                        _ => 0,
+                    };
+                    match k.code {
+                        KeyCode::Esc | KeyCode::Char('M') => {
+                            app.mode = Mode::Normal;
+                            app.dialog = Dialog::None;
+                        }
+                        KeyCode::Down | KeyCode::Char('j') => {
+                            if let Dialog::Devices { sel, .. } = &mut app.dialog {
+                                *sel = explorenova::ui::modal::wrap_nav(
+                                    *sel, len, true,
+                                );
+                            }
+                        }
+                        KeyCode::Up | KeyCode::Char('k') => {
+                            if let Dialog::Devices { sel, .. } = &mut app.dialog {
+                                *sel = explorenova::ui::modal::wrap_nav(
+                                    *sel, len, false,
+                                );
+                            }
+                        }
+                        KeyCode::Char('r') => {
+                            match explorenova::devices::list() {
+                                Ok(items) => {
+                                    let new_len = items.len();
+                                    if let Dialog::Devices { items: it, sel } =
+                                        &mut app.dialog
+                                    {
+                                        *it = items;
+                                        if *sel >= new_len {
+                                            *sel = new_len.saturating_sub(1);
+                                        }
+                                    }
+                                }
+                                Err(e) => {
+                                    app.status = format!("devices: {e}");
+                                }
+                            }
+                        }
+                        KeyCode::Char('u') => {
+                            let dev_opt = if let Dialog::Devices {
+                                items, sel,
+                            } = &app.dialog
+                            {
+                                items.get(*sel).cloned()
+                            } else {
+                                None
+                            };
+                            if let Some(d) = dev_opt {
+                                if d.is_mounted() {
+                                    match explorenova::devices::unmount(&d.device) {
+                                        Ok(_) => {
+                                            app.status = format!(
+                                                "unmounted {}",
+                                                d.device
+                                            );
+                                        }
+                                        Err(e) => {
+                                            app.status =
+                                                format!("umount failed: {e}");
+                                        }
+                                    }
+                                    // refresh
+                                    if let Ok(items) = explorenova::devices::list()
+                                    {
+                                        let new_len = items.len();
+                                        if let Dialog::Devices {
+                                            items: it,
+                                            sel,
+                                        } = &mut app.dialog
+                                        {
+                                            *it = items;
+                                            if *sel >= new_len {
+                                                *sel = new_len.saturating_sub(1);
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    app.status = "not mounted".into();
+                                }
+                            }
+                        }
+                        KeyCode::Enter => {
+                            let dev_opt = if let Dialog::Devices {
+                                items, sel,
+                            } = &app.dialog
+                            {
+                                items.get(*sel).cloned()
+                            } else {
+                                None
+                            };
+                            if let Some(d) = dev_opt {
+                                if let Some(mp) = d.mountpoint.clone() {
+                                    // mounted → cd then close
+                                    if let Ok(Some(id)) =
+                                        app.arena.reveal(&mp)
+                                    {
+                                        app.visible = app.arena.flatten();
+                                        if let Some(i) = app
+                                            .visible
+                                            .iter()
+                                            .position(|&n| n == id)
+                                        {
+                                            app.selected = i;
+                                        }
+                                    } else {
+                                        app.status = format!(
+                                            "cannot navigate to {}",
+                                            mp.display()
+                                        );
+                                    }
+                                    app.mode = Mode::Normal;
+                                    app.dialog = Dialog::None;
+                                } else {
+                                    // unmounted → mount + refresh, stay
+                                    match explorenova::devices::mount(&d.device) {
+                                        Ok(_) => {
+                                            app.status =
+                                                format!("mounted {}", d.device);
+                                        }
+                                        Err(e) => {
+                                            app.status =
+                                                format!("mount failed: {e}");
+                                        }
+                                    }
+                                    if let Ok(items) =
+                                        explorenova::devices::list()
+                                    {
+                                        let new_len = items.len();
+                                        if let Dialog::Devices {
+                                            items: it,
+                                            sel,
+                                        } = &mut app.dialog
+                                        {
+                                            *it = items;
+                                            if *sel >= new_len {
+                                                *sel = new_len.saturating_sub(1);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                Mode::Search | Mode::Input
+                    if matches!(
+                        app.dialog,
                         explorenova::app::Dialog::AppPick { .. }
                     ) =>
                 {
@@ -383,6 +539,9 @@ fn main() -> Result<()> {
                 explorenova::app::Dialog::AppPick { items, sel } => {
                     explorenova::app::Dialog::AppPick { items, sel }
                 }
+                explorenova::app::Dialog::Devices { items, sel } => {
+                    explorenova::app::Dialog::Devices { items, sel }
+                }
                 _ => explorenova::app::Dialog::Input,
             },
         };
@@ -459,6 +618,18 @@ fn handle(
         }
         Action::ShellDrop => {
             shell::drop_to_shell(cwd)?;
+        }
+        Action::ShowDevices => {
+            match explorenova::devices::list() {
+                Ok(items) => {
+                    app.dialog =
+                        explorenova::app::Dialog::Devices { items, sel: 0 };
+                    app.mode = explorenova::keymap::Mode::Input;
+                }
+                Err(e) => {
+                    app.status = format!("devices: {e}");
+                }
+            }
         }
         Action::Refresh => {
             let _ = git_tx.send(());
