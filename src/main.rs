@@ -974,6 +974,59 @@ fn handle(
             app.enter_mode(Mode::Input, "");
         }
         Action::Toggle => {
+            // Bookmarks pane focused: Enter opens the highlighted entry.
+            // If the path is under the current arena root we reveal it
+            // in-place; otherwise we re-root at the bookmark (matches
+            // the device-mount / OpenTrash behaviour). Files reveal to
+            // the parent dir and select the file row.
+            if app.focus == explorenova::app::Pane::Bookmarks {
+                let target = app
+                    .state
+                    .bookmarks
+                    .get(app.bookmark_sel)
+                    .cloned();
+                if let Some(p) = target {
+                    let revealed_id = match app.arena.reveal(&p) {
+                        Ok(Some(id)) => Some(id),
+                        _ => None,
+                    };
+                    if let Some(id) = revealed_id {
+                        app.visible = app.arena.flatten();
+                        if let Some(i) = app
+                            .visible
+                            .iter()
+                            .position(|&n| n == id)
+                        {
+                            app.selected = i;
+                        }
+                    } else {
+                        // path outside current root → reroot. If target
+                        // is a file, reroot at its parent then reveal.
+                        let root_for = if p.is_file() {
+                            p.parent()
+                                .map(|pp| pp.to_path_buf())
+                                .unwrap_or_else(|| p.clone())
+                        } else {
+                            p.clone()
+                        };
+                        reroot(app, &root_for, git_tx);
+                        if p.is_file() {
+                            if let Ok(Some(id)) = app.arena.reveal(&p) {
+                                app.visible = app.arena.flatten();
+                                if let Some(i) = app
+                                    .visible
+                                    .iter()
+                                    .position(|&n| n == id)
+                                {
+                                    app.selected = i;
+                                }
+                            }
+                        }
+                    }
+                    app.focus = explorenova::app::Pane::Tree;
+                }
+                return Ok(());
+            }
             // Enter: directories toggle expand/collapse (pure reducer);
             // files open in the default application.
             if let Some(&id) = app.visible.get(app.selected) {

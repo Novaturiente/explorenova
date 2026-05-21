@@ -5,6 +5,27 @@ pub mod theme;
 use crate::config::PanesConfig;
 use ratatui::layout::Constraint;
 
+/// Short bookmark label: directory → folder name; file → `parent/name`.
+/// Falls back to the absolute path for edge cases like `/` where neither
+/// `file_name` nor `parent` are useful.
+pub fn short_bookmark_label(p: &std::path::Path) -> String {
+    let is_file = p.is_file();
+    let name = p
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.to_string());
+    let parent_name = p
+        .parent()
+        .and_then(|pp| pp.file_name())
+        .and_then(|n| n.to_str())
+        .map(|s| s.to_string());
+    match (is_file, name, parent_name) {
+        (true, Some(n), Some(parent)) => format!("{parent}/{n}"),
+        (_, Some(n), _) => n,
+        _ => p.display().to_string(),
+    }
+}
+
 /// Build (pane_name, Constraint) pairs in display order from config,
 /// skipping hidden panes. Fixed `width` -> Length; else Ratio via weight.
 pub fn layout_constraints(p: &PanesConfig) -> Vec<(String, Constraint)> {
@@ -69,6 +90,43 @@ mod tests {
         let cons = layout_constraints(&p);
         assert_eq!(cons[0].0, "preview");
         assert_eq!(cons[2].0, "bookmarks");
+    }
+
+    #[test]
+    fn short_label_uses_folder_name_for_dirs() {
+        // Existing folder — should show only the folder name.
+        let d = tempfile::tempdir().unwrap();
+        let label = short_bookmark_label(d.path());
+        // tempdir creates a uniquely-named subdir; just assert no slash
+        // and that it matches the path's file_name.
+        let expected = d
+            .path()
+            .file_name()
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert_eq!(label, expected);
+    }
+
+    #[test]
+    fn short_label_uses_parent_slash_name_for_files() {
+        let d = tempfile::tempdir().unwrap();
+        let f = d.path().join("notes.txt");
+        std::fs::write(&f, "x").unwrap();
+        let parent_name = d.path().file_name().unwrap().to_str().unwrap();
+        assert_eq!(
+            short_bookmark_label(&f),
+            format!("{parent_name}/notes.txt")
+        );
+    }
+
+    #[test]
+    fn short_label_falls_back_for_root() {
+        // `/` has no file_name and no parent file_name; fallback is the
+        // raw display string.
+        let label = short_bookmark_label(std::path::Path::new("/"));
+        assert_eq!(label, "/");
     }
 }
 
@@ -210,21 +268,38 @@ pub fn render_frame(
                 f.render_stateful_widget(list, area, &mut st);
             }
             "bookmarks" => {
-                let items: Vec<_> = app
+                let focused = app.focus == crate::app::Pane::Bookmarks;
+                let items: Vec<ratatui::widgets::ListItem> = app
                     .state
                     .bookmarks
                     .iter()
-                    .map(|b| ratatui::text::Line::from(b.display().to_string()))
+                    .map(|b| {
+                        ratatui::widgets::ListItem::new(short_bookmark_label(b))
+                    })
                     .collect();
-                f.render_widget(
-                    Paragraph::new(items).block(
+                let title = if focused {
+                    "bookmarks •"
+                } else {
+                    "bookmarks"
+                };
+                let list = ratatui::widgets::List::new(items)
+                    .block(
                         Block::default()
                             .borders(Borders::ALL)
                             .border_type(ratatui::widgets::BorderType::Rounded)
-                            .title("bookmarks"),
-                    ),
-                    area,
-                );
+                            .title(title),
+                    )
+                    .highlight_style(
+                        ratatui::style::Style::default().bg(theme.selected_bg),
+                    );
+                let mut st = ratatui::widgets::ListState::default();
+                if focused && !app.state.bookmarks.is_empty() {
+                    let i = app
+                        .bookmark_sel
+                        .min(app.state.bookmarks.len() - 1);
+                    st.select(Some(i));
+                }
+                f.render_stateful_widget(list, area, &mut st);
             }
             "preview" => match app.visible.get(app.selected) {
                 Some(&id) => {

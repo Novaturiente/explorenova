@@ -43,6 +43,9 @@ pub struct App {
     pub dialog: Dialog,
     pub visual_mode: bool,
     pub cursor_moved_at: std::time::Instant,
+    /// Cursor inside the bookmarks pane (when focused). Independent of
+    /// the tree cursor so switching focus doesn't shuffle either.
+    pub bookmark_sel: usize,
 }
 
 impl App {
@@ -67,6 +70,7 @@ impl App {
             dialog: Dialog::None,
             visual_mode: false,
             cursor_moved_at: std::time::Instant::now(),
+            bookmark_sel: 0,
         }
     }
 
@@ -90,17 +94,54 @@ impl App {
     pub fn apply(&mut self, a: Action) {
         match a {
             Action::Down => {
-                if self.selected + 1 < self.visible.len() {
+                if self.focus == Pane::Bookmarks {
+                    let n = self.state.bookmarks.len();
+                    if n > 0 && self.bookmark_sel + 1 < n {
+                        self.bookmark_sel += 1;
+                    }
+                } else if self.selected + 1 < self.visible.len() {
                     self.selected += 1;
                 }
             }
-            Action::Up => self.selected = self.selected.saturating_sub(1),
-            Action::Top => self.selected = 0,
-            Action::Bottom => self.selected = self.visible.len().saturating_sub(1),
-            Action::HalfDown => {
-                self.selected = (self.selected + 10).min(self.visible.len().saturating_sub(1))
+            Action::Up => {
+                if self.focus == Pane::Bookmarks {
+                    self.bookmark_sel = self.bookmark_sel.saturating_sub(1);
+                } else {
+                    self.selected = self.selected.saturating_sub(1);
+                }
             }
-            Action::HalfUp => self.selected = self.selected.saturating_sub(10),
+            Action::Top => {
+                if self.focus == Pane::Bookmarks {
+                    self.bookmark_sel = 0;
+                } else {
+                    self.selected = 0;
+                }
+            }
+            Action::Bottom => {
+                if self.focus == Pane::Bookmarks {
+                    self.bookmark_sel =
+                        self.state.bookmarks.len().saturating_sub(1);
+                } else {
+                    self.selected = self.visible.len().saturating_sub(1);
+                }
+            }
+            Action::HalfDown => {
+                if self.focus == Pane::Bookmarks {
+                    let n = self.state.bookmarks.len();
+                    self.bookmark_sel =
+                        (self.bookmark_sel + 10).min(n.saturating_sub(1));
+                } else {
+                    self.selected = (self.selected + 10)
+                        .min(self.visible.len().saturating_sub(1));
+                }
+            }
+            Action::HalfUp => {
+                if self.focus == Pane::Bookmarks {
+                    self.bookmark_sel = self.bookmark_sel.saturating_sub(10);
+                } else {
+                    self.selected = self.selected.saturating_sub(10);
+                }
+            }
             Action::Open => {
                 if let Some(id) = self.sel_id() {
                     if self.arena.nodes[id].is_dir() {
