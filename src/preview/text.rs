@@ -1,9 +1,10 @@
+use ratatui::style::{Color, Style};
+use ratatui::text::{Line, Span, Text};
 use std::path::Path;
 use std::sync::OnceLock;
 use syntect::easy::HighlightLines;
 use syntect::highlighting::ThemeSet;
 use syntect::parsing::SyntaxSet;
-use syntect::util::as_24_bit_terminal_escaped;
 
 fn assets() -> &'static (SyntaxSet, ThemeSet) {
     static ASSETS: OnceLock<(SyntaxSet, ThemeSet)> = OnceLock::new();
@@ -15,8 +16,12 @@ fn assets() -> &'static (SyntaxSet, ThemeSet) {
     })
 }
 
-/// Returns ANSI-highlighted text, or None if the file is not valid UTF-8.
-pub fn highlighted(path: &Path, max_bytes: u64) -> Option<String> {
+/// Build a styled `ratatui::text::Text` from `path`, or `None` if the
+/// file isn't valid UTF-8 / exceeds `max_bytes`. Each syntect range is
+/// mapped to a ratatui `Span::styled` so ratatui knows the visible
+/// width of each cell — fixes the historical overflow where raw ANSI
+/// escapes in the rendered string spilled into adjacent panes.
+pub fn highlighted(path: &Path, max_bytes: u64) -> Option<Text<'static>> {
     let bytes = std::fs::read(path).ok()?;
     if bytes.len() as u64 > max_bytes {
         return None;
@@ -30,12 +35,51 @@ pub fn highlighted(path: &Path, max_bytes: u64) -> Option<String> {
         .unwrap_or_else(|| ss.find_syntax_plain_text());
     let theme = &ts.themes["base16-ocean.dark"];
     let mut h = HighlightLines::new(syntax, theme);
-    let mut out = String::new();
+    let mut lines: Vec<Line<'static>> = Vec::new();
     for line in content.lines().take(2000) {
         let ranges = h.highlight_line(line, ss).ok()?;
-        out.push_str(&as_24_bit_terminal_escaped(&ranges[..], false));
-        out.push('\n');
+        let spans: Vec<Span<'static>> = ranges
+            .into_iter()
+            .map(|(st, s)| {
+                let c = st.foreground;
+                Span::styled(
+                    s.to_string(),
+                    Style::default().fg(Color::Rgb(c.r, c.g, c.b)),
+                )
+            })
+            .collect();
+        lines.push(Line::from(spans));
     }
-    out.push_str("\x1b[0m");
-    Some(out)
+    Some(Text::from(lines))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn highlights_returns_lines() {
+        let d = tempdir().unwrap();
+        let f = d.path().join("a.txt");
+        fs::write(&f, "hello\nworld").unwrap();
+        let t = highlighted(&f, 1024).unwrap();
+        assert_eq!(t.lines.len(), 2);
+        // Spans concatenated equal the original line content.
+        let l0: String = t.lines[0]
+            .spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert!(l0.contains("hello"));
+    }
+
+    #[test]
+    fn oversize_returns_none() {
+        let d = tempdir().unwrap();
+        let f = d.path().join("big.txt");
+        fs::write(&f, vec![b'x'; 4096]).unwrap();
+        assert!(highlighted(&f, 100).is_none());
+    }
 }

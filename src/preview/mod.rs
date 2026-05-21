@@ -5,9 +5,12 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum PreviewKind {
-    Text(String),
+    /// Pre-styled text (syntect spans → ratatui spans). Carrying a
+    /// `Text<'static>` lets ratatui clip per cell so long lines never
+    /// spill into adjacent panes the way raw ANSI strings used to.
+    Text(ratatui::text::Text<'static>),
     Image(PathBuf), // path to displayable image (original or rasterized)
     Meta(String),
 }
@@ -90,7 +93,14 @@ mod tests {
         let f = d.path().join("a.txt");
         fs::write(&f, "hello").unwrap();
         match render(&f, 1024) {
-            PreviewKind::Text(t) => assert!(t.contains("hello")),
+            PreviewKind::Text(t) => {
+                let joined: String = t
+                    .lines
+                    .iter()
+                    .flat_map(|l| l.spans.iter().map(|s| s.content.as_ref()))
+                    .collect();
+                assert!(joined.contains("hello"));
+            }
             other => panic!("expected Text, got {other:?}"),
         }
     }
@@ -119,6 +129,8 @@ mod tests {
         let mut c = PreviewCache::default();
         let a = c.get_or_render(&f, 1024);
         let b = c.get_or_render(&f, 1024);
-        assert_eq!(a, b);
+        // PreviewKind dropped PartialEq when Text started carrying styled
+        // spans (Style doesn't compare cleanly). Compare via Debug repr.
+        assert_eq!(format!("{a:?}"), format!("{b:?}"));
     }
 }
