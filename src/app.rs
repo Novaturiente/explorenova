@@ -40,6 +40,8 @@ pub struct App {
     pub search_idx: usize,
     pub pending: Option<Action>,
     pub dialog: Dialog,
+    pub visual_mode: bool,
+    pub cursor_moved_at: std::time::Instant,
 }
 
 impl App {
@@ -62,6 +64,8 @@ impl App {
             search_idx: 0,
             pending: None,
             dialog: Dialog::None,
+            visual_mode: false,
+            cursor_moved_at: std::time::Instant::now(),
         }
     }
 
@@ -146,6 +150,7 @@ impl App {
             Action::Cancel => {
                 self.mode = Mode::Normal;
                 self.marks.clear();
+                self.visual_mode = false;
             }
             Action::ResizeShrink => self.resize_focus(-1),
             Action::ResizeGrow => self.resize_focus(1),
@@ -248,6 +253,23 @@ impl App {
         for &id in &self.visible {
             let p = self.arena.nodes[id].path.clone();
             self.marks.insert(p);
+        }
+    }
+
+    /// Flip visual mode. When entering, mark the cursor row so a bare
+    /// `v` press selects the current item even without movement.
+    pub fn toggle_visual_mode(&mut self) {
+        self.visual_mode = !self.visual_mode;
+        if self.visual_mode {
+            self.mark_cursor();
+        }
+    }
+
+    /// Insert the cursor row's path into `marks` (idempotent; never
+    /// removes). Used by visual-mode auto-mark on movement.
+    pub fn mark_cursor(&mut self) {
+        if let Some(&id) = self.visible.get(self.selected) {
+            self.marks.insert(self.arena.nodes[id].path.clone());
         }
     }
 
@@ -503,5 +525,56 @@ mod tests {
         a.arena = crate::tree::Arena::new(&root_path).unwrap();
         a.visible = a.arena.flatten();
         assert!(a.marks.contains(&p), "marks are keyed by path, survive rebuild");
+    }
+
+    #[test]
+    fn toggle_visual_mode_marks_cursor_on_enter() {
+        let mut a = app();
+        assert!(!a.visual_mode);
+        let p = a.arena.nodes[a.visible[a.selected]].path.clone();
+        a.toggle_visual_mode();
+        assert!(a.visual_mode);
+        assert!(a.marks.contains(&p));
+        assert_eq!(a.marks.len(), 1);
+    }
+
+    #[test]
+    fn toggle_visual_mode_leaves_marks_on_exit() {
+        let mut a = app();
+        a.toggle_visual_mode();              // enter, marks 1
+        a.apply(Action::Down);
+        a.mark_cursor();                     // simulate post-dispatch hook
+        assert_eq!(a.marks.len(), 2);
+        a.toggle_visual_mode();              // exit
+        assert!(!a.visual_mode);
+        assert_eq!(a.marks.len(), 2, "marks must survive exit");
+    }
+
+    #[test]
+    fn cancel_exits_visual_and_clears_marks() {
+        let mut a = app();
+        a.toggle_visual_mode();
+        a.apply(Action::Down);
+        a.mark_cursor();
+        assert!(a.visual_mode && !a.marks.is_empty());
+        a.apply(Action::Cancel);
+        assert!(!a.visual_mode);
+        assert!(a.marks.is_empty());
+    }
+
+    #[test]
+    fn mark_cursor_is_idempotent() {
+        let mut a = app();
+        a.mark_cursor();
+        a.mark_cursor();
+        assert_eq!(a.marks.len(), 1);
+    }
+
+    #[test]
+    fn mark_cursor_no_op_when_visible_empty() {
+        let mut a = app();
+        a.visible.clear();
+        a.mark_cursor();
+        assert!(a.marks.is_empty());
     }
 }
