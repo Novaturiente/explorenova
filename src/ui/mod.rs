@@ -177,6 +177,8 @@ pub fn render_frame(
         let area: Rect = chunks[i];
         match name.as_str() {
             "tree" => {
+                // Inner width = pane width minus the two rounded borders.
+                let inner_w = area.width.saturating_sub(2);
                 let items: Vec<ratatui::widgets::ListItem> = app
                     .visible
                     .iter()
@@ -189,6 +191,7 @@ pub fn render_frame(
                             &theme,
                             app.config.icons,
                             app.marks.contains(&app.arena.nodes[id].path),
+                            inner_w,
                         ))
                     })
                     .collect();
