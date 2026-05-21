@@ -592,6 +592,31 @@ fn main() -> Result<()> {
 /// Re-root the tree to the parent of the current root, selecting the
 /// directory just left. No-op at the filesystem root. Filesystem IO, so
 /// it lives here (not in the pure `App::apply`).
+/// Re-root the arena at `path`, preserving hidden-files toggle, resetting
+/// selection, and kicking a git rescan. Used by JumpHome, OpenTrash, and
+/// the devices-modal "navigate outside current root" fallback.
+fn reroot(app: &mut App, path: &std::path::Path, git_tx: &mpsc::Sender<()>) {
+    let prev_hidden = app.arena.show_hidden;
+    match Arena::new(path) {
+        Ok(mut na) => {
+            if prev_hidden {
+                na.show_hidden = true;
+                na.nodes[na.root].children = None;
+                let _ = na.load_children(na.root);
+                na.nodes[na.root].expanded = true;
+            }
+            app.arena = na;
+            app.visible = app.arena.flatten();
+            app.selected = 0;
+            app.status = format!("rooted at {}", path.display());
+            let _ = git_tx.send(());
+        }
+        Err(e) => {
+            app.status = format!("cannot open {}: {e}", path.display());
+        }
+    }
+}
+
 fn ascend(app: &mut App) {
     let root_path = app.arena.nodes[app.arena.root].path.clone();
     let parent = match root_path.parent() {
@@ -668,25 +693,28 @@ fn handle(
                     return Ok(());
                 }
             };
-            let prev_hidden = app.arena.show_hidden;
-            match Arena::new(&home) {
-                Ok(mut na) => {
-                    if prev_hidden {
-                        na.show_hidden = true;
-                        na.nodes[na.root].children = None;
-                        let _ = na.load_children(na.root);
-                        na.nodes[na.root].expanded = true;
-                    }
-                    app.arena = na;
-                    app.visible = app.arena.flatten();
-                    app.selected = 0;
-                    app.status = format!("rooted at {}", home.display());
-                    let _ = git_tx.send(());
-                }
-                Err(e) => {
-                    app.status = format!("cannot open {}: {e}", home.display());
-                }
+            reroot(app, &home, git_tx);
+        }
+        Action::OpenTrash => {
+            // XDG: $XDG_DATA_HOME/Trash/files, falling back to
+            // $HOME/.local/share/Trash/files. (Per the freedesktop.org
+            // trash spec; explorenova writes here via the `trash` crate.)
+            let base = std::env::var_os("XDG_DATA_HOME")
+                .map(std::path::PathBuf::from)
+                .or_else(|| {
+                    std::env::var_os("HOME")
+                        .map(|h| std::path::PathBuf::from(h).join(".local/share"))
+                });
+            let Some(base) = base else {
+                app.status = "neither $XDG_DATA_HOME nor $HOME is set".into();
+                return Ok(());
+            };
+            let trash = base.join("Trash/files");
+            if !trash.exists() {
+                app.status = format!("trash dir not found: {}", trash.display());
+                return Ok(());
             }
+            reroot(app, &trash, git_tx);
         }
         Action::Trash => {
             let targets = app.targets();
