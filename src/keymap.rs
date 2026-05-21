@@ -22,6 +22,7 @@ pub enum Action {
     Parent,
     ToggleMark,
     SelectAllVisible,
+    ToggleVisualMode,
     Toggle,
     OpenDefault,
     OpenWith,
@@ -74,6 +75,7 @@ impl Action {
             "toggle_hidden" => ToggleHidden, "refresh" => Refresh,
             "parent" => Parent,
             "toggle_mark" => ToggleMark,
+            "toggle_visual_mode" => ToggleVisualMode,
             "select_all_visible" => SelectAllVisible,
             "quit" => Quit, "cancel" => Cancel,
             _ => return None,
@@ -145,6 +147,7 @@ impl Keymap {
             (Parent, vec!["-"]),
             (ToggleMark, vec![" "]),
             (SelectAllVisible, vec!["ctrl-a"]),
+            (ToggleVisualMode, vec!["v"]),
             (Toggle, vec!["enter"]),
             (OpenDefault, vec!["o"]), (OpenWith, vec!["O"]),
             (FocusNext, vec!["tab"]),
@@ -262,6 +265,16 @@ mod tests {
         assert_eq!(
             Action::from_name("select_all_visible"),
             Some(Action::SelectAllVisible)
+        );
+    }
+
+    #[test]
+    fn v_resolves_to_toggle_visual_mode() {
+        let km = Keymap::build(&std::collections::BTreeMap::new());
+        assert_eq!(km.resolve(Mode::Normal, "v"), Some(Action::ToggleVisualMode));
+        assert_eq!(
+            Action::from_name("toggle_visual_mode"),
+            Some(Action::ToggleVisualMode)
         );
     }
 }

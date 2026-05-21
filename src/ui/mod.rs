@@ -90,7 +90,7 @@ pub fn make_picker() -> Picker {
 /// previewed file (path or mtime) changes — not every frame.
 #[derive(Default)]
 pub struct ImageCache {
-    key: Option<(std::path::PathBuf, std::time::SystemTime)>,
+    pub key: Option<(std::path::PathBuf, std::time::SystemTime)>,
     proto: Option<StatefulProtocol>,
 }
 
@@ -229,13 +229,29 @@ pub fn render_frame(
                         .get_or_render(&app.arena.nodes[id].path, app.config.preview_max_bytes);
                     match kind {
                         PreviewKind::Image(p) => {
+                            const PREVIEW_DEBOUNCE_MS: u128 = 150;
                             let block = Block::default()
                                 .borders(Borders::ALL)
                                 .border_type(ratatui::widgets::BorderType::Rounded)
                                 .title("preview");
                             let inner = block.inner(area);
                             f.render_widget(block, area);
-                            render_image(f, inner, picker, img_cache, &p);
+                            let already_decoded = img_cache
+                                .key
+                                .as_ref()
+                                .map(|(k, _)| k == &p)
+                                .unwrap_or(false);
+                            let elapsed =
+                                app.cursor_moved_at.elapsed().as_millis()
+                                    >= PREVIEW_DEBOUNCE_MS;
+                            if already_decoded || elapsed {
+                                render_image(f, inner, picker, img_cache, &p);
+                            } else {
+                                f.render_widget(
+                                    Paragraph::new("(loading…)"),
+                                    inner,
+                                );
+                            }
                         }
                         PreviewKind::Text(t) | PreviewKind::Meta(t) => {
                             f.render_widget(
@@ -269,19 +285,27 @@ pub fn render_frame(
     }
 
     // Status row: transient messages only.
-    let marks_segment = if app.marks.is_empty() {
-        String::new()
-    } else {
-        format!("{} selected  ", app.marks.len())
-    };
-    let footer = format!(
-        "{}/{}  {}{}",
+    use ratatui::style::{Modifier, Style};
+    use ratatui::text::{Line, Span};
+    let mut spans: Vec<Span> = Vec::new();
+    if app.visual_mode {
+        spans.push(Span::styled(
+            "-- VISUAL --  ",
+            Style::default()
+                .fg(theme.mark)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    spans.push(Span::raw(format!(
+        "{}/{}  ",
         app.selected + 1,
         app.visible.len().max(1),
-        marks_segment,
-        app.status
-    );
-    f.render_widget(Paragraph::new(footer), prompt_area);
+    )));
+    if !app.marks.is_empty() {
+        spans.push(Span::raw(format!("{} selected  ", app.marks.len())));
+    }
+    spans.push(Span::raw(app.status.clone()));
+    f.render_widget(Paragraph::new(Line::from(spans)), prompt_area);
 
     // Modal overlay (input / confirm) centered over the body.
     match (&app.mode, &app.dialog) {
