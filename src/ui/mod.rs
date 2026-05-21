@@ -340,6 +340,50 @@ pub fn render_frame(
             )));
             f.render_widget(Paragraph::new(lines), inner);
         }
+        (_, crate::app::Dialog::Devices { items, sel }) => {
+            use ratatui::style::Style;
+            use ratatui::text::{Line, Span};
+            let rows = items.len().max(1);
+            let r = crate::ui::modal::centered_rect(
+                70,
+                (rows.min(14) as u16) + 2,
+                body,
+            );
+            f.render_widget(ratatui::widgets::Clear, r);
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .border_type(ratatui::widgets::BorderType::Rounded)
+                .title("Devices");
+            let inner = block.inner(r);
+            f.render_widget(block, r);
+            let mut lines: Vec<Line> = Vec::new();
+            if items.is_empty() {
+                lines.push(Line::from("  no handleable devices"));
+            } else {
+                for (i, d) in items.iter().enumerate() {
+                    let marker = if i == *sel { "> " } else { "  " };
+                    let mounted = if d.is_mounted() { "●" } else { "○" };
+                    let label = d.label.as_deref().unwrap_or("-");
+                    let size = d.size.as_deref().unwrap_or("?");
+                    let fs = d.fstype.as_deref().unwrap_or("");
+                    let mp = d
+                        .mountpoint
+                        .as_ref()
+                        .map(|p| p.display().to_string())
+                        .unwrap_or_else(|| "(not mounted)".to_string());
+                    lines.push(Line::from(format!(
+                        "{marker}{mounted} {:<14} {:<8} {:<8} {:<14} {}",
+                        d.device, size, fs, label, mp
+                    )));
+                }
+            }
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "  Enter cd/mount   u umount   r refresh   Esc close",
+                Style::default().fg(theme.dim),
+            )));
+            f.render_widget(Paragraph::new(lines), inner);
+        }
         (crate::keymap::Mode::Search | crate::keymap::Mode::Input, _) => {
             let title = match app.mode {
                 crate::keymap::Mode::Search => "Search".to_string(),
