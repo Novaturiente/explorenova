@@ -1,5 +1,7 @@
+pub mod archive;
 pub mod media;
 pub mod text;
+pub mod xlsx;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -22,7 +24,14 @@ fn ext_lower(p: &Path) -> String {
         .unwrap_or_default()
 }
 
-const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "gif", "webp", "bmp"];
+const IMAGE_EXTS: &[&str] =
+    &["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "tiff", "tif"];
+
+fn plain_text(s: String) -> PreviewKind {
+    use ratatui::text::{Line, Text};
+    let lines: Vec<Line<'static>> = s.lines().map(|l| Line::from(l.to_string())).collect();
+    PreviewKind::Text(Text::from(lines))
+}
 
 /// Decide preview kind for `path` (no caching).
 pub fn render(path: &Path, max_bytes: u64) -> PreviewKind {
@@ -37,9 +46,33 @@ pub fn render(path: &Path, max_bytes: u64) -> PreviewKind {
     if IMAGE_EXTS.contains(&ext.as_str()) {
         return PreviewKind::Image(path.to_path_buf());
     }
+    if ext == "avif" {
+        return match media::rasterize_avif(path) {
+            Some(png) => PreviewKind::Image(png),
+            None => PreviewKind::Meta(meta_string(path, &meta)),
+        };
+    }
+    if media::is_video(&ext) {
+        return match media::video_thumbnail(path) {
+            Some(png) => PreviewKind::Image(png),
+            None => PreviewKind::Meta(meta_string(path, &meta)),
+        };
+    }
     if ext == "pdf" {
         return match media::rasterize_pdf(path) {
             Some(png) => PreviewKind::Image(png),
+            None => PreviewKind::Meta(meta_string(path, &meta)),
+        };
+    }
+    if xlsx::is_spreadsheet(&ext) {
+        return match xlsx::text_from(path) {
+            Some(t) => plain_text(t),
+            None => PreviewKind::Meta(meta_string(path, &meta)),
+        };
+    }
+    if archive::is_archive(&ext) {
+        return match archive::list_entries(path) {
+            Some(t) => plain_text(t),
             None => PreviewKind::Meta(meta_string(path, &meta)),
         };
     }
