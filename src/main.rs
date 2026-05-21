@@ -182,10 +182,20 @@ fn main() -> Result<()> {
             ui::render_frame(f, &mut app, &mut preview_cache, &mut picker, &mut img_cache)
         })?;
 
-        if !event::poll(Duration::from_millis(200))? {
+        const PREVIEW_DEBOUNCE_MS: u64 = 150;
+        let poll_ms = {
+            let elapsed = app.cursor_moved_at.elapsed().as_millis() as u64;
+            let remaining = PREVIEW_DEBOUNCE_MS.saturating_sub(elapsed);
+            // 200ms is the existing default; never wait longer than that
+            // (so fs/git channels still get drained promptly).
+            // When debounce is already past, remaining == 0 and we use 200.
+            if remaining == 0 { 200 } else { remaining.min(200) }
+        };
+        if !event::poll(Duration::from_millis(poll_ms))? {
             continue;
         }
         if let Event::Key(k) = event::read()? {
+            let prev_selected_outer = app.selected;
             // `key_token` only maps chord-relevant keys; it returns None for
             // Backspace/Home/End/etc. That gate belongs to Normal-mode chord
             // building only — the Search/Input/Confirm/AppPick arms consume
@@ -357,6 +367,12 @@ fn main() -> Result<()> {
                         app.status.clear();
                     }
                 },
+            }
+            if app.selected != prev_selected_outer {
+                app.cursor_moved_at = std::time::Instant::now();
+                if app.visual_mode {
+                    app.mark_cursor();
+                }
             }
         }
 
@@ -670,6 +686,7 @@ fn handle(
         Action::Parent => ascend(app),
         Action::ToggleMark => app.toggle_mark(),
         Action::SelectAllVisible => app.select_all_visible(),
+        Action::ToggleVisualMode => app.toggle_visual_mode(),
         Action::Collapse => {
             if app.visible.get(app.selected).copied() == Some(app.arena.root) {
                 ascend(app);
