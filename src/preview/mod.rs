@@ -27,9 +27,31 @@ fn ext_lower(p: &Path) -> String {
 const IMAGE_EXTS: &[&str] =
     &["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "tiff", "tif"];
 
+/// Replace tabs with four spaces and strip every other ASCII control
+/// char (NUL, BS, ESC, BEL, …). Without this, raw control bytes in
+/// archive filenames or xlsx cells leak to the terminal as cursor
+/// motion / colour changes and scatter "phantom" text across panes.
+fn sanitize_plain(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        match ch {
+            '\n' => out.push('\n'),
+            '\t' => out.push_str("    "),
+            c if (c as u32) < 0x20 => out.push('?'),
+            c if c == '\u{7f}' => out.push('?'),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 fn plain_text(s: String) -> PreviewKind {
     use ratatui::text::{Line, Text};
-    let lines: Vec<Line<'static>> = s.lines().map(|l| Line::from(l.to_string())).collect();
+    let s = sanitize_plain(&s);
+    let lines: Vec<Line<'static>> = s
+        .lines()
+        .map(|l| Line::from(l.to_string()))
+        .collect();
     PreviewKind::Text(Text::from(lines))
 }
 
@@ -129,6 +151,18 @@ mod tests {
     use super::*;
     use std::fs;
     use tempfile::tempdir;
+
+    #[test]
+    fn sanitize_replaces_tabs_and_strips_control_chars() {
+        let s = "a\tb\nc\x00d\x07e\x1bf";
+        assert_eq!(sanitize_plain(s), "a    b\nc?d?e?f");
+    }
+
+    #[test]
+    fn sanitize_preserves_unicode_and_printable() {
+        let s = "héllo — 日本語";
+        assert_eq!(sanitize_plain(s), s);
+    }
 
     #[test]
     fn text_file_is_text_preview() {

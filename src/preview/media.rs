@@ -1,5 +1,17 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
+
+/// Run `cmd` with all three streams routed to /dev/null. Lets the
+/// rasterizers stay quiet — they otherwise write progress lines to
+/// stderr which leak into the ratatui alt-screen and produce phantom
+/// text scattered across panes. Returns the exit status.
+fn run_silent(cmd: &mut Command) -> Option<std::process::ExitStatus> {
+    cmd.stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .ok()
+}
 
 pub const VIDEO_EXTS: &[&str] = &[
     "mp4", "mkv", "webm", "mov", "avi", "wmv", "flv", "m4v", "mpg",
@@ -33,12 +45,12 @@ pub fn rasterize_pdf(pdf: &Path) -> Option<PathBuf> {
         "explorenova-pdf-{}",
         pdf.file_stem()?.to_string_lossy()
     ));
-    let status = Command::new("pdftoppm")
-        .args(["-png", "-singlefile", "-f", "1", "-l", "1"])
-        .arg(pdf)
-        .arg(&stem)
-        .status()
-        .ok()?;
+    let status = run_silent(
+        Command::new("pdftoppm")
+            .args(["-png", "-singlefile", "-f", "1", "-l", "1"])
+            .arg(pdf)
+            .arg(&stem),
+    )?;
     if !status.success() {
         return None;
     }
@@ -53,7 +65,8 @@ pub fn rasterize_avif(src: &Path) -> Option<PathBuf> {
     if out.exists() {
         return Some(out);
     }
-    let status = Command::new("avifdec").arg(src).arg(&out).status().ok()?;
+    let status =
+        run_silent(Command::new("avifdec").arg(src).arg(&out))?;
     if !status.success() {
         return None;
     }
@@ -68,13 +81,13 @@ pub fn video_thumbnail(src: &Path) -> Option<PathBuf> {
     if out.exists() {
         return Some(out);
     }
-    let status = Command::new("ffmpegthumbnailer")
-        .args(["-s", "512", "-q", "8", "-i"])
-        .arg(src)
-        .arg("-o")
-        .arg(&out)
-        .status()
-        .ok()?;
+    let status = run_silent(
+        Command::new("ffmpegthumbnailer")
+            .args(["-s", "512", "-q", "8", "-i"])
+            .arg(src)
+            .arg("-o")
+            .arg(&out),
+    )?;
     if !status.success() {
         return None;
     }
