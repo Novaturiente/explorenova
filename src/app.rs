@@ -14,6 +14,7 @@ pub enum Dialog {
     Input,
     Confirm,
     AppPick { items: Vec<AppEntry>, sel: usize },
+    Devices { items: Vec<crate::devices::Device>, sel: usize },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
