@@ -160,7 +160,7 @@ impl Keymap {
             (ReorderLeft, vec!["["]), (ReorderRight, vec!["]"]),
             (Create, vec!["a"]), (Copy, vec!["yy"]), (Cut, vec!["dd"]),
             (Paste, vec!["p"]), (Rename, vec!["r"]),
-            (Trash, vec!["x", "del"]), (PermanentDelete, vec!["X"]),
+            (Trash, vec!["x", "T", "del"]), (PermanentDelete, vec!["X"]),
             (ToggleBookmark, vec!["m"]),
             (Search, vec!["/"]), (SearchNext, vec!["n"]), (SearchPrev, vec!["N"]),
             (PathInput, vec![":"]),
@@ -304,5 +304,15 @@ mod tests {
         assert_eq!(Action::from_name("jump_home"), Some(Action::JumpHome));
         // Lowercase h is still Collapse — must not be overridden.
         assert_eq!(km.resolve(Mode::Normal, "h"), Some(Action::Collapse));
+    }
+
+    #[test]
+    fn capital_t_also_resolves_to_trash() {
+        let km = Keymap::build(&std::collections::BTreeMap::new());
+        // x, T, and del all resolve to Trash; lowercase t stays unbound.
+        assert_eq!(km.resolve(Mode::Normal, "x"), Some(Action::Trash));
+        assert_eq!(km.resolve(Mode::Normal, "T"), Some(Action::Trash));
+        assert_eq!(km.resolve(Mode::Normal, "del"), Some(Action::Trash));
+        assert!(km.resolve(Mode::Normal, "t").is_none());
     }
 }
