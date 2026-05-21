@@ -171,10 +171,17 @@ impl App {
                 }
             }
             Action::FocusNext => {
+                // Tab cycles between the two interactive panes only.
+                // The preview pane has no cursor or actions; skipping
+                // it makes Tab feel symmetric (bookmarks ↔ tree).
+                // If the bookmarks pane is hidden, Tab is a no-op.
                 self.focus = match self.focus {
+                    Pane::Tree if self.config.panes.bookmarks.visible => {
+                        Pane::Bookmarks
+                    }
                     Pane::Bookmarks => Pane::Tree,
-                    Pane::Tree => Pane::Preview,
-                    Pane::Preview => Pane::Bookmarks,
+                    Pane::Preview => Pane::Tree, // never reached normally
+                    Pane::Tree => Pane::Tree,
                 };
             }
             Action::ToggleBookmarksPane => {
@@ -184,8 +191,24 @@ impl App {
                 self.config.panes.preview.visible = !self.config.panes.preview.visible;
             }
             Action::ToggleBookmark => {
-                if let Some(id) = self.sel_id() {
-                    self.state.toggle_bookmark(self.arena.nodes[id].path.clone());
+                if self.focus == Pane::Bookmarks {
+                    // Focused on the bookmarks pane: m removes the
+                    // highlighted entry, focus stays put. Clamp the
+                    // bookmark cursor so it lands on a valid row.
+                    let n = self.state.bookmarks.len();
+                    if n > 0 && self.bookmark_sel < n {
+                        self.state.bookmarks.remove(self.bookmark_sel);
+                        let new_len = self.state.bookmarks.len();
+                        if new_len == 0 {
+                            self.bookmark_sel = 0;
+                        } else if self.bookmark_sel >= new_len {
+                            self.bookmark_sel = new_len - 1;
+                        }
+                    }
+                } else if let Some(id) = self.sel_id() {
+                    self.state.toggle_bookmark(
+                        self.arena.nodes[id].path.clone(),
+                    );
                 }
             }
             Action::Quit => self.should_quit = true,
@@ -464,11 +487,49 @@ mod tests {
     }
 
     #[test]
-    fn focus_cycles() {
+    fn focus_cycles_between_tree_and_bookmarks_only() {
         let mut a = app();
+        a.config.panes.bookmarks.visible = true;
         assert_eq!(a.focus, Pane::Tree);
         a.apply(Action::FocusNext);
-        assert_eq!(a.focus, Pane::Preview);
+        assert_eq!(a.focus, Pane::Bookmarks, "tree → bookmarks");
+        a.apply(Action::FocusNext);
+        assert_eq!(a.focus, Pane::Tree, "bookmarks → tree (no preview)");
+    }
+
+    #[test]
+    fn m_in_bookmarks_pane_removes_selected_bookmark() {
+        let mut a = app();
+        a.state.bookmarks.push(PathBuf::from("/a"));
+        a.state.bookmarks.push(PathBuf::from("/b"));
+        a.state.bookmarks.push(PathBuf::from("/c"));
+        a.focus = Pane::Bookmarks;
+        a.bookmark_sel = 1;
+        a.apply(Action::ToggleBookmark);
+        assert_eq!(
+            a.state.bookmarks,
+            vec![PathBuf::from("/a"), PathBuf::from("/c")]
+        );
+        assert_eq!(a.bookmark_sel, 1, "stays in range");
+        assert_eq!(a.focus, Pane::Bookmarks, "focus stays on bookmarks");
+        // Remove the last entry — cursor clamps to new last.
+        a.bookmark_sel = 1;
+        a.apply(Action::ToggleBookmark);
+        assert_eq!(a.state.bookmarks, vec![PathBuf::from("/a")]);
+        assert_eq!(a.bookmark_sel, 0);
+        // Remove the final entry — cursor stays at 0.
+        a.apply(Action::ToggleBookmark);
+        assert!(a.state.bookmarks.is_empty());
+        assert_eq!(a.bookmark_sel, 0);
+    }
+
+    #[test]
+    fn focus_noop_when_bookmarks_hidden() {
+        let mut a = app();
+        a.config.panes.bookmarks.visible = false;
+        assert_eq!(a.focus, Pane::Tree);
+        a.apply(Action::FocusNext);
+        assert_eq!(a.focus, Pane::Tree, "no other pane to cycle to");
     }
 
     #[test]
