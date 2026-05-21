@@ -455,8 +455,38 @@ fn main() -> Result<()> {
                             app.mode = Mode::Normal;
                         }
                         Mode::Input => match app.pending.take() {
-                            Some(Action::Rename) => app.commit_rename(),
-                            Some(Action::Create) => app.commit_create(),
+                            Some(Action::Rename) => {
+                                let np = app.commit_rename();
+                                refresh_in_place(&mut app, &git_tx);
+                                if let Some(p) = np {
+                                    if let Ok(Some(id)) = app.arena.reveal(&p) {
+                                        app.visible = app.arena.flatten();
+                                        if let Some(i) = app
+                                            .visible
+                                            .iter()
+                                            .position(|&n| n == id)
+                                        {
+                                            app.selected = i;
+                                        }
+                                    }
+                                }
+                            }
+                            Some(Action::Create) => {
+                                let np = app.commit_create();
+                                refresh_in_place(&mut app, &git_tx);
+                                if let Some(p) = np {
+                                    if let Ok(Some(id)) = app.arena.reveal(&p) {
+                                        app.visible = app.arena.flatten();
+                                        if let Some(i) = app
+                                            .visible
+                                            .iter()
+                                            .position(|&n| n == id)
+                                        {
+                                            app.selected = i;
+                                        }
+                                    }
+                                }
+                            }
                             Some(Action::PathInput) => {
                                 let target = explorenova::nav::expand(&app.input.value());
                                 match app.arena.reveal(std::path::Path::new(&target)) {
@@ -648,11 +678,28 @@ fn refresh_in_place(app: &mut App, git_tx: &mpsc::Sender<()>) {
         }
         app.visible = app.arena.flatten();
         app.selected = 0;
-        if let Some(p) = sel_path {
-            if let Ok(Some(id)) = app.arena.reveal(&p) {
-                app.visible = app.arena.flatten();
-                if let Some(i) = app.visible.iter().position(|&n| n == id) {
-                    app.selected = i;
+        // Restore cursor. If the original path was deleted (Trash /
+        // PermanentDelete), reveal returns Ok(None) — walk up to the
+        // nearest existing ancestor so the user lands on the parent
+        // of what they just removed rather than the tree root.
+        if let Some(mut p) = sel_path {
+            loop {
+                match app.arena.reveal(&p) {
+                    Ok(Some(id)) => {
+                        app.visible = app.arena.flatten();
+                        if let Some(i) =
+                            app.visible.iter().position(|&n| n == id)
+                        {
+                            app.selected = i;
+                        }
+                        break;
+                    }
+                    _ => match p.parent() {
+                        Some(parent) if parent != p.as_path() => {
+                            p = parent.to_path_buf();
+                        }
+                        _ => break,
+                    },
                 }
             }
         }

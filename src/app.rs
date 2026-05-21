@@ -276,27 +276,48 @@ impl App {
         self.jump_to_search();
     }
 
-    pub fn commit_create(&mut self) {
+    /// Returns the created path on success so callers can refresh the
+    /// arena and snap the cursor to the new entry. None on failure.
+    pub fn commit_create(&mut self) -> Option<PathBuf> {
         let base = self
             .sel_dir()
             .unwrap_or_else(|| self.arena.nodes[self.arena.root].path.clone());
-        let target = base.join(self.input.value());
-        match crate::fs_ops::create(&target) {
-            Ok(_) => self.status = format!("created {}", target.display()),
-            Err(e) => self.status = format!("create failed: {e}"),
-        }
+        // Strip any trailing separator from the user's input so the
+        // returned path is a clean file/dir handle; fs_ops::create has
+        // already used the trailing-slash signal to pick dir vs file.
+        let raw = self.input.value();
+        let stripped = raw.trim_end_matches(std::path::MAIN_SEPARATOR);
+        let target = base.join(stripped);
+        let out = match crate::fs_ops::create(&base.join(&raw)) {
+            Ok(_) => {
+                self.status = format!("created {}", target.display());
+                Some(target)
+            }
+            Err(e) => {
+                self.status = format!("create failed: {e}");
+                None
+            }
+        };
         self.mode = Mode::Normal;
+        out
     }
 
-    pub fn commit_rename(&mut self) {
+    /// Returns the renamed path on success so callers can refresh the
+    /// arena and snap the cursor to the new entry. None on failure.
+    pub fn commit_rename(&mut self) -> Option<PathBuf> {
+        let mut out = None;
         if let Some(&id) = self.visible.get(self.selected) {
             let p = self.arena.nodes[id].path.clone();
             match crate::fs_ops::rename(&p, &self.input.value()) {
-                Ok(np) => self.status = format!("renamed -> {}", np.display()),
+                Ok(np) => {
+                    self.status = format!("renamed -> {}", np.display());
+                    out = Some(np);
+                }
                 Err(e) => self.status = format!("rename failed: {e}"),
             }
         }
         self.mode = Mode::Normal;
+        out
     }
 
     pub fn toggle_mark(&mut self) {

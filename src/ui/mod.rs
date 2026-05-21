@@ -303,59 +303,49 @@ pub fn render_frame(
             }
             "preview" => match app.visible.get(app.selected) {
                 Some(&id) => {
-                    let kind = cache
-                        .get_or_render(&app.arena.nodes[id].path, app.config.preview_max_bytes);
-                    match kind {
-                        PreviewKind::Image(p) => {
-                            const PREVIEW_DEBOUNCE_MS: u128 = 150;
-                            let block = Block::default()
-                                .borders(Borders::ALL)
-                                .border_type(ratatui::widgets::BorderType::Rounded)
-                                .title("preview");
-                            let inner = block.inner(area);
-                            f.render_widget(block, area);
-                            let already_decoded = img_cache
-                                .key
-                                .as_ref()
-                                .map(|(k, _)| k == &p)
-                                .unwrap_or(false);
-                            let elapsed =
-                                app.cursor_moved_at.elapsed().as_millis()
-                                    >= PREVIEW_DEBOUNCE_MS;
-                            if already_decoded || elapsed {
-                                render_image(f, inner, picker, img_cache, &p);
-                            } else {
-                                f.render_widget(
-                                    Paragraph::new("(loading…)"),
-                                    inner,
-                                );
+                    const PREVIEW_DEBOUNCE_MS: u128 = 150;
+                    let path = app.arena.nodes[id].path.clone();
+                    let block = Block::default()
+                        .borders(Borders::ALL)
+                        .border_type(ratatui::widgets::BorderType::Rounded)
+                        .title("preview");
+                    let inner = block.inner(area);
+                    f.render_widget(block, area);
+
+                    // Settle gate: only do the (potentially expensive)
+                    // get_or_render call once the cursor has been on
+                    // this row for >= 150ms. Cached entries short-
+                    // circuit so revisited paths are instant.
+                    let elapsed = app.cursor_moved_at.elapsed().as_millis()
+                        >= PREVIEW_DEBOUNCE_MS;
+                    let cached = cache.contains(&path);
+                    if !(elapsed || cached) {
+                        f.render_widget(Paragraph::new("(loading…)"), inner);
+                    } else {
+                        let kind = cache
+                            .get_or_render(&path, app.config.preview_max_bytes);
+                        match kind {
+                            PreviewKind::Image(p) => {
+                                let already_decoded = img_cache
+                                    .key
+                                    .as_ref()
+                                    .map(|(k, _)| k == &p)
+                                    .unwrap_or(false);
+                                if already_decoded || elapsed {
+                                    render_image(f, inner, picker, img_cache, &p);
+                                } else {
+                                    f.render_widget(
+                                        Paragraph::new("(loading…)"),
+                                        inner,
+                                    );
+                                }
                             }
-                        }
-                        PreviewKind::Text(t) => {
-                            f.render_widget(
-                                Paragraph::new(t).block(
-                                    Block::default()
-                                        .borders(Borders::ALL)
-                                        .border_type(
-                                            ratatui::widgets::BorderType::Rounded,
-                                        )
-                                        .title("preview"),
-                                ),
-                                area,
-                            );
-                        }
-                        PreviewKind::Meta(t) => {
-                            f.render_widget(
-                                Paragraph::new(t).block(
-                                    Block::default()
-                                        .borders(Borders::ALL)
-                                        .border_type(
-                                            ratatui::widgets::BorderType::Rounded,
-                                        )
-                                        .title("preview"),
-                                ),
-                                area,
-                            );
+                            PreviewKind::Text(t) => {
+                                f.render_widget(Paragraph::new(t), inner);
+                            }
+                            PreviewKind::Meta(t) => {
+                                f.render_widget(Paragraph::new(t), inner);
+                            }
                         }
                     }
                 }
