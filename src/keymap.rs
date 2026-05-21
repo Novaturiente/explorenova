@@ -51,6 +51,7 @@ pub enum Action {
     Refresh,
     ShowDevices,
     JumpHome,
+    OpenTrash,
     Quit,
     Cancel,
 }
@@ -77,6 +78,7 @@ impl Action {
             "toggle_hidden" => ToggleHidden, "refresh" => Refresh,
             "show_devices" => ShowDevices,
             "jump_home" => JumpHome,
+            "open_trash" => OpenTrash,
             "parent" => Parent,
             "toggle_mark" => ToggleMark,
             "toggle_visual_mode" => ToggleVisualMode,
@@ -160,7 +162,8 @@ impl Keymap {
             (ReorderLeft, vec!["["]), (ReorderRight, vec!["]"]),
             (Create, vec!["a"]), (Copy, vec!["yy"]), (Cut, vec!["dd"]),
             (Paste, vec!["p"]), (Rename, vec!["r"]),
-            (Trash, vec!["x", "T", "del"]), (PermanentDelete, vec!["X"]),
+            (Trash, vec!["x", "del"]), (PermanentDelete, vec!["X"]),
+            (OpenTrash, vec!["T"]),
             (ToggleBookmark, vec!["m"]),
             (Search, vec!["/"]), (SearchNext, vec!["n"]), (SearchPrev, vec!["N"]),
             (PathInput, vec![":"]),
@@ -307,12 +310,16 @@ mod tests {
     }
 
     #[test]
-    fn capital_t_also_resolves_to_trash() {
+    fn capital_t_resolves_to_open_trash_not_trash() {
         let km = Keymap::build(&std::collections::BTreeMap::new());
-        // x, T, and del all resolve to Trash; lowercase t stays unbound.
+        // T opens the XDG trash dir; x/del move files INTO the trash.
+        assert_eq!(km.resolve(Mode::Normal, "T"), Some(Action::OpenTrash));
         assert_eq!(km.resolve(Mode::Normal, "x"), Some(Action::Trash));
-        assert_eq!(km.resolve(Mode::Normal, "T"), Some(Action::Trash));
         assert_eq!(km.resolve(Mode::Normal, "del"), Some(Action::Trash));
         assert!(km.resolve(Mode::Normal, "t").is_none());
+        assert_eq!(
+            Action::from_name("open_trash"),
+            Some(Action::OpenTrash)
+        );
     }
 }
