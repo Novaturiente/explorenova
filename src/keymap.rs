@@ -52,6 +52,7 @@ pub enum Action {
     ShowDevices,
     JumpHome,
     OpenTrash,
+    SysClipCopy,
     Quit,
     Cancel,
 }
@@ -79,6 +80,7 @@ impl Action {
             "show_devices" => ShowDevices,
             "jump_home" => JumpHome,
             "open_trash" => OpenTrash,
+            "sys_clip_copy" => SysClipCopy,
             "parent" => Parent,
             "toggle_mark" => ToggleMark,
             "toggle_visual_mode" => ToggleVisualMode,
@@ -164,6 +166,7 @@ impl Keymap {
             (Paste, vec!["p"]), (Rename, vec!["r"]),
             (Trash, vec!["x", "del"]), (PermanentDelete, vec!["X"]),
             (OpenTrash, vec!["T"]),
+            (SysClipCopy, vec!["Y"]),
             (ToggleBookmark, vec!["m"]),
             (Search, vec!["/"]), (SearchNext, vec!["n"]), (SearchPrev, vec!["N"]),
             (PathInput, vec![":"]),
@@ -307,6 +310,18 @@ mod tests {
         assert_eq!(Action::from_name("jump_home"), Some(Action::JumpHome));
         // Lowercase h is still Collapse — must not be overridden.
         assert_eq!(km.resolve(Mode::Normal, "h"), Some(Action::Collapse));
+    }
+
+    #[test]
+    fn capital_y_resolves_to_sys_clip_copy() {
+        let km = Keymap::build(&std::collections::BTreeMap::new());
+        // Capital Y → system clipboard; lowercase yy → internal copy.
+        assert_eq!(km.resolve(Mode::Normal, "Y"), Some(Action::SysClipCopy));
+        assert_eq!(km.resolve(Mode::Normal, "yy"), Some(Action::Copy));
+        assert_eq!(
+            Action::from_name("sys_clip_copy"),
+            Some(Action::SysClipCopy)
+        );
     }
 
     #[test]

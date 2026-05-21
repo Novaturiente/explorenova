@@ -716,6 +716,28 @@ fn handle(
             }
             reroot(app, &trash, git_tx);
         }
+        Action::SysClipCopy => {
+            let targets = app.targets();
+            if targets.is_empty() {
+                app.status = "nothing to copy".into();
+            } else {
+                match explorenova::clipboard::copy_paths(&targets) {
+                    Ok(n) => {
+                        app.status = if n == 1 {
+                            format!(
+                                "copied to clipboard: {}",
+                                targets[0].display()
+                            )
+                        } else {
+                            format!("copied {n} paths to clipboard")
+                        };
+                    }
+                    Err(e) => {
+                        app.status = format!("clipboard: {e}");
+                    }
+                }
+            }
+        }
         Action::Trash => {
             let targets = app.targets();
             let n = targets.len();
