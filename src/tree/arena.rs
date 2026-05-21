@@ -3,6 +3,25 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
+/// Quick probe: does `dir` contain at least one entry that survives the
+/// hidden-files filter? Returns true on read failure to err on the safe
+/// side (we don't want to flag a permission-denied dir as "empty").
+fn dir_is_empty(dir: &Path, show_hidden: bool) -> bool {
+    let rd = match fs::read_dir(dir) {
+        Ok(r) => r,
+        Err(_) => return false,
+    };
+    !rd.filter_map(Result::ok).any(|e| {
+        if show_hidden {
+            return true;
+        }
+        e.file_name()
+            .to_str()
+            .map(|n| !n.starts_with('.'))
+            .unwrap_or(true)
+    })
+}
+
 pub struct Arena {
     pub nodes: Vec<Node>,
     pub root: NodeId,
@@ -61,11 +80,15 @@ impl Arena {
             let bd = b.is_dir();
             bd.cmp(&ad).then(a.file_name().cmp(&b.file_name()))
         });
+        let show_hidden = self.show_hidden;
         let mut child_ids = Vec::with_capacity(entries.len());
         for p in entries {
             let (kind, exec) = Self::classify(&p);
-            let mut node = Node::new(p, kind, depth, Some(id));
+            let mut node = Node::new(p.clone(), kind, depth, Some(id));
             node.exec = exec;
+            if matches!(kind, NodeKind::Dir) {
+                node.empty = Some(dir_is_empty(&p, show_hidden));
+            }
             self.nodes.push(node);
             child_ids.push(self.nodes.len() - 1);
         }
@@ -206,6 +229,46 @@ mod tests {
         let id = a.reveal(&target).unwrap().unwrap();
         assert_eq!(a.nodes[id].path, target);
         assert!(a.flatten().contains(&id));
+    }
+
+    #[test]
+    fn empty_dir_is_flagged() {
+        let d = tempdir().unwrap();
+        fs::create_dir(d.path().join("hollow")).unwrap();
+        fs::create_dir(d.path().join("solid")).unwrap();
+        fs::write(d.path().join("solid/x"), "x").unwrap();
+        let a = Arena::new(d.path()).unwrap();
+        let kids = a.nodes[a.root].children.as_ref().unwrap();
+        let hollow = kids
+            .iter()
+            .map(|&i| &a.nodes[i])
+            .find(|n| n.path.ends_with("hollow"))
+            .unwrap();
+        let solid = kids
+            .iter()
+            .map(|&i| &a.nodes[i])
+            .find(|n| n.path.ends_with("solid"))
+            .unwrap();
+        assert_eq!(hollow.empty, Some(true));
+        assert_eq!(solid.empty, Some(false));
+    }
+
+    #[test]
+    fn dir_with_only_hidden_is_empty_unless_shown() {
+        let d = tempdir().unwrap();
+        let sub = d.path().join("dotonly");
+        fs::create_dir(&sub).unwrap();
+        fs::write(sub.join(".hidden"), "x").unwrap();
+        let a = Arena::new(d.path()).unwrap();
+        let n = a.nodes[a.root]
+            .children
+            .as_ref()
+            .unwrap()
+            .iter()
+            .map(|&i| &a.nodes[i])
+            .find(|n| n.path.ends_with("dotonly"))
+            .unwrap();
+        assert_eq!(n.empty, Some(true), "hidden-only dir reads as empty when show_hidden=false");
     }
 
     #[cfg(unix)]

@@ -60,6 +60,10 @@ pub struct Node {
     pub depth: usize,
     pub parent: Option<NodeId>,
     pub exec: bool,
+    /// Cached emptiness for directories. `Some(true)` = has no entries
+    /// after the hidden-files filter; `Some(false)` = has at least one;
+    /// `None` = not yet probed (e.g. files, or dirs we couldn't read).
+    pub empty: Option<bool>,
 }
 
 impl Node {
@@ -73,6 +77,7 @@ impl Node {
             depth,
             parent,
             exec: false,
+            empty: None,
         }
     }
 

@@ -17,11 +17,14 @@ pub fn tree_row<'a>(
 ) -> Line<'a> {
     let n = &arena.nodes[id];
     let indent = "  ".repeat(n.depth);
+    // Distinct glyph for known-empty dirs so the eye can skip them
+    // without having to expand. `empty` is set during load_children;
+    // unreadable / unprobed dirs fall through to the closed-arrow.
     let marker = if n.is_dir() {
-        if n.expanded {
-            "▾ "
-        } else {
-            "▸ "
+        match (n.expanded, n.empty) {
+            (true, _) => "▾ ",
+            (false, Some(true)) => "▢ ",
+            _ => "▸ ",
         }
     } else {
         "  "

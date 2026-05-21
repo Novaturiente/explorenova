@@ -775,16 +775,19 @@ fn handle(
             }
         }
         Action::ToggleHidden => {
-            // CARRY-FORWARD FIX (Task 6 review): Arena::load_children caches
-            // children, so flipping arena.show_hidden alone will not re-scan.
-            // Rebuild the arena with the new setting, preserving the selected
-            // path and root expansion.
+            // Arena::load_children caches children, so flipping
+            // arena.show_hidden alone won't re-scan. Rebuild the arena
+            // rooted at the CURRENT root path (NOT the startup `cwd`
+            // arg — the user may have re-rooted via H/T/devices/ascend)
+            // and re-reveal whichever path was under the cursor.
+            let _ = cwd; // intentionally unused here; see comment above
+            let cur_root = app.arena.nodes[app.arena.root].path.clone();
             let sel_path = app
                 .visible
                 .get(app.selected)
                 .map(|&id| app.arena.nodes[id].path.clone());
             let new_hidden = !app.arena.show_hidden;
-            if let Ok(mut na) = Arena::new(cwd) {
+            if let Ok(mut na) = Arena::new(&cur_root) {
                 na.show_hidden = new_hidden;
                 na.nodes[na.root].children = None;
                 let _ = na.load_children(na.root);
