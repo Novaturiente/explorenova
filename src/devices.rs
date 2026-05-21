@@ -25,12 +25,24 @@ fn parse_line(line: &str) -> Option<Device> {
     if cols.len() < 6 { return None; }
     let device = cols[0].trim().to_string();
     if device.is_empty() { return None; }
-    let mount_paths = cols[2].trim();
+    // udiskie-info formats list-typed columns ({mount_paths}) as the
+    // Python repr of a list of strings — e.g. "['/run/media/u/X']" — so
+    // strip the surrounding `[ ]` and per-entry `'` or `"` before parsing.
+    let mount_paths = cols[2]
+        .trim()
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .trim();
     let mountpoint = if mount_paths.is_empty() {
         None
     } else {
         // multi-mount: take the first path
-        let first = mount_paths.split(',').next()?.trim();
+        let first = mount_paths
+            .split(',')
+            .next()?
+            .trim()
+            .trim_matches(|c| c == '\'' || c == '"')
+            .trim();
         if first.is_empty() { None } else { Some(PathBuf::from(first)) }
     };
     let opt = |s: &str| {
@@ -121,5 +133,33 @@ mod tests {
         let line = "/dev/sdd1\tTrue\t/mnt/a,/mnt/b\t1 GB\tdouble\text4";
         let d = parse_line(line).unwrap();
         assert_eq!(d.mountpoint, Some(PathBuf::from("/mnt/a")));
+    }
+
+    #[test]
+    fn mount_paths_strips_python_list_repr() {
+        // udiskie-info formats {mount_paths} as the Python repr of a list:
+        // ['/run/media/nova/JYESH']. Parser must strip [ ] and quotes.
+        let line =
+            "/dev/sdb1\tTrue\t['/run/media/nova/JYESH']\t32 GB\tJYESH\text4";
+        let d = parse_line(line).unwrap();
+        assert_eq!(
+            d.mountpoint,
+            Some(PathBuf::from("/run/media/nova/JYESH"))
+        );
+
+        // Double-quoted variant
+        let line2 =
+            "/dev/sdc1\tTrue\t[\"/run/media/u/Stick\"]\t8 GB\tStick\tvfat";
+        let d2 = parse_line(line2).unwrap();
+        assert_eq!(
+            d2.mountpoint,
+            Some(PathBuf::from("/run/media/u/Stick"))
+        );
+
+        // Multi-entry list — take first, strip quotes
+        let line3 =
+            "/dev/sdd1\tTrue\t['/mnt/a', '/mnt/b']\t1 GB\tdouble\text4";
+        let d3 = parse_line(line3).unwrap();
+        assert_eq!(d3.mountpoint, Some(PathBuf::from("/mnt/a")));
     }
 }
