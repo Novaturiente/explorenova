@@ -10,6 +10,7 @@ pub fn tree_row<'a>(
     selected: bool,
     theme: &Theme,
     icons: bool,
+    marked: bool,
 ) -> Line<'a> {
     let n = &arena.nodes[id];
     let indent = "  ".repeat(n.depth);
@@ -29,7 +30,7 @@ pub fn tree_row<'a>(
         .unwrap_or_else(|| n.path.display().to_string());
 
     let kind = crate::icons::classify(n.kind, n.exec, &name);
-    let type_color = match kind {
+    let mut type_color = match kind {
         crate::icons::Kind::Dir => theme.dir,
         crate::icons::Kind::Symlink => theme.symlink,
         crate::icons::Kind::Exec => theme.executable,
@@ -37,6 +38,9 @@ pub fn tree_row<'a>(
         crate::icons::Kind::Archive => theme.archive,
         crate::icons::Kind::File => theme.file,
     };
+    if marked {
+        type_color = theme.mark;
+    }
 
     let g = n.git.glyph();
     let git_clean = matches!(n.git, crate::tree::GitStatus::Clean);
@@ -49,6 +53,9 @@ pub fn tree_row<'a>(
     };
 
     let mut spans: Vec<Span> = Vec::new();
+    if marked {
+        spans.push(Span::styled("* ", Style::default().fg(theme.mark)));
+    }
     spans.push(Span::raw(indent));
     let marker_style = if selected {
         Style::default()
@@ -84,7 +91,7 @@ mod tests {
         std::fs::write(d.path().join("z.txt"), "x").unwrap();
         let a = Arena::new(d.path()).unwrap();
         let child = a.nodes[a.root].children.as_ref().unwrap()[0];
-        let line = tree_row(&a, child, true, &Theme::default(), true);
+        let line = tree_row(&a, child, true, &Theme::default(), true, false);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("z.txt"));
     }

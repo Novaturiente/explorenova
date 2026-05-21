@@ -448,13 +448,39 @@ fn handle(
             let _ = git_tx.send(());
         }
         Action::Trash => {
-            if let Some(&id) = app.visible.get(app.selected) {
-                let p = app.arena.nodes[id].path.clone();
-                if let Err(e) = explorenova::fs_ops::trash_path(&p) {
-                    app.status = format!("trash failed: {e}");
-                } else {
-                    app.status = format!("trashed {}", p.display());
+            let targets = app.targets();
+            let n = targets.len();
+            if n == 0 {
+                app.status = "nothing to trash".into();
+            } else {
+                let mut ok = 0usize;
+                let mut failed: Vec<String> = Vec::new();
+                for p in &targets {
+                    match explorenova::fs_ops::trash_path(p) {
+                        Ok(_) => ok += 1,
+                        Err(_) => failed.push(p.display().to_string()),
+                    }
                 }
+                app.status = if failed.is_empty() {
+                    if n == 1 {
+                        format!("trashed {}", targets[0].display())
+                    } else {
+                        format!("trashed {n}")
+                    }
+                } else {
+                    let preview =
+                        failed.iter().take(2).cloned().collect::<Vec<_>>().join(", ");
+                    let tail = if failed.len() > 2 { ", …" } else { "" };
+                    format!(
+                        "trashed {}/{} ({} failed: {}{})",
+                        ok,
+                        n,
+                        failed.len(),
+                        preview,
+                        tail
+                    )
+                };
+                app.marks.clear();
             }
         }
         Action::ToggleHidden => {
@@ -511,47 +537,105 @@ fn handle(
             app.enter_mode(Mode::Input, &seed);
         }
         Action::PermanentDelete => {
-            app.pending = Some(Action::PermanentDelete);
-            app.mode = Mode::Confirm;
-            app.status = "permanently delete? y/N".into();
+            let n = app.targets().len();
+            if n == 0 {
+                app.status = "nothing to delete".into();
+            } else {
+                app.pending = Some(Action::PermanentDelete);
+                app.mode = Mode::Confirm;
+                app.status = if n == 1 {
+                    let name = app
+                        .targets()
+                        .into_iter()
+                        .next()
+                        .and_then(|p| {
+                            p.file_name().map(|s| s.to_string_lossy().to_string())
+                        })
+                        .unwrap_or_default();
+                    format!("permanently delete {name}? y/N")
+                } else {
+                    format!("permanently delete {n}? y/N")
+                };
+            }
         }
         Action::Copy => {
-            if let Some(&id) = app.visible.get(app.selected) {
-                app.clipboard = Some((app.arena.nodes[id].path.clone(), false));
-                app.status = "copied".into();
+            let targets = app.targets();
+            let n = targets.len();
+            if n == 0 {
+                app.status = "nothing to copy".into();
+            } else {
+                app.clipboard = Some((targets, false));
+                app.status = format!("copied {n}");
             }
         }
         Action::Cut => {
-            if let Some(&id) = app.visible.get(app.selected) {
-                app.clipboard = Some((app.arena.nodes[id].path.clone(), true));
-                app.status = "cut".into();
+            let targets = app.targets();
+            let n = targets.len();
+            if n == 0 {
+                app.status = "nothing to cut".into();
+            } else {
+                app.clipboard = Some((targets, true));
+                app.status = format!("cut {n}");
             }
         }
         Action::Paste => {
-            if let Some((src, is_cut)) = app.clipboard.clone() {
-                let dst_dir = app
-                    .visible
-                    .get(app.selected)
-                    .map(|&id| {
-                        let n = &app.arena.nodes[id];
-                        if n.is_dir() {
-                            n.path.clone()
-                        } else {
-                            n.path.parent().unwrap_or(cwd).to_path_buf()
+            let snapshot = app.clipboard.clone();
+            let Some((srcs, is_cut)) = snapshot else {
+                app.status = "nothing to paste".into();
+                return Ok(());
+            };
+            let dst_dir = app
+                .visible
+                .get(app.selected)
+                .map(|&id| {
+                    let n = &app.arena.nodes[id];
+                    if n.is_dir() {
+                        n.path.clone()
+                    } else {
+                        n.path.parent().unwrap_or(cwd).to_path_buf()
+                    }
+                })
+                .unwrap_or_else(|| cwd.to_path_buf());
+            let mode = if is_cut {
+                explorenova::fs_ops::PasteMode::Move
+            } else {
+                explorenova::fs_ops::PasteMode::Copy
+            };
+            let n = srcs.len();
+            let mut ok = 0usize;
+            let mut failed: Vec<String> = Vec::new();
+            let mut moved: Vec<std::path::PathBuf> = Vec::new();
+            for src in &srcs {
+                match explorenova::fs_ops::paste(src, &dst_dir, mode) {
+                    Ok(_) => {
+                        ok += 1;
+                        if is_cut {
+                            moved.push(src.clone());
                         }
-                    })
-                    .unwrap_or_else(|| cwd.to_path_buf());
-                let mode = if is_cut {
-                    explorenova::fs_ops::PasteMode::Move
-                } else {
-                    explorenova::fs_ops::PasteMode::Copy
-                };
-                match explorenova::fs_ops::paste(&src, &dst_dir, mode) {
-                    Ok(p) => app.status = format!("pasted -> {}", p.display()),
-                    Err(e) => app.status = format!("paste failed: {e}"),
+                    }
+                    Err(_) => failed.push(src.display().to_string()),
                 }
-                if is_cut {
-                    app.clipboard = None;
+            }
+            app.status = if failed.is_empty() {
+                format!("pasted {n} -> {}", dst_dir.display())
+            } else {
+                let preview =
+                    failed.iter().take(2).cloned().collect::<Vec<_>>().join(", ");
+                let tail = if failed.len() > 2 { ", …" } else { "" };
+                format!(
+                    "pasted {}/{} -> {} ({} failed: {}{})",
+                    ok,
+                    n,
+                    dst_dir.display(),
+                    failed.len(),
+                    preview,
+                    tail
+                )
+            };
+            if is_cut {
+                app.clipboard = None;
+                for p in &moved {
+                    app.marks.remove(p);
                 }
             }
         }
@@ -584,6 +668,8 @@ fn handle(
             }
         }
         Action::Parent => ascend(app),
+        Action::ToggleMark => app.toggle_mark(),
+        Action::SelectAllVisible => app.select_all_visible(),
         Action::Collapse => {
             if app.visible.get(app.selected).copied() == Some(app.arena.root) {
                 ascend(app);
