@@ -50,6 +50,7 @@ pub enum Action {
     ToggleHidden,
     Refresh,
     ShowDevices,
+    JumpHome,
     Quit,
     Cancel,
 }
@@ -75,6 +76,7 @@ impl Action {
             "shell_once" => ShellOnce, "shell_drop" => ShellDrop,
             "toggle_hidden" => ToggleHidden, "refresh" => Refresh,
             "show_devices" => ShowDevices,
+            "jump_home" => JumpHome,
             "parent" => Parent,
             "toggle_mark" => ToggleMark,
             "toggle_visual_mode" => ToggleVisualMode,
@@ -165,6 +167,7 @@ impl Keymap {
             (ShellOnce, vec!["!"]), (ShellDrop, vec!["S"]),
             (ToggleHidden, vec!["."]), (Refresh, vec!["R"]),
             (ShowDevices, vec!["M"]),
+            (JumpHome, vec!["H"]),
             (Quit, vec!["q"]), (Cancel, vec!["esc"]),
         ]
     }
@@ -292,5 +295,14 @@ mod tests {
             Action::from_name("show_devices"),
             Some(Action::ShowDevices)
         );
+    }
+
+    #[test]
+    fn capital_h_resolves_to_jump_home() {
+        let km = Keymap::build(&std::collections::BTreeMap::new());
+        assert_eq!(km.resolve(Mode::Normal, "H"), Some(Action::JumpHome));
+        assert_eq!(Action::from_name("jump_home"), Some(Action::JumpHome));
+        // Lowercase h is still Collapse — must not be overridden.
+        assert_eq!(km.resolve(Mode::Normal, "h"), Some(Action::Collapse));
     }
 }
