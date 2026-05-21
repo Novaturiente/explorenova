@@ -150,30 +150,10 @@ fn main() -> Result<()> {
         }
         if let Some(t0) = fs_dirty_since {
             if t0.elapsed() >= Duration::from_millis(150) {
-                let sel_path = app
-                    .visible
-                    .get(app.selected)
-                    .map(|&id| app.arena.nodes[id].path.clone());
-                if let Ok(new_arena) = Arena::new(&start) {
-                    let prev_hidden = app.arena.show_hidden;
-                    app.arena = new_arena;
-                    if prev_hidden {
-                        app.arena.show_hidden = true;
-                        app.arena.nodes[app.arena.root].children = None;
-                        let _ = app.arena.load_children(app.arena.root);
-                        app.arena.nodes[app.arena.root].expanded = true;
-                    }
-                    app.visible = app.arena.flatten();
-                    if let Some(p) = sel_path {
-                        if let Ok(Some(id)) = app.arena.reveal(&p) {
-                            app.visible = app.arena.flatten();
-                            if let Some(i) = app.visible.iter().position(|&n| n == id) {
-                                app.selected = i;
-                            }
-                        }
-                    }
-                }
-                let _ = git_tx.send(());
+                // Rebuild at the CURRENT arena root, not the startup
+                // `start` arg — after H/T/devices/ascend the user may
+                // be rooted elsewhere and we'd otherwise yank them back.
+                refresh_in_place(&mut app, &git_tx);
                 fs_dirty_since = None;
             }
         }
@@ -542,7 +522,13 @@ fn main() -> Result<()> {
                     _ => {}
                 },
                 Mode::Confirm => match k.code {
-                    KeyCode::Char('y') | KeyCode::Char('Y') => app.confirm_yes(),
+                    KeyCode::Char('y') | KeyCode::Char('Y') => {
+                        app.confirm_yes();
+                        // confirm_yes lives in app.rs and can't see the
+                        // git_tx — refresh from here so the freshly
+                        // unlinked entries drop out of the tree at once.
+                        refresh_in_place(&mut app, &git_tx);
+                    }
                     _ => {
                         app.pending = None;
                         app.mode = Mode::Normal;
@@ -615,6 +601,44 @@ fn reroot(app: &mut App, path: &std::path::Path, git_tx: &mpsc::Sender<()>) {
             app.status = format!("cannot open {}: {e}", path.display());
         }
     }
+}
+
+/// Rebuild the arena at the current root, preserving the show_hidden
+/// toggle and re-revealing the previously-selected path if it still
+/// exists. Used after destructive batch ops (trash, permanent delete,
+/// cut-paste) to drop stale entries immediately instead of waiting on
+/// the fs-watch debounce — which can miss `trash` crate moves entirely
+/// when they go through D-Bus.
+fn refresh_in_place(app: &mut App, git_tx: &mpsc::Sender<()>) {
+    let cur_root = app.arena.nodes[app.arena.root].path.clone();
+    let prev_hidden = app.arena.show_hidden;
+    let sel_path = app
+        .visible
+        .get(app.selected)
+        .map(|&id| app.arena.nodes[id].path.clone());
+    if let Ok(mut na) = Arena::new(&cur_root) {
+        if prev_hidden {
+            na.show_hidden = true;
+            na.nodes[na.root].children = None;
+            let _ = na.load_children(na.root);
+        }
+        na.nodes[na.root].expanded = true;
+        app.arena = na;
+        app.visible = app.arena.flatten();
+        app.selected = 0;
+        if let Some(p) = sel_path {
+            if let Ok(Some(id)) = app.arena.reveal(&p) {
+                app.visible = app.arena.flatten();
+                if let Some(i) = app.visible.iter().position(|&n| n == id) {
+                    app.selected = i;
+                }
+            }
+        }
+        if !app.visible.is_empty() && app.selected >= app.visible.len() {
+            app.selected = app.visible.len() - 1;
+        }
+    }
+    let _ = git_tx.send(());
 }
 
 fn ascend(app: &mut App) {
@@ -772,6 +796,7 @@ fn handle(
                     )
                 };
                 app.marks.clear();
+                refresh_in_place(app, git_tx);
             }
         }
         Action::ToggleHidden => {
@@ -932,6 +957,7 @@ fn handle(
                     app.marks.remove(p);
                 }
             }
+            refresh_in_place(app, git_tx);
         }
         Action::OpenWith => {
             if let Some(&id) = app.visible.get(app.selected) {
