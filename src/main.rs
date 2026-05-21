@@ -636,12 +636,15 @@ fn refresh_in_place(app: &mut App, git_tx: &mpsc::Sender<()>) {
         }
         na.nodes[na.root].expanded = true;
         app.arena = na;
-        // Replay expansions. `arena.reveal` expands every ancestor of
-        // the target so calling it on each previously-expanded path
-        // restores the prior shape. Paths outside the new root are
-        // silently skipped (reveal returns Ok(None)).
+        // Replay expansions. `arena.reveal` only expands ANCESTORS of
+        // the target — the target node itself stays collapsed. So we
+        // reveal each previously-expanded dir AND then explicitly
+        // expand the returned node. Paths outside the new root are
+        // skipped (reveal returns Ok(None)).
         for p in &expanded_paths {
-            let _ = app.arena.reveal(p);
+            if let Ok(Some(id)) = app.arena.reveal(p) {
+                let _ = app.arena.expand(id);
+            }
         }
         app.visible = app.arena.flatten();
         app.selected = 0;
