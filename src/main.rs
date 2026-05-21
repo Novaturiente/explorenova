@@ -604,11 +604,11 @@ fn reroot(app: &mut App, path: &std::path::Path, git_tx: &mpsc::Sender<()>) {
 }
 
 /// Rebuild the arena at the current root, preserving the show_hidden
-/// toggle and re-revealing the previously-selected path if it still
-/// exists. Used after destructive batch ops (trash, permanent delete,
-/// cut-paste) to drop stale entries immediately instead of waiting on
-/// the fs-watch debounce — which can miss `trash` crate moves entirely
-/// when they go through D-Bus.
+/// toggle, ALL previously-expanded directories, and the cursor path.
+/// Used after destructive batch ops (trash, permanent delete, cut-paste)
+/// to drop stale entries immediately instead of waiting on the fs-watch
+/// debounce — which can miss `trash` crate moves entirely when they go
+/// through D-Bus.
 fn refresh_in_place(app: &mut App, git_tx: &mpsc::Sender<()>) {
     let cur_root = app.arena.nodes[app.arena.root].path.clone();
     let prev_hidden = app.arena.show_hidden;
@@ -616,6 +616,18 @@ fn refresh_in_place(app: &mut App, git_tx: &mpsc::Sender<()>) {
         .visible
         .get(app.selected)
         .map(|&id| app.arena.nodes[id].path.clone());
+    // Snapshot every expanded directory path so we can replay the
+    // expansion state on the new arena. Filter to dirs that still
+    // exist on disk so stale entries (the ones the user just deleted)
+    // don't fail the reveal silently and produce a half-collapsed tree.
+    let expanded_paths: Vec<std::path::PathBuf> = app
+        .arena
+        .nodes
+        .iter()
+        .filter(|n| n.is_dir() && n.expanded)
+        .map(|n| n.path.clone())
+        .filter(|p| p.exists())
+        .collect();
     if let Ok(mut na) = Arena::new(&cur_root) {
         if prev_hidden {
             na.show_hidden = true;
@@ -624,6 +636,13 @@ fn refresh_in_place(app: &mut App, git_tx: &mpsc::Sender<()>) {
         }
         na.nodes[na.root].expanded = true;
         app.arena = na;
+        // Replay expansions. `arena.reveal` expands every ancestor of
+        // the target so calling it on each previously-expanded path
+        // restores the prior shape. Paths outside the new root are
+        // silently skipped (reveal returns Ok(None)).
+        for p in &expanded_paths {
+            let _ = app.arena.reveal(p);
+        }
         app.visible = app.arena.flatten();
         app.selected = 0;
         if let Some(p) = sel_path {
