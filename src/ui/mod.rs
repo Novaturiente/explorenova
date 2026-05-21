@@ -256,7 +256,20 @@ pub fn render_frame(
                                 );
                             }
                         }
-                        PreviewKind::Text(t) | PreviewKind::Meta(t) => {
+                        PreviewKind::Text(t) => {
+                            f.render_widget(
+                                Paragraph::new(t).block(
+                                    Block::default()
+                                        .borders(Borders::ALL)
+                                        .border_type(
+                                            ratatui::widgets::BorderType::Rounded,
+                                        )
+                                        .title("preview"),
+                                ),
+                                area,
+                            );
+                        }
+                        PreviewKind::Meta(t) => {
                             f.render_widget(
                                 Paragraph::new(t).block(
                                     Block::default()
