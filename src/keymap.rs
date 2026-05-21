@@ -49,6 +49,7 @@ pub enum Action {
     ShellDrop,
     ToggleHidden,
     Refresh,
+    ShowDevices,
     Quit,
     Cancel,
 }
@@ -73,6 +74,7 @@ impl Action {
             "path_input" => PathInput,
             "shell_once" => ShellOnce, "shell_drop" => ShellDrop,
             "toggle_hidden" => ToggleHidden, "refresh" => Refresh,
+            "show_devices" => ShowDevices,
             "parent" => Parent,
             "toggle_mark" => ToggleMark,
             "toggle_visual_mode" => ToggleVisualMode,
@@ -162,6 +164,7 @@ impl Keymap {
             (PathInput, vec![":"]),
             (ShellOnce, vec!["!"]), (ShellDrop, vec!["S"]),
             (ToggleHidden, vec!["."]), (Refresh, vec!["R"]),
+            (ShowDevices, vec!["M"]),
             (Quit, vec!["q"]), (Cancel, vec!["esc"]),
         ]
     }
@@ -275,6 +278,19 @@ mod tests {
         assert_eq!(
             Action::from_name("toggle_visual_mode"),
             Some(Action::ToggleVisualMode)
+        );
+    }
+
+    #[test]
+    fn capital_m_resolves_to_show_devices() {
+        let km = Keymap::build(&std::collections::BTreeMap::new());
+        assert_eq!(
+            km.resolve(Mode::Normal, "M"),
+            Some(Action::ShowDevices)
+        );
+        assert_eq!(
+            Action::from_name("show_devices"),
+            Some(Action::ShowDevices)
         );
     }
 }
