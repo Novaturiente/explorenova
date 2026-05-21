@@ -59,6 +59,17 @@ fn create_file_and_nested_dir() {
 }
 
 #[test]
+fn create_treats_extensionless_name_as_directory() {
+    // Per user preference: a name with no extension and no trailing
+    // slash creates a folder. A name with an extension stays a file.
+    let d = tempdir().unwrap();
+    create(&d.path().join("notes")).unwrap();
+    assert!(d.path().join("notes").is_dir());
+    create(&d.path().join("readme.md")).unwrap();
+    assert!(d.path().join("readme.md").is_file());
+}
+
+#[test]
 fn paste_copy_collision_gets_suffix() {
     let d = tempdir().unwrap();
     let src = d.path().join("f.txt");

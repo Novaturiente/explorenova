@@ -8,12 +8,19 @@ pub enum PasteMode {
     Move,
 }
 
-/// Trailing `/` => directory (mkdir -p). Else create file, mkdir -p its parent.
+/// Decide directory vs file from `path`:
+/// - trailing `/` → directory (explicit, always wins)
+/// - no extension (e.g. `notes`, `Makefile`) → directory
+/// - has extension (e.g. `foo.txt`, `script.sh`) → file
+///
+/// Extensionless filenames (Makefile, README) are intentionally treated
+/// as directories per user preference; use a trailing slash to make
+/// the dir form explicit either way.
 pub fn create(path: &Path) -> io::Result<()> {
-    let is_dir = path
-        .as_os_str()
-        .to_string_lossy()
-        .ends_with(std::path::MAIN_SEPARATOR);
+    let s = path.as_os_str().to_string_lossy();
+    let trailing_sep = s.ends_with(std::path::MAIN_SEPARATOR);
+    let has_ext = path.extension().is_some();
+    let is_dir = trailing_sep || !has_ext;
     if is_dir {
         fs::create_dir_all(path)
     } else {
