@@ -67,6 +67,16 @@ pub struct PreviewCache {
 }
 
 impl PreviewCache {
+    /// True if `path` is in the cache at its current mtime. Used by
+    /// the UI to skip rendering a placeholder when a cached preview
+    /// can be returned synchronously.
+    pub fn contains(&self, path: &Path) -> bool {
+        let mtime = std::fs::metadata(path)
+            .and_then(|m| m.modified())
+            .unwrap_or(SystemTime::UNIX_EPOCH);
+        self.map.contains_key(&(path.to_path_buf(), mtime))
+    }
+
     pub fn get_or_render(&mut self, path: &Path, max_bytes: u64) -> PreviewKind {
         let mtime = std::fs::metadata(path)
             .and_then(|m| m.modified())
