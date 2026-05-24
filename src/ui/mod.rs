@@ -421,7 +421,26 @@ pub fn render_frame(
     crate::status::render(prompt_area, f, app);
 
     // Modal overlay (input / confirm) centered over the body.
+    // SortMenu and Help live on Mode (not Dialog) so they must be matched
+    // BEFORE the generic Dialog::None catch-all swallows them.
     match (&app.mode, &app.dialog) {
+        (crate::keymap::Mode::SortMenu, _) => {
+            let r = crate::sort::centered_rect(40, 12, body);
+            crate::sort::render_menu(r, f, &app.sort);
+            return;
+        }
+        (crate::keymap::Mode::Help, _) => {
+            let entries = crate::help::build_entries(keymap);
+            let mut content_rows: u16 = 1;
+            for c in &entries {
+                content_rows = content_rows.saturating_add(c.rows.len() as u16 + 2);
+            }
+            let w = 80u16.min(body.width.saturating_sub(4));
+            let h = (content_rows + 2).min(body.height.saturating_sub(2));
+            let r = crate::sort::centered_rect(w, h, body);
+            crate::help::render(r, f, &entries);
+            return;
+        }
         (_, crate::app::Dialog::None) => {}
         (_, crate::app::Dialog::AppPick { items, sel }) => {
             let rows = items.len() + 1;
@@ -559,20 +578,5 @@ pub fn render_frame(
             );
         }
         (crate::keymap::Mode::Normal, _) => {}
-        (crate::keymap::Mode::SortMenu, _) => {
-            let r = crate::sort::centered_rect(40, 12, body);
-            crate::sort::render_menu(r, f, &app.sort);
-        }
-        (crate::keymap::Mode::Help, _) => {
-            let entries = crate::help::build_entries(keymap);
-            let mut content_rows: u16 = 1; // trailing "[any key dismisses]"
-            for c in &entries {
-                content_rows = content_rows.saturating_add(c.rows.len() as u16 + 2);
-            }
-            let w = 80u16.min(body.width.saturating_sub(4));
-            let h = (content_rows + 2).min(body.height.saturating_sub(2));
-            let r = crate::sort::centered_rect(w, h, body);
-            crate::help::render(r, f, &entries);
-        }
     }
 }
