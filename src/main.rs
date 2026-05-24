@@ -44,6 +44,31 @@ fn config_path() -> PathBuf {
     base.join("explorenova").join("config.toml")
 }
 
+/// Case-insensitive substring filter. Returns indices into `items`
+/// whose `.name` contains every space-separated token in `filter`.
+fn filter_app_indices(
+    items: &[explorenova::apps::AppEntry],
+    filter: &str,
+) -> Vec<usize> {
+    if filter.is_empty() {
+        return (0..items.len()).collect();
+    }
+    let needle = filter.to_lowercase();
+    let tokens: Vec<&str> = needle.split_whitespace().collect();
+    items
+        .iter()
+        .enumerate()
+        .filter_map(|(i, a)| {
+            let hay = a.name.to_lowercase();
+            if tokens.iter().all(|t| hay.contains(t)) {
+                Some(i)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 fn state_path() -> PathBuf {
     let base = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
@@ -405,9 +430,14 @@ fn main() -> Result<()> {
                     ) =>
                 {
                     use explorenova::app::Dialog;
-                    let (len, sel) = match &app.dialog {
-                        Dialog::AppPick { items, sel } => (items.len() + 1, *sel),
-                        _ => (1, 0),
+                    // `len` = filtered apps + 1 (custom-command row).
+                    // `sel` is the index into that filtered+custom view.
+                    let (len, sel, filtered_idx) = match &app.dialog {
+                        Dialog::AppPick { items, sel, filter } => {
+                            let fi = filter_app_indices(items, filter);
+                            (fi.len() + 1, *sel, fi)
+                        }
+                        _ => (1, 0, Vec::new()),
                     };
                     match k.code {
                         KeyCode::Esc => {
@@ -429,6 +459,22 @@ fn main() -> Result<()> {
                                 );
                             }
                         }
+                        KeyCode::Backspace => {
+                            if let Dialog::AppPick { sel, filter, .. } =
+                                &mut app.dialog
+                            {
+                                filter.pop();
+                                *sel = 0;
+                            }
+                        }
+                        KeyCode::Char(c) => {
+                            if let Dialog::AppPick { sel, filter, .. } =
+                                &mut app.dialog
+                            {
+                                filter.push(c);
+                                *sel = 0;
+                            }
+                        }
                         KeyCode::Enter => {
                             if sel == len - 1 {
                                 // "Custom command…" → typed-command path
@@ -442,7 +488,9 @@ fn main() -> Result<()> {
                                     ..
                                 } = &app.dialog
                                 {
-                                    items.get(sel).cloned()
+                                    filtered_idx
+                                        .get(sel)
+                                        .and_then(|&i| items.get(i).cloned())
                                 } else {
                                     None
                                 };
@@ -601,8 +649,8 @@ fn main() -> Result<()> {
             Mode::Normal => explorenova::app::Dialog::None,
             Mode::Confirm => explorenova::app::Dialog::Confirm,
             Mode::Search | Mode::Input => match std::mem::take(&mut app.dialog) {
-                explorenova::app::Dialog::AppPick { items, sel } => {
-                    explorenova::app::Dialog::AppPick { items, sel }
+                explorenova::app::Dialog::AppPick { items, sel, filter } => {
+                    explorenova::app::Dialog::AppPick { items, sel, filter }
                 }
                 explorenova::app::Dialog::Devices { items, sel } => {
                     explorenova::app::Dialog::Devices { items, sel }
@@ -1059,7 +1107,11 @@ fn handle(
                 app.mode = Mode::Input;
                 app.pending = Some(Action::OpenWith);
                 app.status.clear();
-                app.dialog = explorenova::app::Dialog::AppPick { items, sel: 0 };
+                app.dialog = explorenova::app::Dialog::AppPick {
+                    items,
+                    sel: 0,
+                    filter: String::new(),
+                };
             }
         }
         Action::ShellOnce => {

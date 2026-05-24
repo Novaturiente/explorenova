@@ -457,12 +457,33 @@ pub fn render_frame(
             return;
         }
         (_, crate::app::Dialog::None) => {}
-        (_, crate::app::Dialog::AppPick { items, sel }) => {
-            // Total rows = items + separator + custom-command entry.
-            let total = items.len() + 2;
+        (_, crate::app::Dialog::AppPick { items, sel, filter }) => {
+            use ratatui::style::Style as StStyle;
+            use ratatui::text::{Line, Span};
+            // Filtered indices into `items`. Custom-command row is always
+            // the last picker slot regardless of filter.
+            let needle = filter.to_lowercase();
+            let toks: Vec<&str> = needle.split_whitespace().collect();
+            let filtered: Vec<usize> = if toks.is_empty() {
+                (0..items.len()).collect()
+            } else {
+                items
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, a)| {
+                        let h = a.name.to_lowercase();
+                        toks.iter().all(|t| h.contains(t))
+                    })
+                    .map(|(i, _)| i)
+                    .collect()
+            };
+            let list_len = filtered.len() + 1; // +1 for Custom command...
+            // Total modal rows: filter line + separator + list (capped) + border
+            let visible_list = list_len.min(12);
+            let body_rows = 1 /* filter */ + 1 /* sep */ + visible_list;
             let r = crate::ui::modal::centered_rect(
                 50,
-                (total.min(14) as u16) + 2, // +2 for top/bottom border
+                body_rows as u16 + 2,
                 body,
             );
             f.render_widget(ratatui::widgets::Clear, r);
@@ -472,22 +493,47 @@ pub fn render_frame(
                 .title("Open with");
             let inner = block.inner(r);
             f.render_widget(block, r);
-            let mut lines: Vec<ratatui::text::Line> = Vec::with_capacity(total);
-            for (i, a) in items.iter().enumerate() {
+
+            // Filter row + separator at top.
+            let header = vec![
+                Line::from(vec![
+                    Span::styled(
+                        " / ",
+                        StStyle::default().fg(theme.dim),
+                    ),
+                    Span::raw(filter.clone()),
+                    Span::styled(
+                        "_",
+                        StStyle::default().fg(theme.dim),
+                    ),
+                ]),
+                Line::from(Span::styled(
+                    " ──────────────",
+                    StStyle::default().fg(theme.dim),
+                )),
+            ];
+            let header_rect = ratatui::layout::Rect {
+                height: 2,
+                ..inner
+            };
+            f.render_widget(Paragraph::new(header), header_rect);
+
+            // Scrollable list body below the header.
+            let list_rect = ratatui::layout::Rect {
+                y: inner.y + 2,
+                height: inner.height.saturating_sub(2),
+                ..inner
+            };
+            let mut lines: Vec<Line> = Vec::with_capacity(list_len);
+            for (i, &orig) in filtered.iter().enumerate() {
                 let marker = if i == *sel { "> " } else { "  " };
-                lines.push(ratatui::text::Line::from(format!(
-                    "{marker}{}",
-                    a.name
-                )));
+                lines.push(Line::from(format!("{marker}{}", items[orig].name)));
             }
-            lines.push(ratatui::text::Line::from("  ──────────────"));
-            let ci = items.len();
+            let ci = filtered.len();
             let cmarker = if *sel == ci { "> " } else { "  " };
-            lines.push(ratatui::text::Line::from(format!(
-                "{cmarker}Custom command…"
-            )));
-            let view = viewport_around(&lines, *sel, inner.height as usize);
-            f.render_widget(Paragraph::new(view), inner);
+            lines.push(Line::from(format!("{cmarker}Custom command…")));
+            let view = viewport_around(&lines, *sel, list_rect.height as usize);
+            f.render_widget(Paragraph::new(view), list_rect);
         }
         (_, crate::app::Dialog::Devices { items, sel }) => {
             use ratatui::style::Style;

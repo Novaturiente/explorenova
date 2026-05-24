@@ -13,7 +13,7 @@ pub enum Dialog {
     None,
     Input,
     Confirm,
-    AppPick { items: Vec<AppEntry>, sel: usize },
+    AppPick { items: Vec<AppEntry>, sel: usize, filter: String },
     Devices { items: Vec<crate::devices::Device>, sel: usize },
 }
 
