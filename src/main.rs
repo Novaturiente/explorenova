@@ -124,12 +124,13 @@ fn main() -> Result<()> {
             let _ = fs_tx.send(ev);
         }
     })?;
-    // Recursive watch walks subdirs to install inotify hooks; a single
-    // unreadable subdir (e.g. /tmp/systemd-private-* mode 0700) makes
-    // notify-rs return EACCES. Don't fail startup over it — the app
-    // still works, fs changes outside the watched subtree just won't
-    // auto-refresh.
-    if let Err(e) = watcher.watch(&start, RecursiveMode::Recursive) {
+    // NonRecursive: only watch the root dir's direct entries. Recursive
+    // mode walks every subdir to install inotify hooks at startup
+    // (5-10s on $HOME, plus EACCES from container/snap dirs aborts the
+    // walk). NonRecursive is constant-time and never fails on permission
+    // errors. Cost: fs changes inside subdirs aren't auto-detected
+    // until the user expands or refreshes that subtree manually.
+    if let Err(e) = watcher.watch(&start, RecursiveMode::NonRecursive) {
         eprintln!("warning: fs-watch disabled ({e})");
     }
 
