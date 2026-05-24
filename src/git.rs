@@ -20,7 +20,7 @@ pub fn scan_status(root: &Path) -> anyhow::Result<HashMap<PathBuf, GitStatus>> {
     for entry in repo.statuses(Some(&mut opts))?.iter() {
         let st = entry.status();
         let s = classify(st);
-        if let Some(rel) = entry.path() {
+        if let Ok(rel) = entry.path() {
             let abs = workdir.join(rel);
             bump(&mut out, abs.clone(), s);
             // aggregate onto ancestors up to workdir
