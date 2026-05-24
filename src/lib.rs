@@ -12,6 +12,7 @@ pub mod nav;
 pub mod preview;
 pub mod search;
 pub mod shell;
+pub mod sort;
 pub mod state;
 pub mod textinput;
 pub mod tree;
