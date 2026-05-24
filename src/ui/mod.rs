@@ -191,6 +191,7 @@ pub fn render_frame(
     cache: &mut PreviewCache,
     picker: &mut Picker,
     img_cache: &mut ImageCache,
+    keymap: &crate::keymap::Keymap,
 ) {
     // Split-pane mode: hide preview, render two equal tree panes
     // side by side (bookmarks pane still respects its visible flag).
@@ -582,7 +583,15 @@ pub fn render_frame(
             crate::sort::render_menu(r, f, &app.sort);
         }
         (crate::keymap::Mode::Help, _) => {
-            // Wired in Task 4. Render is a no-op until help::render exists.
+            let entries = crate::help::build_entries(keymap);
+            let mut content_rows: u16 = 1; // trailing "[any key dismisses]"
+            for c in &entries {
+                content_rows = content_rows.saturating_add(c.rows.len() as u16 + 2);
+            }
+            let w = 80u16.min(body.width.saturating_sub(4));
+            let h = (content_rows + 2).min(body.height.saturating_sub(2));
+            let r = crate::sort::centered_rect(w, h, body);
+            crate::help::render(r, f, &entries);
         }
     }
 }

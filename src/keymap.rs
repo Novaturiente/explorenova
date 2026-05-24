@@ -64,6 +64,7 @@ pub enum Action {
     SortByExt,
     SortToggleReverse,
     SortToggleDirFirst,
+    Help,
     Quit,
     Cancel,
 }
@@ -101,6 +102,7 @@ impl Action {
             "sort_ext" => SortByExt,
             "sort_reverse" => SortToggleReverse,
             "sort_dir_first" => SortToggleDirFirst,
+            "help" => Help,
             "parent" => Parent,
             "toggle_mark" => ToggleMark,
             "toggle_visual_mode" => ToggleVisualMode,
@@ -196,6 +198,7 @@ impl Keymap {
             (JumpHome, vec!["H"]),
             (NewTab, vec!["t"]), (CloseTab, vec!["w"]),
             (SortMenu, vec!["s"]),
+            (Help, vec!["?"]),
             (Quit, vec!["q"]), (Cancel, vec!["esc"]),
         ]
     }
@@ -229,6 +232,16 @@ impl Keymap {
     /// Could `buffer` still grow into a binding (e.g. "g" -> "gg")?
     pub fn is_prefix(&self, buffer: &str) -> bool {
         self.normal.keys().any(|k| k.len() > buffer.len() && k.starts_with(buffer))
+    }
+
+    /// Reverse-lookup: all chords currently bound to `action`, sorted.
+    pub fn keys_for(&self, action: Action) -> Vec<String> {
+        let mut v: Vec<String> = self.normal.iter()
+            .filter(|(_, &a)| a == action)
+            .map(|(k, _)| k.clone())
+            .collect();
+        v.sort();
+        v
     }
 }
 

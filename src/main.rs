@@ -159,7 +159,7 @@ fn main() -> Result<()> {
         }
 
         term.draw(|f| {
-            ui::render_frame(f, &mut app, &mut preview_cache, &mut picker, &mut img_cache)
+            ui::render_frame(f, &mut app, &mut preview_cache, &mut picker, &mut img_cache, &keymap)
         })?;
 
         const PREVIEW_DEBOUNCE_MS: u64 = 150;
@@ -1165,6 +1165,7 @@ fn handle(
             }
         }
         Action::SortMenu => app.mode = explorenova::keymap::Mode::SortMenu,
+        Action::Help => app.mode = explorenova::keymap::Mode::Help,
         Action::SortByName => {
             app.set_sort_mode(explorenova::sort::SortMode::Name);
             app.apply_sort();

@@ -6,6 +6,7 @@ pub mod config;
 pub mod devices;
 pub mod fs_ops;
 pub mod git;
+pub mod help;
 pub mod icons;
 pub mod keymap;
 pub mod nav;
