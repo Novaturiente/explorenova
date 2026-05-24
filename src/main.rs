@@ -1172,11 +1172,13 @@ fn handle(
                 }
                 return Ok(());
             }
-            // Enter: directories toggle expand/collapse (pure reducer);
-            // files open in the default application.
+            // Enter: directories re-root the tree at that folder (cd-in
+            // semantics); files open in the default application. Use h/l
+            // (or arrow keys) to expand/collapse without re-rooting.
             if let Some(&id) = app.visible.get(app.selected) {
                 if app.arena.nodes[id].is_dir() {
-                    app.apply(Action::Toggle);
+                    let p = app.arena.nodes[id].path.clone();
+                    reroot(app, &p, git_tx);
                 } else {
                     let p = app.arena.nodes[id].path.clone();
                     if let Err(e) = open::that_detached(&p) {
