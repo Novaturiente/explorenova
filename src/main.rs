@@ -124,14 +124,31 @@ fn main() -> Result<()> {
             let _ = fs_tx.send(ev);
         }
     })?;
-    // NonRecursive: only watch the root dir's direct entries. Recursive
-    // mode walks every subdir to install inotify hooks at startup
-    // (5-10s on $HOME, plus EACCES from container/snap dirs aborts the
-    // walk). NonRecursive is constant-time and never fails on permission
-    // errors. Cost: fs changes inside subdirs aren't auto-detected
-    // until the user expands or refreshes that subtree manually.
+    // Watch the root dir's direct entries immediately (constant time,
+    // never fails on perms — covers the common case where the user
+    // edits files in cwd). Recursive coverage is installed on a
+    // background thread so the TUI draws its first frame without
+    // waiting for a $HOME-sized inotify walk (5-10s). Subtree changes
+    // start being detected as soon as the background install reaches
+    // them, fully active within ~10s — no perceived startup delay.
     if let Err(e) = watcher.watch(&start, RecursiveMode::NonRecursive) {
         eprintln!("warning: fs-watch disabled ({e})");
+    }
+    {
+        let start_bg = start.clone();
+        std::thread::spawn(move || {
+            // Re-watch the same root recursively. notify-rs treats a
+            // second `watch` on the same path as an upgrade (it doesn't
+            // dup events). EACCES on deep dirs aborts the walk early
+            // but the partial coverage installed before the error is
+            // kept — better than no recursive coverage at all.
+            if let Err(e) = watcher.watch(&start_bg, RecursiveMode::Recursive) {
+                eprintln!("warning: fs-watch recursive coverage partial ({e})");
+            }
+            // Keep the watcher alive for the process lifetime. Dropping
+            // it cancels every installed inotify hook.
+            std::thread::park();
+        });
     }
 
     let mut picker = ui::make_picker();
