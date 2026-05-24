@@ -184,6 +184,33 @@ fn main() -> Result<()> {
             }
         }
 
+        // Poll any in-flight background op (copy/move/extract). On
+        // terminal status, refresh the tree, reveal the destination,
+        // and surface the worker's status text.
+        if let Some(op) = app.op.as_mut() {
+            op.poll();
+            if op.finished.is_some() {
+                let state = app.op.take().unwrap();
+                let reveal = state.reveal_hint.clone();
+                let res = state.finished.unwrap();
+                refresh_in_place(&mut app, &git_tx);
+                if let Some(target) = reveal {
+                    if let Ok(Some(id)) = app.arena.reveal(&target) {
+                        app.visible = app.arena.flatten();
+                        if let Some(i) =
+                            app.visible.iter().position(|&n| n == id)
+                        {
+                            app.selected = i;
+                        }
+                    }
+                }
+                app.status = match res {
+                    Ok(s) => s,
+                    Err(e) => format!("op failed: {e}"),
+                };
+            }
+        }
+
         // Auto-stamp status timestamp on any change so the 3s fade in the
         // status bar Left segment behaves whether the assignment went
         // through `set_status` or a direct `app.status = X`.
@@ -203,7 +230,11 @@ fn main() -> Result<()> {
             // 200ms is the existing default; never wait longer than that
             // (so fs/git channels still get drained promptly).
             // When debounce is already past, remaining == 0 and we use 200.
-            if remaining == 0 { 200 } else { remaining.min(200) }
+            let base = if remaining == 0 { 200 } else { remaining.min(200) };
+            // During a long op, poll on a short tick so the progress
+            // gauge / spinner refreshes smoothly even when no key event
+            // arrives.
+            if app.op.is_some() { base.min(80) } else { base }
         };
         if !event::poll(Duration::from_millis(poll_ms))? {
             continue;
@@ -1039,6 +1070,10 @@ fn handle(
             }
         }
         Action::Paste => {
+            if app.op.is_some() {
+                app.status = "another op in progress".into();
+                return Ok(());
+            }
             let snapshot = app.clipboard.clone();
             let Some((srcs, is_cut)) = snapshot else {
                 app.status = "nothing to paste".into();
@@ -1061,44 +1096,17 @@ fn handle(
             } else {
                 explorenova::fs_ops::PasteMode::Copy
             };
-            let n = srcs.len();
-            let mut ok = 0usize;
-            let mut failed: Vec<String> = Vec::new();
-            let mut moved: Vec<std::path::PathBuf> = Vec::new();
-            for src in &srcs {
-                match explorenova::fs_ops::paste(src, &dst_dir, mode) {
-                    Ok(_) => {
-                        ok += 1;
-                        if is_cut {
-                            moved.push(src.clone());
-                        }
-                    }
-                    Err(_) => failed.push(src.display().to_string()),
-                }
-            }
-            app.status = if failed.is_empty() {
-                format!("pasted {n} -> {}", dst_dir.display())
-            } else {
-                let preview =
-                    failed.iter().take(2).cloned().collect::<Vec<_>>().join(", ");
-                let tail = if failed.len() > 2 { ", …" } else { "" };
-                format!(
-                    "pasted {}/{} -> {} ({} failed: {}{})",
-                    ok,
-                    n,
-                    dst_dir.display(),
-                    failed.len(),
-                    preview,
-                    tail
-                )
-            };
+            // Cut clears clipboard + marks immediately (matches the
+            // pre-async behaviour where moved sources became unreachable
+            // post-paste). Capture src list before moving into worker.
             if is_cut {
                 app.clipboard = None;
-                for p in &moved {
+                for p in &srcs {
                     app.marks.remove(p);
                 }
             }
-            refresh_in_place(app, git_tx);
+            app.op = Some(explorenova::ops::spawn_paste(srcs, dst_dir, mode));
+            app.status = "starting…".into();
         }
         Action::OpenWith => {
             if let Some(&id) = app.visible.get(app.selected) {
@@ -1183,33 +1191,13 @@ fn handle(
                 } else {
                     let p = app.arena.nodes[id].path.clone();
                     if explorenova::fs_ops::is_archive(&p) {
-                        app.status = format!(
-                            "extracting {}...",
-                            p.file_name().and_then(|s| s.to_str()).unwrap_or("?")
-                        );
-                        match explorenova::fs_ops::extract_archive(&p) {
-                            Ok(dest) => {
-                                refresh_in_place(app, git_tx);
-                                if let Ok(Some(rid)) = app.arena.reveal(&dest) {
-                                    app.visible = app.arena.flatten();
-                                    if let Some(i) = app
-                                        .visible
-                                        .iter()
-                                        .position(|&n| n == rid)
-                                    {
-                                        app.selected = i;
-                                    }
-                                }
-                                app.status = format!(
-                                    "extracted to {}",
-                                    dest.file_name()
-                                        .and_then(|s| s.to_str())
-                                        .unwrap_or("?")
-                                );
-                            }
-                            Err(e) => {
-                                app.status = format!("extract failed: {e}");
-                            }
+                        if app.op.is_some() {
+                            app.status = "another op in progress".into();
+                        } else if let Some(state) =
+                            explorenova::ops::spawn_extract(p.clone())
+                        {
+                            app.op = Some(state);
+                            app.status = "starting…".into();
                         }
                     } else if let Err(e) = open::that_detached(&p) {
                         app.status = format!("open failed: {e}");

@@ -76,6 +76,10 @@ pub struct App {
     pub disk_free: Option<(PathBuf, u64, std::time::Instant)>,
     /// Timestamp of last `set_status` call. Status text fades after 3s.
     pub status_set_at: std::time::Instant,
+    /// In-flight long-running op (copy/move/extract). `None` when idle.
+    /// While `Some`, the modal overlay renders a progress bar / spinner
+    /// and conflicting dispatch arms are no-ops.
+    pub op: Option<crate::ops::OpState>,
 }
 
 impl App {
@@ -108,6 +112,7 @@ impl App {
             sort,
             disk_free: None,
             status_set_at: std::time::Instant::now(),
+            op: None,
         }
     }
 

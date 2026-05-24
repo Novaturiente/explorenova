@@ -10,6 +10,7 @@ pub mod help;
 pub mod icons;
 pub mod keymap;
 pub mod nav;
+pub mod ops;
 pub mod preview;
 pub mod search;
 pub mod shell;

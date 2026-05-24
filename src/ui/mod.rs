@@ -185,6 +185,78 @@ pub fn render_image(
     }
 }
 
+/// Render a floating progress modal for an in-flight long op
+/// (copy/move/extract). Bytes-based ops show a Gauge; extract
+/// (indeterminate) shows a spinner + elapsed time.
+fn render_op_modal(
+    f: &mut Frame,
+    body: ratatui::layout::Rect,
+    op: &crate::ops::OpState,
+) {
+    use ratatui::style::{Color, Modifier, Style};
+    use ratatui::text::{Line, Span};
+    use ratatui::widgets::{Block, Borders, Clear, Gauge, Paragraph};
+    let r = crate::sort::centered_rect(60, 6, body);
+    f.render_widget(Clear, r);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(ratatui::widgets::BorderType::Rounded)
+        .title(format!(" {} ", op.kind.verb()));
+    let inner = block.inner(r);
+    f.render_widget(block, r);
+
+    // Top line: label + elapsed seconds.
+    let elapsed = op.started_at.elapsed().as_secs();
+    let label_rect = ratatui::layout::Rect {
+        height: 1,
+        ..inner
+    };
+    f.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::raw(op.label.clone()),
+            Span::styled(format!("  ({elapsed}s)"), Style::default().fg(Color::DarkGray)),
+        ])),
+        label_rect,
+    );
+
+    // Bar line: gauge for byte-based ops, spinner for indeterminate.
+    let bar_rect = ratatui::layout::Rect {
+        y: inner.y + 2,
+        height: 1,
+        ..inner
+    };
+    if op.indeterminate || op.total_bytes == 0 {
+        let frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+        let i = (op.started_at.elapsed().as_millis() / 100) as usize;
+        let frame = frames[i % frames.len()];
+        f.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    format!("{frame} "),
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw("working…"),
+            ])),
+            bar_rect,
+        );
+    } else {
+        let pct = (op.done_bytes as f64 / op.total_bytes as f64 * 100.0)
+            .clamp(0.0, 100.0) as u16;
+        let gauge = Gauge::default()
+            .gauge_style(Style::default().fg(Color::Cyan))
+            .percent(pct)
+            .label(format!(
+                "{} / {}  ({}%)",
+                crate::status::human_bytes(op.done_bytes),
+                crate::status::human_bytes(op.total_bytes),
+                pct
+            ));
+        f.render_widget(gauge, bar_rect);
+    }
+}
+
 /// Slice `lines` to a viewport of `visible` rows that keeps `sel` in
 /// view. Anchors selection roughly in the middle when scrolling.
 fn viewport_around<T: Clone>(lines: &[T], sel: usize, visible: usize) -> Vec<T> {
@@ -434,6 +506,14 @@ pub fn render_frame(
     // 3-segment status bar (Left: cursor meta/status, Center: selection,
     // Right: items + free disk). VISUAL flag is folded into Left segment.
     crate::status::render(prompt_area, f, app);
+
+    // In-flight long op: render a floating progress modal on top of
+    // everything else and return early so other modal arms don't paint
+    // over it. The op completion is detected and cleared in main.rs.
+    if let Some(op) = &app.op {
+        render_op_modal(f, body, op);
+        return;
+    }
 
     // Modal overlay (input / confirm) centered over the body.
     // SortMenu and Help live on Mode (not Dialog) so they must be matched
