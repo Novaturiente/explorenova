@@ -83,6 +83,9 @@ pub struct App {
     /// Scroll offset (in lines) for the help overlay. Reset to 0 each
     /// time the user opens `?`.
     pub help_scroll: usize,
+    /// Filter string for the help overlay. Typed chars narrow the
+    /// visible entries (substring, case-insensitive). Cleared on open.
+    pub help_filter: String,
 }
 
 impl App {
@@ -117,6 +120,7 @@ impl App {
             status_set_at: std::time::Instant::now(),
             op: None,
             help_scroll: 0,
+            help_filter: String::new(),
         }
     }
 

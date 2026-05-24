@@ -591,7 +591,14 @@ pub fn render_frame(
             // Always request a large rect; adaptive_rect clamps it to
             // 80% of the terminal. Scrolling handles tall content.
             let r = crate::ui::modal::adaptive_rect(78, 40, body);
-            crate::help::render(r, f, &entries, &theme, app.help_scroll);
+            crate::help::render(
+                r,
+                f,
+                &entries,
+                &theme,
+                app.help_scroll,
+                &app.help_filter,
+            );
             return;
         }
         (_, crate::app::Dialog::None) => {}

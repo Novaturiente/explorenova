@@ -269,8 +269,9 @@ fn main() -> Result<()> {
                     }
                 }
                 Mode::Help => {
-                    // j/k/down/up scroll; Ctrl-d/Ctrl-u half-page;
-                    // anything else (esc, ?, etc.) dismisses.
+                    // Arrow keys + Ctrl-d/u scroll; Backspace trims
+                    // filter; Esc closes (or clears filter first when
+                    // non-empty); printable chars append to filter.
                     let scroll_step = |app: &mut explorenova::app::App, by: i32| {
                         if by < 0 {
                             app.help_scroll =
@@ -282,27 +283,39 @@ fn main() -> Result<()> {
                     };
                     let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
                     match (k.code, ctrl) {
-                        (KeyCode::Char('j'), false) | (KeyCode::Down, _) => {
-                            scroll_step(&mut app, 1);
+                        (KeyCode::Down, _) => scroll_step(&mut app, 1),
+                        (KeyCode::Up, _) => scroll_step(&mut app, -1),
+                        (KeyCode::PageDown, _) => scroll_step(&mut app, 8),
+                        (KeyCode::PageUp, _) => scroll_step(&mut app, -8),
+                        (KeyCode::Char('d'), true) => scroll_step(&mut app, 8),
+                        (KeyCode::Char('u'), true) => scroll_step(&mut app, -8),
+                        (KeyCode::Home, _) => app.help_scroll = 0,
+                        (KeyCode::End, _) => app.help_scroll = usize::MAX / 2,
+                        (KeyCode::Esc, _) => {
+                            if app.help_filter.is_empty() {
+                                app.mode = Mode::Normal;
+                                app.help_scroll = 0;
+                            } else {
+                                app.help_filter.clear();
+                                app.help_scroll = 0;
+                            }
                         }
-                        (KeyCode::Char('k'), false) | (KeyCode::Up, _) => {
-                            scroll_step(&mut app, -1);
-                        }
-                        (KeyCode::Char('d'), true) => {
-                            scroll_step(&mut app, 8);
-                        }
-                        (KeyCode::Char('u'), true) => {
-                            scroll_step(&mut app, -8);
-                        }
-                        (KeyCode::Char('g'), false) => {
+                        (KeyCode::Backspace, _) => {
+                            app.help_filter.pop();
                             app.help_scroll = 0;
                         }
-                        (KeyCode::Char('G'), false) => {
-                            app.help_scroll = usize::MAX / 2; // clamped at render
+                        (KeyCode::Char(c), false) => {
+                            // Allow any printable char for the filter.
+                            // Space, punctuation, digits all useful for
+                            // multi-token search (e.g. "ctrl t").
+                            app.help_filter.push(c);
+                            app.help_scroll = 0;
                         }
                         _ => {
+                            // Enter / unknown key: close.
                             app.mode = Mode::Normal;
                             app.help_scroll = 0;
+                            app.help_filter.clear();
                         }
                     }
                 }
@@ -1282,6 +1295,7 @@ fn handle(
         Action::SortMenu => app.mode = explorenova::keymap::Mode::SortMenu,
         Action::Help => {
             app.help_scroll = 0;
+            app.help_filter.clear();
             app.mode = explorenova::keymap::Mode::Help;
         }
         Action::SortByName => {

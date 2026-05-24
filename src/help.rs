@@ -90,22 +90,48 @@ pub fn build_entries(km: &Keymap) -> Vec<HelpCategory> {
     out
 }
 
+fn row_matches(needle: &[&str], category: &str, label: &str, keys: &str) -> bool {
+    if needle.is_empty() {
+        return true;
+    }
+    let hay = format!("{category} {label} {keys}").to_lowercase();
+    needle.iter().all(|t| hay.contains(t))
+}
+
 /// Build the full list of styled lines for the help overlay. Splitting
 /// this from `render` lets callers measure total rows for scroll
-/// clamping.
-pub fn build_lines(entries: &[HelpCategory], theme: &Theme, inner_w: usize) -> Vec<Line<'static>> {
+/// clamping. `filter` does a case-insensitive multi-token substring
+/// match against `category + label + keys`; empty filter shows all.
+pub fn build_lines(
+    entries: &[HelpCategory],
+    theme: &Theme,
+    inner_w: usize,
+    filter: &str,
+) -> Vec<Line<'static>> {
+    let needle_owned: String = filter.to_lowercase();
+    let toks: Vec<&str> = needle_owned.split_whitespace().collect();
     let mut lines: Vec<Line<'static>> = Vec::new();
-    for (idx, cat) in entries.iter().enumerate() {
-        if idx > 0 {
+    let mut shown_any = false;
+    for cat in entries.iter() {
+        let matching: Vec<&(String, String)> = cat
+            .rows
+            .iter()
+            .filter(|(l, k)| row_matches(&toks, cat.name, l, k))
+            .collect();
+        if matching.is_empty() {
+            continue;
+        }
+        if shown_any {
             lines.push(Line::from(""));
         }
+        shown_any = true;
         lines.push(Line::from(Span::styled(
             cat.name.to_string(),
             Style::default()
                 .fg(theme.header)
                 .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         )));
-        for (label, keys) in &cat.rows {
+        for (label, keys) in matching {
             // Fit "  label  ···  keys" into inner_w. If too tight,
             // drop the dotted leader and just use a single-space gap.
             let prefix_len = 2 + label.len() + 2; // "  label  "
@@ -152,6 +178,7 @@ pub fn render(
     entries: &[HelpCategory],
     theme: &Theme,
     scroll: usize,
+    filter: &str,
 ) {
     use crate::ui::modal;
     frame.render_widget(Clear, area);
@@ -159,35 +186,80 @@ pub fn render(
     let inner = modal::pad_inner(block.inner(area));
     frame.render_widget(block, area);
 
-    // Reserve last row for the dim hint footer; rest is scrollable.
-    let footer_rows: u16 = 1;
-    let body_h = inner.height.saturating_sub(footer_rows).max(1) as usize;
+    // Layout: [filter row][separator row][...body...][footer row]
+    let header_h: u16 = 2;
+    let footer_h: u16 = 1;
+    let body_h = inner
+        .height
+        .saturating_sub(header_h + footer_h)
+        .max(1) as usize;
+    let header_rect = ratatui::layout::Rect {
+        height: header_h,
+        ..inner
+    };
     let body_rect = ratatui::layout::Rect {
+        y: inner.y + header_h,
         height: body_h as u16,
         ..inner
     };
     let footer_rect = ratatui::layout::Rect {
-        y: inner.y + inner.height.saturating_sub(footer_rows),
-        height: footer_rows,
+        y: inner.y + inner.height.saturating_sub(footer_h),
+        height: footer_h,
         ..inner
     };
 
-    let all = build_lines(entries, theme, inner.width as usize);
-    let max_scroll = all.len().saturating_sub(body_h);
-    let s = scroll.min(max_scroll);
-    let view: Vec<Line> = all.iter().skip(s).take(body_h).cloned().collect();
-    frame.render_widget(Paragraph::new(view), body_rect);
-
-    // Scroll position indicator + dismiss hint.
-    let hint = if max_scroll > 0 {
-        format!(
-            " j/k or ↑↓ scroll · {} / {} · any other key closes",
-            s + 1,
-            max_scroll + 1
-        )
+    // Filter row + separator.
+    let filter_line = if filter.is_empty() {
+        Line::from(vec![
+            Span::styled("/ ", Style::default().fg(theme.match_hl)),
+            Span::styled("type to filter…", Style::default().fg(theme.dim)),
+        ])
     } else {
-        " any key closes".to_string()
+        Line::from(vec![
+            Span::styled(
+                "/ ",
+                Style::default()
+                    .fg(theme.match_hl)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(filter.to_string()),
+            Span::styled("▏", Style::default().fg(theme.match_hl)),
+        ])
     };
+    let sep = Line::from(Span::styled(
+        "─".repeat(inner.width as usize),
+        Style::default().fg(theme.dim),
+    ));
+    frame.render_widget(Paragraph::new(vec![filter_line, sep]), header_rect);
+
+    // Body (filtered + scrolled).
+    let all = build_lines(entries, theme, inner.width as usize, filter);
+    if all.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "  no matches",
+                Style::default().fg(theme.dim),
+            )),
+            body_rect,
+        );
+    } else {
+        let max_scroll = all.len().saturating_sub(body_h);
+        let s = scroll.min(max_scroll);
+        let view: Vec<Line> = all.iter().skip(s).take(body_h).cloned().collect();
+        frame.render_widget(Paragraph::new(view), body_rect);
+    }
+
+    // Footer.
+    let max_scroll = all.len().saturating_sub(body_h);
+    let pos_hint = if max_scroll > 0 {
+        let s = scroll.min(max_scroll);
+        format!(" {}/{} ·", s + 1, max_scroll + 1)
+    } else {
+        String::new()
+    };
+    let hint = format!(
+        "{pos_hint} ↑↓ scroll · type to filter · ⌫ trim · esc close"
+    );
     frame.render_widget(
         Paragraph::new(Span::styled(hint, Style::default().fg(theme.dim))),
         footer_rect,
@@ -232,5 +304,27 @@ mod tests {
         let km = Keymap::build(&BTreeMap::new());
         let keys = km.keys_for(Action::Help);
         assert_eq!(keys, vec!["?"]);
+    }
+
+    #[test]
+    fn row_matches_substring() {
+        // Note: caller lowercases tokens before calling row_matches;
+        // these tests pass already-lowercased tokens.
+        assert!(row_matches(&["quit"], "Shell / Misc", "Quit", "q"));
+        assert!(row_matches(&["tab"], "Panes / Tabs", "New tab (split)", "t"));
+        // Multi-token: every token must match the haystack.
+        assert!(row_matches(&["ctrl", "page"], "nav", "Half page down", "ctrl-d"));
+        assert!(!row_matches(&["xyz"], "nav", "Quit", "q"));
+    }
+
+    #[test]
+    fn build_lines_filter_narrows_rows() {
+        let km = Keymap::build(&BTreeMap::new());
+        let entries = build_entries(&km);
+        let theme = crate::ui::theme::Theme::default();
+        let all = build_lines(&entries, &theme, 80, "");
+        let only_quit = build_lines(&entries, &theme, 80, "quit");
+        assert!(all.len() > only_quit.len());
+        assert!(!only_quit.is_empty());
     }
 }
