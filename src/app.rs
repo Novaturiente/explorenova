@@ -63,6 +63,11 @@ pub struct App {
     /// Inactive tab(s). Empty = single-tab mode. Len 1 = split mode
     /// (`tabs[0]` is the other pane; App fields are the active pane).
     pub tabs: Vec<PaneSnapshot>,
+    /// Visual slot of the active pane in split mode: 0 = left, 1 = right.
+    /// The render layer dispatches App fields to this slot and `tabs[0]`
+    /// to the other slot so positions stay fixed across Tab swaps —
+    /// only the highlight (and which pane receives keystrokes) moves.
+    pub active_slot: u8,
 }
 
 impl App {
@@ -89,6 +94,7 @@ impl App {
             cursor_moved_at: std::time::Instant::now(),
             bookmark_sel: 0,
             tabs: Vec::new(),
+            active_slot: 0,
         }
     }
 
@@ -117,6 +123,8 @@ impl App {
         };
         self.visible = self.arena.flatten();
         self.tabs.push(snap);
+        // New tab lives in the right slot and starts active.
+        self.active_slot = 1;
         Ok(())
     }
 
@@ -133,9 +141,15 @@ impl App {
         self.visual_mode = snap.visual_mode;
         self.search_results = snap.search_results;
         self.search_idx = snap.search_idx;
+        // Back to single mode — only one slot exists.
+        self.active_slot = 0;
     }
 
-    /// Swap active and inactive tab. No-op when not split.
+    /// Move focus to the other tab without changing visual positions.
+    /// Internally swaps the data between App fields and `tabs[0]` and
+    /// flips `active_slot`, so the render layer puts the active pane in
+    /// the same screen position it occupied before — only the highlight
+    /// (and the pane that now receives keystrokes) moves.
     pub fn swap_tab(&mut self) {
         let Some(snap) = self.tabs.first_mut() else {
             return;
@@ -147,6 +161,7 @@ impl App {
         std::mem::swap(&mut self.visual_mode, &mut snap.visual_mode);
         std::mem::swap(&mut self.search_results, &mut snap.search_results);
         std::mem::swap(&mut self.search_idx, &mut snap.search_idx);
+        self.active_slot ^= 1;
     }
 
     fn refresh_visible(&mut self) {
@@ -842,6 +857,34 @@ mod tests {
         // marks moved with the swap
         assert_eq!(a.marks, marks_a);
         assert_eq!(a.tabs[0].marks, marks_b);
+    }
+
+    #[test]
+    fn open_tab_sets_active_slot_to_right() {
+        let mut a = app();
+        assert_eq!(a.active_slot, 0, "single mode: only slot 0 exists");
+        a.open_tab().unwrap();
+        assert_eq!(a.active_slot, 1, "new tab is in the right slot");
+    }
+
+    #[test]
+    fn swap_tab_toggles_active_slot() {
+        let mut a = app();
+        a.open_tab().unwrap();
+        assert_eq!(a.active_slot, 1);
+        a.swap_tab();
+        assert_eq!(a.active_slot, 0, "swap moves focus to left slot");
+        a.swap_tab();
+        assert_eq!(a.active_slot, 1, "swap back");
+    }
+
+    #[test]
+    fn close_tab_resets_active_slot() {
+        let mut a = app();
+        a.open_tab().unwrap();
+        assert_eq!(a.active_slot, 1);
+        a.close_tab();
+        assert_eq!(a.active_slot, 0);
     }
 
     #[test]

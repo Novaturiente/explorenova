@@ -256,29 +256,48 @@ pub fn render_frame(
     for (i, (name, _)) in cons.iter().enumerate() {
         let area: Rect = chunks[i];
         match name.as_str() {
-            "tree" => {
-                // Inner width = pane width minus the two rounded borders.
+            "tree" | "tree_other" => {
+                // Slot index: "tree" = 0 (left), "tree_other" = 1 (right).
+                // In single mode "tree" is the only slot and always
+                // hosts App fields; "tree_other" is unused.
+                // In split mode the App fields render in the slot named
+                // by `active_slot`; the inactive `tabs[0]` data renders
+                // in the other slot. This keeps screen positions fixed
+                // across Tab swaps — only the highlight moves.
+                let slot: u8 = if name == "tree" { 0 } else { 1 };
+                let app_here = !split || app.active_slot == slot;
                 let inner_w = area.width.saturating_sub(2);
-                let items: Vec<ratatui::widgets::ListItem> = app
-                    .visible
+                let (arena_ref, visible_ref, selected_ref, marks_ref):
+                    (&crate::tree::Arena, &Vec<usize>, usize, &std::collections::BTreeSet<std::path::PathBuf>) =
+                    if app_here {
+                        (&app.arena, &app.visible, app.selected, &app.marks)
+                    } else {
+                        let snap = match app.tabs.first() {
+                            Some(s) => s,
+                            None => continue,
+                        };
+                        (&snap.arena, &snap.visible, snap.selected, &snap.marks)
+                    };
+                let items: Vec<ratatui::widgets::ListItem> = visible_ref
                     .iter()
                     .enumerate()
                     .map(|(idx, &id)| {
                         ratatui::widgets::ListItem::new(crate::ui::panes::tree_row(
-                            &app.arena,
+                            arena_ref,
                             id,
-                            idx == app.selected,
+                            idx == selected_ref,
                             &theme,
                             app.config.icons,
-                            app.marks.contains(&app.arena.nodes[id].path),
+                            marks_ref.contains(&arena_ref.nodes[id].path),
                             inner_w,
                         ))
                     })
                     .collect();
-                // In split mode the active pane gets a • marker + cyan
-                // border so the eye can locate the focused tree at a glance.
-                let title = if split { "tree •".to_string() } else { "tree".to_string() };
-                let border_style = if split {
+                // Active pane (in split mode) gets the • marker and a
+                // cyan border so the focused tree is visible at a glance.
+                let is_active = split && app_here;
+                let title = if is_active { "tree •".to_string() } else { "tree".to_string() };
+                let border_style = if is_active {
                     ratatui::style::Style::default().fg(theme.mark)
                 } else {
                     ratatui::style::Style::default()
@@ -295,41 +314,7 @@ pub fn render_frame(
                         ratatui::style::Style::default().bg(theme.selected_bg),
                     );
                 let mut st = ratatui::widgets::ListState::default();
-                st.select(Some(app.selected));
-                f.render_stateful_widget(list, area, &mut st);
-            }
-            "tree_other" => {
-                // Inactive tab's tree. Renders from app.tabs[0].
-                let Some(snap) = app.tabs.first() else { continue };
-                let inner_w = area.width.saturating_sub(2);
-                let items: Vec<ratatui::widgets::ListItem> = snap
-                    .visible
-                    .iter()
-                    .enumerate()
-                    .map(|(idx, &id)| {
-                        ratatui::widgets::ListItem::new(crate::ui::panes::tree_row(
-                            &snap.arena,
-                            id,
-                            idx == snap.selected,
-                            &theme,
-                            app.config.icons,
-                            snap.marks.contains(&snap.arena.nodes[id].path),
-                            inner_w,
-                        ))
-                    })
-                    .collect();
-                let list = ratatui::widgets::List::new(items)
-                    .block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .border_type(ratatui::widgets::BorderType::Rounded)
-                            .title("tree"),
-                    )
-                    .highlight_style(
-                        ratatui::style::Style::default().bg(theme.selected_bg),
-                    );
-                let mut st = ratatui::widgets::ListState::default();
-                st.select(Some(snap.selected));
+                st.select(Some(selected_ref));
                 f.render_stateful_widget(list, area, &mut st);
             }
             "bookmarks" => {
