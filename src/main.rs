@@ -154,7 +154,6 @@ fn main() -> Result<()> {
     let _guard = TermGuard::new()?;
     let mut term = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     let mut chord = String::new();
-    let mut prev_status = String::new();
     let mut img_cache = ui::ImageCache::default();
     let mut fs_dirty_since: Option<Instant> = None;
 
@@ -197,20 +196,14 @@ fn main() -> Result<()> {
                 if let Some(target) = reveal {
                     app.navigate_to(&target);
                 }
-                app.status = match res {
+                let msg = match res {
                     Ok(s) => s,
                     Err(e) => format!("op failed: {e}"),
                 };
+                app.set_status(msg);
             }
         }
 
-        // Auto-stamp status timestamp on any change so the 3s fade in the
-        // status bar Left segment behaves whether the assignment went
-        // through `set_status` or a direct `app.status = X`.
-        if app.status != prev_status {
-            app.status_set_at = std::time::Instant::now();
-            prev_status = app.status.clone();
-        }
         app.refresh_disk_free();
         term.draw(|f| {
             ui::render_frame(f, &mut app, &mut preview_cache, &mut picker, &mut img_cache, &keymap)
@@ -357,7 +350,7 @@ fn main() -> Result<()> {
                                     }
                                 }
                                 Err(e) => {
-                                    app.status = format!("devices: {e}");
+                                    app.set_status(format!("devices: {e}"));
                                 }
                             }
                         }
@@ -374,14 +367,15 @@ fn main() -> Result<()> {
                                 if d.is_mounted() {
                                     match explorenova::devices::unmount(&d.device) {
                                         Ok(_) => {
-                                            app.status = format!(
+                                            app.set_status(format!(
                                                 "unmounted {}",
                                                 d.device
-                                            );
+                                            ));
                                         }
                                         Err(e) => {
-                                            app.status =
-                                                format!("umount failed: {e}");
+                                            app.set_status(format!(
+                                                "umount failed: {e}"
+                                            ));
                                         }
                                     }
                                     // refresh
@@ -400,7 +394,7 @@ fn main() -> Result<()> {
                                         }
                                     }
                                 } else {
-                                    app.status = "not mounted".into();
+                                    app.set_status("not mounted");
                                 }
                             }
                         }
@@ -433,16 +427,16 @@ fn main() -> Result<()> {
                                                 app.arena = na;
                                                 app.visible = app.arena.flatten();
                                                 app.selected = 0;
-                                                app.status = format!(
+                                                app.set_status(format!(
                                                     "rooted at {}",
                                                     mp.display()
-                                                );
+                                                ));
                                             }
                                             Err(e) => {
-                                                app.status = format!(
+                                                app.set_status(format!(
                                                     "cannot open {}: {e}",
                                                     mp.display()
-                                                );
+                                                ));
                                             }
                                         }
                                     }
@@ -452,12 +446,14 @@ fn main() -> Result<()> {
                                     // unmounted → mount + refresh, stay
                                     match explorenova::devices::mount(&d.device) {
                                         Ok(_) => {
-                                            app.status =
-                                                format!("mounted {}", d.device);
+                                            app.set_status(format!(
+                                                "mounted {}", d.device
+                                            ));
                                         }
                                         Err(e) => {
-                                            app.status =
-                                                format!("mount failed: {e}");
+                                            app.set_status(format!(
+                                                "mount failed: {e}"
+                                            ));
                                         }
                                     }
                                     if let Ok(items) =
@@ -607,7 +603,7 @@ fn main() -> Result<()> {
                             Some(Action::PathInput) => {
                                 let target = explorenova::nav::expand(&app.input.value());
                                 if !app.navigate_to(std::path::Path::new(&target)) {
-                                    app.status = "path not found".into();
+                                    app.set_status("path not found");
                                 }
                                 app.mode = Mode::Normal;
                             }
@@ -619,7 +615,7 @@ fn main() -> Result<()> {
                                             .arg(&p)
                                             .spawn()
                                     {
-                                        app.status = format!("open failed: {e}");
+                                        app.set_status(format!("open failed: {e}"));
                                     }
                                 }
                                 app.mode = Mode::Normal;
@@ -628,7 +624,7 @@ fn main() -> Result<()> {
                                 let cmd = app.input.value();
                                 app.mode = Mode::Normal;
                                 if let Err(e) = explorenova::shell::run_once(&start, &cmd) {
-                                    app.status = format!("shell failed: {e}");
+                                    app.set_status(format!("shell failed: {e}"));
                                 }
                             }
                             _ => app.mode = Mode::Normal,
@@ -760,11 +756,11 @@ fn reroot(app: &mut App, path: &std::path::Path, git_tx: &mpsc::Sender<()>) {
             app.arena = na;
             app.visible = app.arena.flatten();
             app.selected = 0;
-            app.status = format!("rooted at {}", path.display());
+            app.set_status(format!("rooted at {}", path.display()));
             let _ = git_tx.send(());
         }
         Err(e) => {
-            app.status = format!("cannot open {}: {e}", path.display());
+            app.set_status(format!("cannot open {}: {e}", path.display()));
         }
     }
 }
@@ -843,7 +839,7 @@ fn ascend(app: &mut App) {
     let parent = match root_path.parent() {
         Some(p) if p != root_path => p.to_path_buf(),
         _ => {
-            app.status = "at filesystem root".into();
+            app.set_status("at filesystem root");
             return;
         }
     };
@@ -862,7 +858,7 @@ fn ascend(app: &mut App) {
             app.navigate_to(&root_path);
         }
         Err(_) => {
-            app.status = format!("cannot open {}", parent.display());
+            app.set_status(format!("cannot open {}", parent.display()));
         }
     }
 }
@@ -889,7 +885,7 @@ fn handle(
             // glitch, stdin EOF on readline) into a status message and
             // keep the app alive.
             if let Err(e) = shell::drop_to_shell(cwd) {
-                app.status = format!("shell: {e}");
+                app.set_status(format!("shell: {e}"));
             }
         }
         Action::ShowDevices => {
@@ -900,7 +896,7 @@ fn handle(
                     app.mode = explorenova::keymap::Mode::Input;
                 }
                 Err(e) => {
-                    app.status = format!("devices: {e}");
+                    app.set_status(format!("devices: {e}"));
                 }
             }
         }
@@ -911,7 +907,7 @@ fn handle(
             let home = match std::env::var_os("HOME") {
                 Some(h) => std::path::PathBuf::from(h),
                 None => {
-                    app.status = "$HOME not set".into();
+                    app.set_status("$HOME not set");
                     return Ok(());
                 }
             };
@@ -928,12 +924,12 @@ fn handle(
                         .map(|h| std::path::PathBuf::from(h).join(".local/share"))
                 });
             let Some(base) = base else {
-                app.status = "neither $XDG_DATA_HOME nor $HOME is set".into();
+                app.set_status("neither $XDG_DATA_HOME nor $HOME is set");
                 return Ok(());
             };
             let trash = base.join("Trash/files");
             if !trash.exists() {
-                app.status = format!("trash dir not found: {}", trash.display());
+                app.set_status(format!("trash dir not found: {}", trash.display()));
                 return Ok(());
             }
             reroot(app, &trash, git_tx);
@@ -941,11 +937,11 @@ fn handle(
         Action::SysClipCopy => {
             let targets = app.targets();
             if targets.is_empty() {
-                app.status = "nothing to copy".into();
+                app.set_status("nothing to copy");
             } else {
                 match explorenova::clipboard::copy_paths(&targets) {
                     Ok(n) => {
-                        app.status = if n == 1 {
+                        let msg = if n == 1 {
                             format!(
                                 "copied to clipboard: {}",
                                 targets[0].display()
@@ -953,9 +949,10 @@ fn handle(
                         } else {
                             format!("copied {n} paths to clipboard")
                         };
+                        app.set_status(msg);
                     }
                     Err(e) => {
-                        app.status = format!("clipboard: {e}");
+                        app.set_status(format!("clipboard: {e}"));
                     }
                 }
             }
@@ -964,7 +961,7 @@ fn handle(
             let targets = app.targets();
             let n = targets.len();
             if n == 0 {
-                app.status = "nothing to trash".into();
+                app.set_status("nothing to trash");
             } else {
                 let mut ok = 0usize;
                 let mut failed: Vec<String> = Vec::new();
@@ -974,7 +971,7 @@ fn handle(
                         Err(_) => failed.push(p.display().to_string()),
                     }
                 }
-                app.status = if failed.is_empty() {
+                let msg = if failed.is_empty() {
                     if n == 1 {
                         format!("trashed {}", targets[0].display())
                     } else {
@@ -993,6 +990,7 @@ fn handle(
                         tail
                     )
                 };
+                app.set_status(msg);
                 app.marks.clear();
                 refresh_in_place(app, git_tx);
             }
@@ -1054,11 +1052,11 @@ fn handle(
         Action::PermanentDelete => {
             let n = app.targets().len();
             if n == 0 {
-                app.status = "nothing to delete".into();
+                app.set_status("nothing to delete");
             } else {
                 app.pending = Some(Action::PermanentDelete);
                 app.mode = Mode::Confirm;
-                app.status = if n == 1 {
+                let msg = if n == 1 {
                     let name = app
                         .targets()
                         .into_iter()
@@ -1071,36 +1069,37 @@ fn handle(
                 } else {
                     format!("permanently delete {n}? y/N")
                 };
+                app.set_status(msg);
             }
         }
         Action::Copy => {
             let targets = app.targets();
             let n = targets.len();
             if n == 0 {
-                app.status = "nothing to copy".into();
+                app.set_status("nothing to copy");
             } else {
                 app.clipboard = Some((targets, false));
-                app.status = format!("copied {n}");
+                app.set_status(format!("copied {n}"));
             }
         }
         Action::Cut => {
             let targets = app.targets();
             let n = targets.len();
             if n == 0 {
-                app.status = "nothing to cut".into();
+                app.set_status("nothing to cut");
             } else {
                 app.clipboard = Some((targets, true));
-                app.status = format!("cut {n}");
+                app.set_status(format!("cut {n}"));
             }
         }
         Action::Paste => {
             if app.op.is_some() {
-                app.status = "another op in progress".into();
+                app.set_status("another op in progress");
                 return Ok(());
             }
             let snapshot = app.clipboard.clone();
             let Some((srcs, is_cut)) = snapshot else {
-                app.status = "nothing to paste".into();
+                app.set_status("nothing to paste");
                 return Ok(());
             };
             let dst_dir = app
@@ -1130,7 +1129,7 @@ fn handle(
                 }
             }
             app.op = Some(explorenova::ops::spawn_paste(srcs, dst_dir, mode));
-            app.status = "starting…".into();
+            app.set_status("starting…");
         }
         Action::OpenWith => {
             if let Some(&id) = app.visible.get(app.selected) {
@@ -1194,15 +1193,15 @@ fn handle(
                     let p = app.arena.nodes[id].path.clone();
                     if explorenova::fs_ops::is_archive(&p) {
                         if app.op.is_some() {
-                            app.status = "another op in progress".into();
+                            app.set_status("another op in progress");
                         } else if let Some(state) =
                             explorenova::ops::spawn_extract(p.clone())
                         {
                             app.op = Some(state);
-                            app.status = "starting…".into();
+                            app.set_status("starting…");
                         }
                     } else if let Err(e) = open::that_detached(&p) {
-                        app.status = format!("open failed: {e}");
+                        app.set_status(format!("open failed: {e}"));
                     }
                 }
             }
@@ -1220,20 +1219,16 @@ fn handle(
         }
         Action::NewTab => match app.open_tab() {
             Ok(()) => {
-                app.status = if app.is_split() {
-                    "opened tab".into()
-                } else {
-                    "already split".into()
-                };
+                app.set_status(if app.is_split() { "opened tab" } else { "already split" });
                 // New active arena needs a fresh git scan.
                 let _ = git_tx.send(());
             }
-            Err(e) => app.status = format!("open tab failed: {e}"),
+            Err(e) => app.set_status(format!("open tab failed: {e}")),
         },
         Action::CloseTab => {
             if app.is_split() {
                 app.close_tab();
-                app.status = "closed tab".into();
+                app.set_status("closed tab");
                 let _ = git_tx.send(());
             }
         }
@@ -1257,35 +1252,35 @@ fn handle(
             app.set_sort_mode(explorenova::sort::SortMode::Name);
             app.apply_sort();
             app.mode = explorenova::keymap::Mode::Normal;
-            app.status = "sort: name".into();
+            app.set_status("sort: name");
         }
         Action::SortBySize => {
             app.set_sort_mode(explorenova::sort::SortMode::Size);
             app.apply_sort();
             app.mode = explorenova::keymap::Mode::Normal;
-            app.status = "sort: size".into();
+            app.set_status("sort: size");
         }
         Action::SortByMtime => {
             app.set_sort_mode(explorenova::sort::SortMode::Mtime);
             app.apply_sort();
             app.mode = explorenova::keymap::Mode::Normal;
-            app.status = "sort: mtime".into();
+            app.set_status("sort: mtime");
         }
         Action::SortByExt => {
             app.set_sort_mode(explorenova::sort::SortMode::Ext);
             app.apply_sort();
             app.mode = explorenova::keymap::Mode::Normal;
-            app.status = "sort: ext".into();
+            app.set_status("sort: ext");
         }
         Action::SortToggleReverse => {
             app.toggle_sort_reverse();
             app.apply_sort();
-            app.status = format!("reverse: {}", if app.sort.reverse { "on" } else { "off" });
+            app.set_status(format!("reverse: {}", if app.sort.reverse { "on" } else { "off" }));
         }
         Action::SortToggleDirFirst => {
             app.toggle_sort_dir_first();
             app.apply_sort();
-            app.status = format!("dir first: {}", if app.sort.dir_first { "on" } else { "off" });
+            app.set_status(format!("dir first: {}", if app.sort.dir_first { "on" } else { "off" }));
         }
         other => app.apply(other),
     }

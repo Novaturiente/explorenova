@@ -528,11 +528,11 @@ impl App {
         let target = base.join(stripped);
         let out = match crate::fs_ops::create(&base.join(&raw)) {
             Ok(_) => {
-                self.status = format!("created {}", target.display());
+                self.set_status(format!("created {}", target.display()));
                 Some(target)
             }
             Err(e) => {
-                self.status = format!("create failed: {e}");
+                self.set_status(format!("create failed: {e}"));
                 None
             }
         };
@@ -548,10 +548,10 @@ impl App {
             let p = self.arena.nodes[id].path.clone();
             match crate::fs_ops::rename(&p, &self.input.value()) {
                 Ok(np) => {
-                    self.status = format!("renamed -> {}", np.display());
+                    self.set_status(format!("renamed -> {}", np.display()));
                     out = Some(np);
                 }
-                Err(e) => self.status = format!("rename failed: {e}"),
+                Err(e) => self.set_status(format!("rename failed: {e}")),
             }
         }
         self.mode = Mode::Normal;
@@ -641,7 +641,7 @@ impl App {
                     Err(_) => failed.push(p.display().to_string()),
                 }
             }
-            self.status = if failed.is_empty() {
+            let msg = if failed.is_empty() {
                 if n == 1 {
                     format!("deleted {}", targets[0].display())
                 } else {
@@ -660,6 +660,7 @@ impl App {
                     tail
                 )
             };
+            self.set_status(msg);
             self.marks.clear();
         }
         self.pending = None;
