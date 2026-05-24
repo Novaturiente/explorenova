@@ -2,6 +2,7 @@ use super::node::{Node, NodeId, NodeKind};
 use std::fs;
 use std::io;
 use std::path::Path;
+use std::time::SystemTime;
 
 /// Quick probe: does `dir` contain at least one entry that survives the
 /// hidden-files filter? Returns true on read failure to err on the safe
@@ -38,10 +39,16 @@ impl Arena {
         Ok(a)
     }
 
-    fn classify(p: &Path) -> (NodeKind, bool) {
+    fn classify(p: &Path) -> (NodeKind, bool, u64, SystemTime) {
         match fs::symlink_metadata(p) {
-            Ok(m) if m.file_type().is_symlink() => (NodeKind::Symlink, false),
-            Ok(m) if m.is_dir() => (NodeKind::Dir, false),
+            Ok(m) if m.file_type().is_symlink() => {
+                let mt = m.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                (NodeKind::Symlink, false, m.len(), mt)
+            }
+            Ok(m) if m.is_dir() => {
+                let mt = m.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                (NodeKind::Dir, false, 0, mt)
+            }
             Ok(m) => {
                 #[cfg(unix)]
                 let ex = {
@@ -50,9 +57,10 @@ impl Arena {
                 };
                 #[cfg(not(unix))]
                 let ex = false;
-                (NodeKind::File, ex)
+                let mt = m.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                (NodeKind::File, ex, m.len(), mt)
             }
-            Err(_) => (NodeKind::File, false),
+            Err(_) => (NodeKind::File, false, 0, SystemTime::UNIX_EPOCH),
         }
     }
 
@@ -83,9 +91,11 @@ impl Arena {
         let show_hidden = self.show_hidden;
         let mut child_ids = Vec::with_capacity(entries.len());
         for p in entries {
-            let (kind, exec) = Self::classify(&p);
+            let (kind, exec, size, mtime) = Self::classify(&p);
             let mut node = Node::new(p.clone(), kind, depth, Some(id));
             node.exec = exec;
+            node.size = size;
+            node.mtime = mtime;
             if matches!(kind, NodeKind::Dir) {
                 node.empty = Some(dir_is_empty(&p, show_hidden));
             }
@@ -174,6 +184,21 @@ mod tests {
         fs::write(d.path().join("a.txt"), "x").unwrap();
         fs::write(d.path().join(".hidden"), "x").unwrap();
         d
+    }
+
+    #[test]
+    fn size_and_mtime_populated_on_load() {
+        let d = tempdir().unwrap();
+        fs::write(d.path().join("hello.txt"), "12345").unwrap();
+        let a = Arena::new(d.path()).unwrap();
+        let kids = a.nodes[a.root].children.as_ref().unwrap();
+        let file = kids
+            .iter()
+            .map(|&i| &a.nodes[i])
+            .find(|n| n.path.ends_with("hello.txt"))
+            .unwrap();
+        assert_eq!(file.size, 5);
+        assert!(file.mtime > std::time::UNIX_EPOCH);
     }
 
     #[test]
