@@ -1,1 +1,9 @@
 target/
+
+# makepkg artifacts
+pkg/
+src/explorenova/
+src/cargo-home/
+/explorenova/
+*.pkg.tar.zst
+*.pkg.tar.xz

@@ -124,7 +124,14 @@ fn main() -> Result<()> {
             let _ = fs_tx.send(ev);
         }
     })?;
-    watcher.watch(&start, RecursiveMode::Recursive)?;
+    // Recursive watch walks subdirs to install inotify hooks; a single
+    // unreadable subdir (e.g. /tmp/systemd-private-* mode 0700) makes
+    // notify-rs return EACCES. Don't fail startup over it — the app
+    // still works, fs changes outside the watched subtree just won't
+    // auto-refresh.
+    if let Err(e) = watcher.watch(&start, RecursiveMode::Recursive) {
+        eprintln!("warning: fs-watch disabled ({e})");
+    }
 
     let mut picker = ui::make_picker();
     let _guard = TermGuard::new()?;
