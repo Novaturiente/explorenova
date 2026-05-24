@@ -51,6 +51,17 @@ changes persist across restarts, except under `--tree-only`
 | Path navigation | `:` (Tab completion) |
 | Shell | `!` one-shot in cwd, `S` drop to `$SHELL` |
 | Toggle hidden / refresh / quit | `.` / `R` / `q` |
+| Help overlay | `?` (any key dismisses) |
+| Sort menu | `s` → `1`/`n` name, `2`/`s` size, `3`/`m` mtime, `4`/`e` ext, `r` reverse, `d` dir-first, `esc` close |
+| Tabs (split-pane) | `t` new tab, `w` close tab, `Tab` swap focus |
+
+The status bar at the bottom is split into three segments: cursor path /
+perms / size / mtime on the left, `N sel • X.X MB` (selection summary) in
+the middle, and `N items • Y free` (visible count + free disk) on the
+right. Transient status messages overlay the left segment for ~3 seconds.
+
+Sort settings (mode, reverse, dir-first) persist in `state.toml` under
+`[sort]` and apply to both tabs in split-pane mode.
 
 ## Notes
 
