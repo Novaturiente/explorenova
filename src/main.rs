@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
-use crossterm::event::{self, Event, KeyCode};
+use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -269,8 +269,42 @@ fn main() -> Result<()> {
                     }
                 }
                 Mode::Help => {
-                    // Any key (including esc) returns to Normal mode.
-                    app.mode = Mode::Normal;
+                    // j/k/down/up scroll; Ctrl-d/Ctrl-u half-page;
+                    // anything else (esc, ?, etc.) dismisses.
+                    let scroll_step = |app: &mut explorenova::app::App, by: i32| {
+                        if by < 0 {
+                            app.help_scroll =
+                                app.help_scroll.saturating_sub((-by) as usize);
+                        } else {
+                            app.help_scroll =
+                                app.help_scroll.saturating_add(by as usize);
+                        }
+                    };
+                    let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+                    match (k.code, ctrl) {
+                        (KeyCode::Char('j'), false) | (KeyCode::Down, _) => {
+                            scroll_step(&mut app, 1);
+                        }
+                        (KeyCode::Char('k'), false) | (KeyCode::Up, _) => {
+                            scroll_step(&mut app, -1);
+                        }
+                        (KeyCode::Char('d'), true) => {
+                            scroll_step(&mut app, 8);
+                        }
+                        (KeyCode::Char('u'), true) => {
+                            scroll_step(&mut app, -8);
+                        }
+                        (KeyCode::Char('g'), false) => {
+                            app.help_scroll = 0;
+                        }
+                        (KeyCode::Char('G'), false) => {
+                            app.help_scroll = usize::MAX / 2; // clamped at render
+                        }
+                        _ => {
+                            app.mode = Mode::Normal;
+                            app.help_scroll = 0;
+                        }
+                    }
                 }
                 Mode::Search | Mode::Input
                     if matches!(
@@ -1246,7 +1280,10 @@ fn handle(
             }
         }
         Action::SortMenu => app.mode = explorenova::keymap::Mode::SortMenu,
-        Action::Help => app.mode = explorenova::keymap::Mode::Help,
+        Action::Help => {
+            app.help_scroll = 0;
+            app.mode = explorenova::keymap::Mode::Help;
+        }
         Action::SortByName => {
             app.set_sort_mode(explorenova::sort::SortMode::Name);
             app.apply_sort();

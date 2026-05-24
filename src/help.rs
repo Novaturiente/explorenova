@@ -90,15 +90,11 @@ pub fn build_entries(km: &Keymap) -> Vec<HelpCategory> {
     out
 }
 
-pub fn render(area: Rect, frame: &mut Frame, entries: &[HelpCategory], theme: &Theme) {
-    use crate::ui::modal;
-    frame.render_widget(Clear, area);
-    let block = modal::modal_block("explorenova keys", theme);
-    let inner = modal::pad_inner(block.inner(area));
-    frame.render_widget(block, area);
-
-    let inner_w = inner.width as usize;
-    let mut lines: Vec<Line> = Vec::new();
+/// Build the full list of styled lines for the help overlay. Splitting
+/// this from `render` lets callers measure total rows for scroll
+/// clamping.
+pub fn build_lines(entries: &[HelpCategory], theme: &Theme, inner_w: usize) -> Vec<Line<'static>> {
+    let mut lines: Vec<Line<'static>> = Vec::new();
     for (idx, cat) in entries.iter().enumerate() {
         if idx > 0 {
             lines.push(Line::from(""));
@@ -110,33 +106,92 @@ pub fn render(area: Rect, frame: &mut Frame, entries: &[HelpCategory], theme: &T
                 .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         )));
         for (label, keys) in &cat.rows {
-            // Right-align keys with a dotted leader so the eye tracks
-            // label → key easily across the row.
-            let leader = inner_w
-                .saturating_sub(label.len() + keys.len() + 4)
-                .max(2);
-            lines.push(Line::from(vec![
-                Span::raw(format!("  {label}  ")),
-                Span::styled(
-                    "·".repeat(leader),
-                    Style::default().fg(theme.dim),
-                ),
-                Span::raw("  "),
-                Span::styled(
-                    keys.clone(),
-                    Style::default()
-                        .fg(theme.match_hl)
-                        .add_modifier(Modifier::BOLD),
-                ),
-            ]));
+            // Fit "  label  ···  keys" into inner_w. If too tight,
+            // drop the dotted leader and just use a single-space gap.
+            let prefix_len = 2 + label.len() + 2; // "  label  "
+            let suffix_len = 2 + keys.len();       // "  keys"
+            if prefix_len + suffix_len + 2 <= inner_w {
+                let leader = inner_w - prefix_len - suffix_len;
+                lines.push(Line::from(vec![
+                    Span::raw(format!("  {label}  ")),
+                    Span::styled(
+                        "·".repeat(leader),
+                        Style::default().fg(theme.dim),
+                    ),
+                    Span::raw("  "),
+                    Span::styled(
+                        keys.clone(),
+                        Style::default()
+                            .fg(theme.match_hl)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ]));
+            } else {
+                // Tight modal: skip the leader, leave one-space gap.
+                let used = 2 + label.len() + 1 + keys.len();
+                let pad = inner_w.saturating_sub(used);
+                lines.push(Line::from(vec![
+                    Span::raw(format!("  {label} ")),
+                    Span::raw(" ".repeat(pad)),
+                    Span::styled(
+                        keys.clone(),
+                        Style::default()
+                            .fg(theme.match_hl)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ]));
+            }
         }
     }
-    lines.push(Line::from(""));
-    lines.push(Line::from(Span::styled(
-        " any key to close",
-        Style::default().fg(theme.dim),
-    )));
-    frame.render_widget(Paragraph::new(lines), inner);
+    lines
+}
+
+pub fn render(
+    area: Rect,
+    frame: &mut Frame,
+    entries: &[HelpCategory],
+    theme: &Theme,
+    scroll: usize,
+) {
+    use crate::ui::modal;
+    frame.render_widget(Clear, area);
+    let block = modal::modal_block("explorenova keys", theme);
+    let inner = modal::pad_inner(block.inner(area));
+    frame.render_widget(block, area);
+
+    // Reserve last row for the dim hint footer; rest is scrollable.
+    let footer_rows: u16 = 1;
+    let body_h = inner.height.saturating_sub(footer_rows).max(1) as usize;
+    let body_rect = ratatui::layout::Rect {
+        height: body_h as u16,
+        ..inner
+    };
+    let footer_rect = ratatui::layout::Rect {
+        y: inner.y + inner.height.saturating_sub(footer_rows),
+        height: footer_rows,
+        ..inner
+    };
+
+    let all = build_lines(entries, theme, inner.width as usize);
+    let max_scroll = all.len().saturating_sub(body_h);
+    let s = scroll.min(max_scroll);
+    let view: Vec<Line> = all.iter().skip(s).take(body_h).cloned().collect();
+    frame.render_widget(Paragraph::new(view), body_rect);
+
+    // Scroll position indicator + dismiss hint.
+    let hint = if max_scroll > 0 {
+        format!(
+            " j/k or ↑↓ scroll · {} / {} · any other key closes",
+            s + 1,
+            max_scroll + 1
+        )
+    } else {
+        " any key closes".to_string()
+    };
+    frame.render_widget(
+        Paragraph::new(Span::styled(hint, Style::default().fg(theme.dim))),
+        footer_rect,
+    );
 }
 
 #[cfg(test)]

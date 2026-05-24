@@ -80,6 +80,9 @@ pub struct App {
     /// While `Some`, the modal overlay renders a progress bar / spinner
     /// and conflicting dispatch arms are no-ops.
     pub op: Option<crate::ops::OpState>,
+    /// Scroll offset (in lines) for the help overlay. Reset to 0 each
+    /// time the user opens `?`.
+    pub help_scroll: usize,
 }
 
 impl App {
@@ -113,6 +116,7 @@ impl App {
             disk_free: None,
             status_set_at: std::time::Instant::now(),
             op: None,
+            help_scroll: 0,
         }
     }
 

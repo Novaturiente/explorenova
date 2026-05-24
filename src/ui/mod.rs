@@ -588,17 +588,10 @@ pub fn render_frame(
         }
         (crate::keymap::Mode::Help, _) => {
             let entries = crate::help::build_entries(keymap);
-            // Compute desired content rows: per-category header + rows
-            // + one blank between categories, plus footer + padding.
-            let mut content_rows: u16 = 3; // footer blank + dismiss line + padding
-            for (i, c) in entries.iter().enumerate() {
-                if i > 0 {
-                    content_rows = content_rows.saturating_add(1);
-                }
-                content_rows = content_rows.saturating_add(1 + c.rows.len() as u16);
-            }
-            let r = crate::ui::modal::adaptive_rect(72, content_rows + 2, body);
-            crate::help::render(r, f, &entries, &theme);
+            // Always request a large rect; adaptive_rect clamps it to
+            // 80% of the terminal. Scrolling handles tall content.
+            let r = crate::ui::modal::adaptive_rect(78, 40, body);
+            crate::help::render(r, f, &entries, &theme, app.help_scroll);
             return;
         }
         (_, crate::app::Dialog::None) => {}
@@ -910,7 +903,8 @@ pub fn render_frame(
                         .unwrap_or_default()
                 })
                 .unwrap_or_default();
-            let r = modal::adaptive_rect(56, 6, body);
+            // 5 content rows (header, blank, name, blank, buttons) + 2 border + 1 slack
+            let r = modal::adaptive_rect(56, 8, body);
             f.render_widget(ratatui::widgets::Clear, r);
             let block = modal::modal_block("Confirm delete", &theme);
             let inner = modal::pad_inner(block.inner(r));
