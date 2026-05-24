@@ -24,6 +24,20 @@ pub enum Pane {
     Preview,
 }
 
+/// Per-tab state. The active tab's data lives directly on `App`; the
+/// inactive tab (when split) is stashed in `App::tabs`. Open/close/swap
+/// move state between App fields and snapshots via `mem::swap` — no
+/// codebase-wide refactor needed.
+pub struct PaneSnapshot {
+    pub arena: Arena,
+    pub visible: Vec<usize>,
+    pub selected: usize,
+    pub marks: BTreeSet<PathBuf>,
+    pub visual_mode: bool,
+    pub search_results: Vec<(PathBuf, Vec<u32>)>,
+    pub search_idx: usize,
+}
+
 pub struct App {
     pub arena: Arena,
     pub visible: Vec<usize>,
@@ -32,7 +46,7 @@ pub struct App {
     pub focus: Pane,
     pub config: Config,
     pub state: State,
-    pub clipboard: Option<(Vec<PathBuf>, bool)>, // (paths, is_cut) — batch
+    pub clipboard: Option<(Vec<PathBuf>, bool)>, // (paths, is_cut) — batch (shared across tabs)
     pub marks: BTreeSet<PathBuf>,
     pub status: String,
     pub should_quit: bool,
@@ -46,6 +60,9 @@ pub struct App {
     /// Cursor inside the bookmarks pane (when focused). Independent of
     /// the tree cursor so switching focus doesn't shuffle either.
     pub bookmark_sel: usize,
+    /// Inactive tab(s). Empty = single-tab mode. Len 1 = split mode
+    /// (`tabs[0]` is the other pane; App fields are the active pane).
+    pub tabs: Vec<PaneSnapshot>,
 }
 
 impl App {
@@ -71,7 +88,65 @@ impl App {
             visual_mode: false,
             cursor_moved_at: std::time::Instant::now(),
             bookmark_sel: 0,
+            tabs: Vec::new(),
         }
+    }
+
+    /// True when two tabs are open (split-pane mode).
+    pub fn is_split(&self) -> bool {
+        !self.tabs.is_empty()
+    }
+
+    /// Open a second tab rooted at the current tab's root. The new tab
+    /// becomes active; the previous tab is stashed in `tabs[0]`. No-op
+    /// when already split (cap = 2 tabs).
+    pub fn open_tab(&mut self) -> std::io::Result<()> {
+        if self.is_split() {
+            return Ok(());
+        }
+        let root_path = self.arena.nodes[self.arena.root].path.clone();
+        let new_arena = crate::tree::Arena::new(&root_path)?;
+        let snap = PaneSnapshot {
+            arena: std::mem::replace(&mut self.arena, new_arena),
+            visible: std::mem::take(&mut self.visible),
+            selected: std::mem::replace(&mut self.selected, 0),
+            marks: std::mem::take(&mut self.marks),
+            visual_mode: std::mem::replace(&mut self.visual_mode, false),
+            search_results: std::mem::take(&mut self.search_results),
+            search_idx: std::mem::replace(&mut self.search_idx, 0),
+        };
+        self.visible = self.arena.flatten();
+        self.tabs.push(snap);
+        Ok(())
+    }
+
+    /// Close the active tab, restoring `tabs[0]`'s state as the active
+    /// pane. No-op when not split.
+    pub fn close_tab(&mut self) {
+        let Some(snap) = self.tabs.pop() else {
+            return;
+        };
+        self.arena = snap.arena;
+        self.visible = snap.visible;
+        self.selected = snap.selected;
+        self.marks = snap.marks;
+        self.visual_mode = snap.visual_mode;
+        self.search_results = snap.search_results;
+        self.search_idx = snap.search_idx;
+    }
+
+    /// Swap active and inactive tab. No-op when not split.
+    pub fn swap_tab(&mut self) {
+        let Some(snap) = self.tabs.first_mut() else {
+            return;
+        };
+        std::mem::swap(&mut self.arena, &mut snap.arena);
+        std::mem::swap(&mut self.visible, &mut snap.visible);
+        std::mem::swap(&mut self.selected, &mut snap.selected);
+        std::mem::swap(&mut self.marks, &mut snap.marks);
+        std::mem::swap(&mut self.visual_mode, &mut snap.visual_mode);
+        std::mem::swap(&mut self.search_results, &mut snap.search_results);
+        std::mem::swap(&mut self.search_idx, &mut snap.search_idx);
     }
 
     fn refresh_visible(&mut self) {
@@ -700,5 +775,96 @@ mod tests {
         a.visible.clear();
         a.mark_cursor();
         assert!(a.marks.is_empty());
+    }
+
+    #[test]
+    fn open_tab_enters_split_mode() {
+        let mut a = app();
+        assert!(!a.is_split());
+        a.open_tab().unwrap();
+        assert!(a.is_split());
+        assert_eq!(a.tabs.len(), 1);
+        // Active root unchanged; inactive snapshot holds the prior pane.
+        assert_eq!(
+            a.arena.nodes[a.arena.root].path,
+            a.tabs[0].arena.nodes[a.tabs[0].arena.root].path
+        );
+    }
+
+    #[test]
+    fn open_tab_capped_at_two() {
+        let mut a = app();
+        a.open_tab().unwrap();
+        a.open_tab().unwrap();
+        assert_eq!(a.tabs.len(), 1, "second open is no-op");
+    }
+
+    #[test]
+    fn close_tab_restores_inactive() {
+        let mut a = app();
+        // Drop a mark on the original pane so we can prove the close
+        // brings it back instead of keeping the new pane's empty marks.
+        a.toggle_mark();
+        let original_marks = a.marks.clone();
+        a.open_tab().unwrap();
+        assert!(a.marks.is_empty(), "new tab starts with empty marks");
+        a.close_tab();
+        assert!(!a.is_split());
+        assert_eq!(a.marks, original_marks);
+    }
+
+    #[test]
+    fn close_tab_noop_when_single() {
+        let mut a = app();
+        a.toggle_mark();
+        let before = a.marks.clone();
+        a.close_tab(); // no-op
+        assert!(!a.is_split());
+        assert_eq!(a.marks, before);
+    }
+
+    #[test]
+    fn swap_tab_swaps_active_and_inactive() {
+        let mut a = app();
+        a.toggle_mark();
+        let marks_a = a.marks.clone();
+        a.open_tab().unwrap();
+        a.toggle_mark(); // mark cursor row in NEW pane
+        let marks_b = a.marks.clone();
+        // Sanity: B's marks differ from A's? They might share a path
+        // since the root is identical. Use selected position instead.
+        a.selected = 0;
+        let active_sel_before = a.selected;
+        let inactive_sel_before = a.tabs[0].selected;
+        a.swap_tab();
+        assert_eq!(a.selected, inactive_sel_before);
+        assert_eq!(a.tabs[0].selected, active_sel_before);
+        // marks moved with the swap
+        assert_eq!(a.marks, marks_a);
+        assert_eq!(a.tabs[0].marks, marks_b);
+    }
+
+    #[test]
+    fn swap_tab_noop_when_single() {
+        let mut a = app();
+        a.toggle_mark();
+        let before = a.marks.clone();
+        a.swap_tab();
+        assert_eq!(a.marks, before);
+    }
+
+    #[test]
+    fn clipboard_shared_across_tabs() {
+        let mut a = app();
+        // Simulate a copy in pane A.
+        a.clipboard = Some((vec![PathBuf::from("/a")], false));
+        a.open_tab().unwrap();
+        // Pane B sees the same clipboard.
+        assert!(a.clipboard.is_some());
+        assert_eq!(a.clipboard.as_ref().unwrap().0, vec![PathBuf::from("/a")]);
+        a.swap_tab();
+        assert!(a.clipboard.is_some(), "clipboard survives swap");
+        a.close_tab();
+        assert!(a.clipboard.is_some(), "clipboard survives close");
     }
 }
