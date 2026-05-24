@@ -136,6 +136,25 @@ impl App {
         self.status_set_at = std::time::Instant::now();
     }
 
+    /// Reveal `target` in the tree, reflatten, and move the cursor to
+    /// the revealed row. Returns true if the path was found and selected.
+    ///
+    /// Centralises the reveal → flatten → position pattern used after
+    /// any operation that may expand new ancestors (paste, extract,
+    /// rename, create, refresh, search jump). Callers should prefer this
+    /// over hand-rolling the three-step dance — it is the only way to
+    /// keep `visible` and `selected` consistent.
+    pub fn navigate_to(&mut self, target: &std::path::Path) -> bool {
+        if let Ok(Some(id)) = self.arena.reveal(target) {
+            self.visible = self.arena.flatten();
+            if let Some(i) = self.visible.iter().position(|&n| n == id) {
+                self.selected = i;
+                return true;
+            }
+        }
+        false
+    }
+
     /// Compute the size sum of marked files (skipping directories).
     /// Called by the status renderer per frame; O(arena × marks) but
     /// both are small in practice.
@@ -478,12 +497,7 @@ impl App {
 
     pub fn jump_to_search(&mut self) {
         if let Some((p, _)) = self.search_results.get(self.search_idx).cloned() {
-            if let Ok(Some(id)) = self.arena.reveal(&p) {
-                self.visible = self.arena.flatten();
-                if let Some(i) = self.visible.iter().position(|&n| n == id) {
-                    self.selected = i;
-                }
-            }
+            self.navigate_to(&p);
         }
     }
 

@@ -195,14 +195,7 @@ fn main() -> Result<()> {
                 let res = state.finished.unwrap();
                 refresh_in_place(&mut app, &git_tx);
                 if let Some(target) = reveal {
-                    if let Ok(Some(id)) = app.arena.reveal(&target) {
-                        app.visible = app.arena.flatten();
-                        if let Some(i) =
-                            app.visible.iter().position(|&n| n == id)
-                        {
-                            app.selected = i;
-                        }
-                    }
+                    app.navigate_to(&target);
                 }
                 app.status = match res {
                     Ok(s) => s,
@@ -427,20 +420,7 @@ fn main() -> Result<()> {
                                     // mountpoint is outside (typical: /run/
                                     // media/...), re-root the arena at the
                                     // mountpoint.
-                                    let revealed_id = match app.arena.reveal(&mp) {
-                                        Ok(Some(id)) => Some(id),
-                                        _ => None,
-                                    };
-                                    if let Some(id) = revealed_id {
-                                        app.visible = app.arena.flatten();
-                                        if let Some(i) = app
-                                            .visible
-                                            .iter()
-                                            .position(|&n| n == id)
-                                        {
-                                            app.selected = i;
-                                        }
-                                    } else {
+                                    if !app.navigate_to(&mp) {
                                         let prev_hidden = app.arena.show_hidden;
                                         match Arena::new(&mp) {
                                             Ok(mut na) => {
@@ -614,46 +594,20 @@ fn main() -> Result<()> {
                                 let np = app.commit_rename();
                                 refresh_in_place(&mut app, &git_tx);
                                 if let Some(p) = np {
-                                    if let Ok(Some(id)) = app.arena.reveal(&p) {
-                                        app.visible = app.arena.flatten();
-                                        if let Some(i) = app
-                                            .visible
-                                            .iter()
-                                            .position(|&n| n == id)
-                                        {
-                                            app.selected = i;
-                                        }
-                                    }
+                                    app.navigate_to(&p);
                                 }
                             }
                             Some(Action::Create) => {
                                 let np = app.commit_create();
                                 refresh_in_place(&mut app, &git_tx);
                                 if let Some(p) = np {
-                                    if let Ok(Some(id)) = app.arena.reveal(&p) {
-                                        app.visible = app.arena.flatten();
-                                        if let Some(i) = app
-                                            .visible
-                                            .iter()
-                                            .position(|&n| n == id)
-                                        {
-                                            app.selected = i;
-                                        }
-                                    }
+                                    app.navigate_to(&p);
                                 }
                             }
                             Some(Action::PathInput) => {
                                 let target = explorenova::nav::expand(&app.input.value());
-                                match app.arena.reveal(std::path::Path::new(&target)) {
-                                    Ok(Some(id)) => {
-                                        app.visible = app.arena.flatten();
-                                        if let Some(i) =
-                                            app.visible.iter().position(|&n| n == id)
-                                        {
-                                            app.selected = i;
-                                        }
-                                    }
-                                    _ => app.status = "path not found".into(),
+                                if !app.navigate_to(std::path::Path::new(&target)) {
+                                    app.status = "path not found".into();
                                 }
                                 app.mode = Mode::Normal;
                             }
@@ -866,22 +820,14 @@ fn refresh_in_place(app: &mut App, git_tx: &mpsc::Sender<()>) {
         // of what they just removed rather than the tree root.
         if let Some(mut p) = sel_path {
             loop {
-                match app.arena.reveal(&p) {
-                    Ok(Some(id)) => {
-                        app.visible = app.arena.flatten();
-                        if let Some(i) =
-                            app.visible.iter().position(|&n| n == id)
-                        {
-                            app.selected = i;
-                        }
-                        break;
+                if app.navigate_to(&p) {
+                    break;
+                }
+                match p.parent() {
+                    Some(parent) if parent != p.as_path() => {
+                        p = parent.to_path_buf();
                     }
-                    _ => match p.parent() {
-                        Some(parent) if parent != p.as_path() => {
-                            p = parent.to_path_buf();
-                        }
-                        _ => break,
-                    },
+                    _ => break,
                 }
             }
         }
@@ -913,12 +859,7 @@ fn ascend(app: &mut App) {
             app.arena = na;
             app.visible = app.arena.flatten();
             app.selected = 0;
-            if let Ok(Some(id)) = app.arena.reveal(&root_path) {
-                app.visible = app.arena.flatten();
-                if let Some(i) = app.visible.iter().position(|&n| n == id) {
-                    app.selected = i;
-                }
-            }
+            app.navigate_to(&root_path);
         }
         Err(_) => {
             app.status = format!("cannot open {}", parent.display());
@@ -1077,12 +1018,7 @@ fn handle(
                 app.arena = na;
                 app.visible = app.arena.flatten();
                 if let Some(p) = sel_path {
-                    if let Ok(Some(id)) = app.arena.reveal(&p) {
-                        app.visible = app.arena.flatten();
-                        if let Some(i) = app.visible.iter().position(|&n| n == id) {
-                            app.selected = i;
-                        }
-                    }
+                    app.navigate_to(&p);
                 }
             }
         }
@@ -1227,20 +1163,7 @@ fn handle(
                     .get(app.bookmark_sel)
                     .cloned();
                 if let Some(p) = target {
-                    let revealed_id = match app.arena.reveal(&p) {
-                        Ok(Some(id)) => Some(id),
-                        _ => None,
-                    };
-                    if let Some(id) = revealed_id {
-                        app.visible = app.arena.flatten();
-                        if let Some(i) = app
-                            .visible
-                            .iter()
-                            .position(|&n| n == id)
-                        {
-                            app.selected = i;
-                        }
-                    } else {
+                    if !app.navigate_to(&p) {
                         // path outside current root → reroot. If target
                         // is a file, reroot at its parent then reveal.
                         let root_for = if p.is_file() {
@@ -1252,16 +1175,7 @@ fn handle(
                         };
                         reroot(app, &root_for, git_tx);
                         if p.is_file() {
-                            if let Ok(Some(id)) = app.arena.reveal(&p) {
-                                app.visible = app.arena.flatten();
-                                if let Some(i) = app
-                                    .visible
-                                    .iter()
-                                    .position(|&n| n == id)
-                                {
-                                    app.selected = i;
-                                }
-                            }
+                            app.navigate_to(&p);
                         }
                     }
                     app.focus = explorenova::app::Pane::Tree;
