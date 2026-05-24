@@ -192,7 +192,29 @@ pub fn render_frame(
     picker: &mut Picker,
     img_cache: &mut ImageCache,
 ) {
-    let cons: Vec<_> = layout_constraints(&app.config.panes);
+    // Split-pane mode: hide preview, render two equal tree panes
+    // side by side (bookmarks pane still respects its visible flag).
+    // Re-derives the constraint list from scratch so a user-toggled
+    // preview pane doesn't leak in.
+    let split = app.is_split();
+    let cons: Vec<(String, Constraint)> = if split {
+        let mut v: Vec<(String, Constraint)> = Vec::with_capacity(3);
+        if app.config.panes.bookmarks.visible {
+            let bk = &app.config.panes.bookmarks;
+            v.push((
+                "bookmarks".to_string(),
+                match bk.width {
+                    Some(w) => Constraint::Length(w),
+                    None => Constraint::Ratio(1, 4),
+                },
+            ));
+        }
+        v.push(("tree".to_string(), Constraint::Ratio(1, 2)));
+        v.push(("tree_other".to_string(), Constraint::Ratio(1, 2)));
+        v
+    } else {
+        layout_constraints(&app.config.panes)
+    };
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -253,6 +275,49 @@ pub fn render_frame(
                         ))
                     })
                     .collect();
+                // In split mode the active pane gets a • marker + cyan
+                // border so the eye can locate the focused tree at a glance.
+                let title = if split { "tree •".to_string() } else { "tree".to_string() };
+                let border_style = if split {
+                    ratatui::style::Style::default().fg(theme.mark)
+                } else {
+                    ratatui::style::Style::default()
+                };
+                let list = ratatui::widgets::List::new(items)
+                    .block(
+                        Block::default()
+                            .borders(Borders::ALL)
+                            .border_type(ratatui::widgets::BorderType::Rounded)
+                            .border_style(border_style)
+                            .title(title),
+                    )
+                    .highlight_style(
+                        ratatui::style::Style::default().bg(theme.selected_bg),
+                    );
+                let mut st = ratatui::widgets::ListState::default();
+                st.select(Some(app.selected));
+                f.render_stateful_widget(list, area, &mut st);
+            }
+            "tree_other" => {
+                // Inactive tab's tree. Renders from app.tabs[0].
+                let Some(snap) = app.tabs.first() else { continue };
+                let inner_w = area.width.saturating_sub(2);
+                let items: Vec<ratatui::widgets::ListItem> = snap
+                    .visible
+                    .iter()
+                    .enumerate()
+                    .map(|(idx, &id)| {
+                        ratatui::widgets::ListItem::new(crate::ui::panes::tree_row(
+                            &snap.arena,
+                            id,
+                            idx == snap.selected,
+                            &theme,
+                            app.config.icons,
+                            snap.marks.contains(&snap.arena.nodes[id].path),
+                            inner_w,
+                        ))
+                    })
+                    .collect();
                 let list = ratatui::widgets::List::new(items)
                     .block(
                         Block::default()
@@ -264,7 +329,7 @@ pub fn render_frame(
                         ratatui::style::Style::default().bg(theme.selected_bg),
                     );
                 let mut st = ratatui::widgets::ListState::default();
-                st.select(Some(app.selected));
+                st.select(Some(snap.selected));
                 f.render_stateful_widget(list, area, &mut st);
             }
             "bookmarks" => {
