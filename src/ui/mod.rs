@@ -584,7 +584,6 @@ pub fn render_frame(
         (crate::keymap::Mode::SortMenu, _) => {
             let r = crate::ui::modal::adaptive_rect(44, 13, body);
             crate::sort::render_menu(r, f, &app.sort, &theme);
-            return;
         }
         (crate::keymap::Mode::Help, _) => {
             let entries = crate::help::build_entries(keymap);
@@ -599,7 +598,6 @@ pub fn render_frame(
                 app.help_scroll,
                 &app.help_filter,
             );
-            return;
         }
         (_, crate::app::Dialog::None) => {}
         (_, crate::app::Dialog::AppPick { items, sel, filter }) => {

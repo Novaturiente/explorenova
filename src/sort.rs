@@ -7,19 +7,14 @@ use ratatui::Frame;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum SortMode {
+    #[default]
     Name,
     Size,
     Mtime,
     Ext,
-}
-
-impl Default for SortMode {
-    fn default() -> Self {
-        SortMode::Name
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

@@ -113,35 +113,6 @@ impl Action {
     }
 }
 
-/// Parse a chord like "j", "G", "ctrl-d", "enter", "esc", "gg".
-fn parse_chord(s: &str) -> Option<(KeyModifiers, KeyCode)> {
-    let mut mods = KeyModifiers::NONE;
-    let parts: Vec<&str> = s.split('-').collect();
-    let key = *parts.last()?;
-    for m in &parts[..parts.len().saturating_sub(1)] {
-        match *m {
-            "ctrl" => mods |= KeyModifiers::CONTROL,
-            "alt" => mods |= KeyModifiers::ALT,
-            "shift" => mods |= KeyModifiers::SHIFT,
-            _ => return None,
-        }
-    }
-    let code = match key {
-        "enter" => KeyCode::Enter,
-        "esc" => KeyCode::Esc,
-        "tab" => KeyCode::Tab,
-        "space" => KeyCode::Char(' '),
-        "up" => KeyCode::Up,
-        "down" => KeyCode::Down,
-        "left" => KeyCode::Left,
-        "right" => KeyCode::Right,
-        "del" => KeyCode::Delete,
-        k if k.chars().count() == 1 => KeyCode::Char(k.chars().next().unwrap()),
-        _ => return None,
-    };
-    Some((mods, code))
-}
-
 pub struct Keymap {
     /// Normal-mode single/double-char chords -> Action
     normal: HashMap<String, Action>,
@@ -295,14 +266,6 @@ mod tests {
         let km = Keymap::build(&user);
         assert_eq!(km.resolve(Mode::Normal, "Q"), Some(Action::Quit));
         assert_eq!(km.resolve(Mode::Normal, "q"), None);
-    }
-
-    #[test]
-    fn parse_chord_handles_modifiers() {
-        assert_eq!(
-            parse_chord("ctrl-d"),
-            Some((KeyModifiers::CONTROL, KeyCode::Char('d')))
-        );
     }
 
     #[test]

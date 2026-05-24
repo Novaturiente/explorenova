@@ -1,4 +1,4 @@
-use explorenova::fs_ops::{create, paste, permanent_delete, rename, trash_path, PasteMode};
+use explorenova::fs_ops::{create, paste, permanent_delete, rename, PasteMode};
 use std::fs;
 use tempfile::tempdir;
 

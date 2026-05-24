@@ -66,7 +66,7 @@ pub fn paste(src: &Path, dst_dir: &Path, mode: PasteMode) -> io::Result<PathBuf>
             if src.is_dir() {
                 let opts = fs_extra::dir::CopyOptions::new().copy_inside(true);
                 fs_extra::dir::copy(src, &dst, &opts)
-                    .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+                    .map_err(|e| io::Error::other(e.to_string()))?;
             } else {
                 fs::copy(src, &dst)?;
             }
@@ -79,7 +79,7 @@ pub fn paste(src: &Path, dst_dir: &Path, mode: PasteMode) -> io::Result<PathBuf>
                     if src.is_dir() {
                         let opts = fs_extra::dir::CopyOptions::new().copy_inside(true);
                         fs_extra::dir::move_dir(src, &dst, &opts)
-                            .map_err(|e| io::Error::new(io::ErrorKind::Other, e.to_string()))?;
+                            .map_err(|e| io::Error::other(e.to_string()))?;
                     } else {
                         fs::copy(src, &dst)?;
                         fs::remove_file(src)?;
@@ -267,14 +267,12 @@ pub fn extract_archive(archive: &Path) -> io::Result<PathBuf> {
     };
     match status {
         Ok(s) if s.success() => Ok(dest),
-        Ok(s) => Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("extractor exited with status {s}"),
-        )),
-        Err(e) => Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!("failed to spawn extractor: {e}"),
-        )),
+        Ok(s) => Err(io::Error::other(format!(
+            "extractor exited with status {s}"
+        ))),
+        Err(e) => Err(io::Error::other(format!(
+            "failed to spawn extractor: {e}"
+        ))),
     }
 }
 

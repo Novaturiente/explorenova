@@ -102,7 +102,7 @@ fn main() -> Result<()> {
 
     let sp = state_path();
     let state = std::fs::read_to_string(&sp)
-        .map(|s| State::from_str(&s))
+        .map(|s| State::parse(&s))
         .unwrap_or_default();
 
     let mut config = load_config();

@@ -11,9 +11,9 @@ pub struct Args {
     pub tree_only: bool,
 }
 
-/// Resolve start dir. Precedence: explicit arg (with `~`/`$VAR` expansion)
-/// > the launch directory ($PWD) > persisted last_cwd (last resort, only
-/// when $PWD is not a usable directory).
+/// Resolve start dir. Precedence: explicit arg (with `~`/`$VAR` expansion),
+/// then the launch directory (`$PWD`), then persisted `last_cwd` (last
+/// resort, only when `$PWD` is not a usable directory).
 pub fn resolve_start_dir(
     arg: Option<PathBuf>,
     last_cwd: Option<PathBuf>,

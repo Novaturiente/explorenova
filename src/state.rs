@@ -23,7 +23,7 @@ pub struct State {
 }
 
 impl State {
-    pub fn from_str(s: &str) -> Self {
+    pub fn parse(s: &str) -> Self {
         toml::from_str(s).unwrap_or_default()
     }
 
@@ -103,32 +103,34 @@ mod tests {
         let mut s = State::default();
         s.bookmarks.push(PathBuf::from("/a"));
         s.last_cwd = Some(PathBuf::from("/b"));
-        let back = State::from_str(&s.to_toml());
+        let back = State::parse(&s.to_toml());
         assert_eq!(back, s);
     }
 
     #[test]
     fn bad_toml_yields_default() {
-        let s = State::from_str("@@@");
+        let s = State::parse("@@@");
         assert_eq!(s, State::default());
     }
 
     #[test]
     fn sort_persists_through_toml() {
         use crate::sort::{SortMode, SortState};
-        let mut s = State::default();
-        s.sort = SortState {
-            mode: SortMode::Size,
-            reverse: true,
-            dir_first: false,
+        let s = State {
+            sort: SortState {
+                mode: SortMode::Size,
+                reverse: true,
+                dir_first: false,
+            },
+            ..State::default()
         };
-        let back = State::from_str(&s.to_toml());
+        let back = State::parse(&s.to_toml());
         assert_eq!(back.sort, s.sort);
     }
 
     #[test]
     fn missing_sort_section_yields_default() {
-        let s = State::from_str("bookmarks = []\n");
+        let s = State::parse("bookmarks = []\n");
         assert_eq!(s.sort, crate::sort::SortState::default());
     }
 
