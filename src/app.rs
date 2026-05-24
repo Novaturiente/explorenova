@@ -17,6 +17,20 @@ pub enum Dialog {
     Devices { items: Vec<crate::devices::Device>, sel: usize },
 }
 
+impl Dialog {
+    /// Move the selection cursor on dialogs that have one (AppPick,
+    /// Devices). Wraps around at both ends per [`crate::ui::modal::wrap_nav`].
+    /// No-op on dialogs without a selection (None, Input, Confirm).
+    pub fn nav(&mut self, len: usize, forward: bool) {
+        let sel = match self {
+            Dialog::Devices { sel, .. } => sel,
+            Dialog::AppPick { sel, .. } => sel,
+            _ => return,
+        };
+        *sel = crate::ui::modal::wrap_nav(*sel, len, forward);
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
     Bookmarks,

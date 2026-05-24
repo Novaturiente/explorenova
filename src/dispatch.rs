@@ -284,16 +284,8 @@ fn handle_devices_key(app: &mut App, k: &KeyEvent) {
             app.mode = Mode::Normal;
             app.dialog = Dialog::None;
         }
-        KeyCode::Down | KeyCode::Char('j') => {
-            if let Dialog::Devices { sel, .. } = &mut app.dialog {
-                *sel = crate::ui::modal::wrap_nav(*sel, len, true);
-            }
-        }
-        KeyCode::Up | KeyCode::Char('k') => {
-            if let Dialog::Devices { sel, .. } = &mut app.dialog {
-                *sel = crate::ui::modal::wrap_nav(*sel, len, false);
-            }
-        }
+        KeyCode::Down | KeyCode::Char('j') => app.dialog.nav(len, true),
+        KeyCode::Up | KeyCode::Char('k') => app.dialog.nav(len, false),
         KeyCode::Char('r') => refresh_devices(app),
         KeyCode::Char('u') => devices_unmount_selected(app),
         KeyCode::Enter => devices_enter_selected(app),
@@ -391,16 +383,8 @@ fn handle_appick_key(app: &mut App, k: &KeyEvent) {
             app.pending = None;
             app.dialog = Dialog::None;
         }
-        KeyCode::Up => {
-            if let Dialog::AppPick { sel, .. } = &mut app.dialog {
-                *sel = crate::ui::modal::wrap_nav(*sel, len, false);
-            }
-        }
-        KeyCode::Down => {
-            if let Dialog::AppPick { sel, .. } = &mut app.dialog {
-                *sel = crate::ui::modal::wrap_nav(*sel, len, true);
-            }
-        }
+        KeyCode::Up => app.dialog.nav(len, false),
+        KeyCode::Down => app.dialog.nav(len, true),
         KeyCode::Backspace => {
             if let Dialog::AppPick { sel, filter, .. } = &mut app.dialog {
                 filter.pop();
