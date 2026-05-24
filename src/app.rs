@@ -86,6 +86,10 @@ pub struct App {
     /// Filter string for the help overlay. Typed chars narrow the
     /// visible entries (substring, case-insensitive). Cleared on open.
     pub help_filter: String,
+    /// Cached candidate path list for the live `/` search. Populated
+    /// when Search mode is entered (one tree-walk) so every keystroke
+    /// only needs to re-rank, not re-collect. None when not in search.
+    pub search_cands: Option<Vec<PathBuf>>,
 }
 
 impl App {
@@ -121,6 +125,7 @@ impl App {
             op: None,
             help_scroll: 0,
             help_filter: String::new(),
+            search_cands: None,
         }
     }
 
@@ -431,6 +436,44 @@ impl App {
         self.search_results = ranked.into_iter().map(|(p, _, idx)| (p, idx)).collect();
         self.search_idx = 0;
         self.jump_to_search();
+    }
+
+    /// One-shot tree walk; cache the result for live re-ranking on
+    /// every keystroke during Search mode.
+    pub fn begin_search(&mut self) {
+        let root = self.arena.nodes[self.arena.root].path.clone();
+        self.search_cands = Some(crate::search::collect(&root, self.arena.show_hidden));
+        self.search_results.clear();
+        self.search_idx = 0;
+    }
+
+    /// Re-rank the cached candidate list against the current input,
+    /// then jump the cursor to the top match. Cheap enough to run on
+    /// every keystroke during Search mode.
+    pub fn live_search(&mut self) {
+        let Some(cands) = self.search_cands.as_ref() else {
+            return;
+        };
+        let root = self.arena.nodes[self.arena.root].path.clone();
+        let query = self.input.value();
+        if query.is_empty() {
+            self.search_results.clear();
+            self.search_idx = 0;
+            return;
+        }
+        let ranked = crate::search::rank(cands, &root, &query);
+        self.search_results = ranked
+            .into_iter()
+            .map(|(p, _, idx)| (p, idx))
+            .collect();
+        self.search_idx = 0;
+        self.jump_to_search();
+    }
+
+    /// Drop the cached candidate list. Called when Search mode exits
+    /// (Enter or Esc) so we don't hold a giant Vec around indefinitely.
+    pub fn end_search(&mut self) {
+        self.search_cands = None;
     }
 
     pub fn jump_to_search(&mut self) {

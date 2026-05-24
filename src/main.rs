@@ -594,13 +594,19 @@ fn main() -> Result<()> {
                 }
                 Mode::Search | Mode::Input => match k.code {
                     KeyCode::Esc => {
+                        if app.mode == Mode::Search {
+                            app.end_search();
+                        }
                         app.mode = Mode::Normal;
                         app.input.clear();
                         app.pending = None;
                     }
                     KeyCode::Enter => match app.mode {
                         Mode::Search => {
-                            app.run_search();
+                            // Cursor is already on the top live match;
+                            // Enter just dismisses the prompt. Cached
+                            // candidates can be freed now.
+                            app.end_search();
                             app.mode = Mode::Normal;
                         }
                         Mode::Input => match app.pending.take() {
@@ -691,13 +697,31 @@ fn main() -> Result<()> {
                     KeyCode::Right => app.input.right(),
                     KeyCode::Home => app.input.home(),
                     KeyCode::End => app.input.end(),
-                    KeyCode::Delete => app.input.delete(),
-                    KeyCode::Backspace => app.input.backspace(),
+                    KeyCode::Delete => {
+                        app.input.delete();
+                        if app.mode == Mode::Search {
+                            app.live_search();
+                        }
+                    }
+                    KeyCode::Backspace => {
+                        app.input.backspace();
+                        if app.mode == Mode::Search {
+                            app.live_search();
+                        }
+                    }
                     // Some terminals send Backspace as DEL (0x7f) or Ctrl-H (0x08).
                     KeyCode::Char('\u{7f}') | KeyCode::Char('\u{8}') => {
-                        app.input.backspace()
+                        app.input.backspace();
+                        if app.mode == Mode::Search {
+                            app.live_search();
+                        }
                     }
-                    KeyCode::Char(ch) if !ch.is_control() => app.input.insert(ch),
+                    KeyCode::Char(ch) if !ch.is_control() => {
+                        app.input.insert(ch);
+                        if app.mode == Mode::Search {
+                            app.live_search();
+                        }
+                    }
                     _ => {}
                 },
                 Mode::Confirm => match k.code {
@@ -1062,7 +1086,10 @@ fn handle(
                 }
             }
         }
-        Action::Search => app.enter_mode(Mode::Search, ""),
+        Action::Search => {
+            app.begin_search();
+            app.enter_mode(Mode::Search, "");
+        }
         Action::SearchNext => app.search_cycle(true),
         Action::SearchPrev => app.search_cycle(false),
         Action::PathInput => {
