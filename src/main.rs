@@ -18,6 +18,7 @@ use explorenova::ui;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use std::io;
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
@@ -54,6 +55,43 @@ fn state_path() -> PathBuf {
                 .join("share")
         });
     base.join("explorenova").join("state.toml")
+}
+
+/// Collect the dirs the fs-watcher should currently cover: the active
+/// arena root + every expanded directory node. Each is watched
+/// NonRecursive so events arrive only for direct children — which is
+/// what the visible tree actually shows.
+fn watch_targets(app: &App) -> HashSet<PathBuf> {
+    let mut out: HashSet<PathBuf> = HashSet::new();
+    out.insert(app.arena.nodes[app.arena.root].path.clone());
+    for n in &app.arena.nodes {
+        if n.is_dir() && n.expanded {
+            out.insert(n.path.clone());
+        }
+    }
+    out
+}
+
+/// Reconcile installed watches against `desired`. Adds new ones,
+/// drops stale ones. Errors (typically EACCES on root-owned dirs)
+/// are swallowed — the caller still gets coverage for everything
+/// else and the user sees a missing-refresh symptom only on the
+/// specific blocked path.
+fn sync_watches(
+    watcher: &mut notify::RecommendedWatcher,
+    watched: &mut HashSet<PathBuf>,
+    desired: HashSet<PathBuf>,
+) {
+    use notify::{RecursiveMode, Watcher};
+    let to_add: Vec<PathBuf> = desired.difference(watched).cloned().collect();
+    let to_drop: Vec<PathBuf> = watched.difference(&desired).cloned().collect();
+    for p in &to_add {
+        let _ = watcher.watch(p.as_path(), RecursiveMode::NonRecursive);
+    }
+    for p in &to_drop {
+        let _ = watcher.unwatch(p.as_path());
+    }
+    *watched = desired;
 }
 
 fn load_config() -> Config {
@@ -117,39 +155,19 @@ fn main() -> Result<()> {
         });
     }
 
-    use notify::{RecursiveMode, Watcher};
     let (fs_tx, fs_rx) = mpsc::channel();
     let mut watcher = notify::recommended_watcher(move |res| {
         if let Ok(ev) = res {
             let _ = fs_tx.send(ev);
         }
     })?;
-    // Watch the root dir's direct entries immediately (constant time,
-    // never fails on perms — covers the common case where the user
-    // edits files in cwd). Recursive coverage is installed on a
-    // background thread so the TUI draws its first frame without
-    // waiting for a $HOME-sized inotify walk (5-10s). Subtree changes
-    // start being detected as soon as the background install reaches
-    // them, fully active within ~10s — no perceived startup delay.
-    if let Err(e) = watcher.watch(&start, RecursiveMode::NonRecursive) {
-        eprintln!("warning: fs-watch disabled ({e})");
-    }
-    {
-        let start_bg = start.clone();
-        std::thread::spawn(move || {
-            // Re-watch the same root recursively. notify-rs treats a
-            // second `watch` on the same path as an upgrade (it doesn't
-            // dup events). EACCES on deep dirs aborts the walk early
-            // but the partial coverage installed before the error is
-            // kept — better than no recursive coverage at all.
-            if let Err(e) = watcher.watch(&start_bg, RecursiveMode::Recursive) {
-                eprintln!("warning: fs-watch recursive coverage partial ({e})");
-            }
-            // Keep the watcher alive for the process lifetime. Dropping
-            // it cancels every installed inotify hook.
-            std::thread::park();
-        });
-    }
+    // Lazy per-dir watching (yazi-style). The set of watched dirs
+    // mirrors the set of currently-expanded dirs in the arena. New
+    // expansions get a NonRecursive watch installed; collapses /
+    // reroots drop the now-irrelevant ones. Startup pays for exactly
+    // one watch (the root) and never blocks on a subtree walk.
+    let mut watched: HashSet<PathBuf> = HashSet::new();
+    sync_watches(&mut watcher, &mut watched, watch_targets(&app));
 
     let mut picker = ui::make_picker();
     let _guard = TermGuard::new()?;
@@ -263,6 +281,12 @@ fn main() -> Result<()> {
             },
             Mode::SortMenu | Mode::Help => explorenova::app::Dialog::None,
         };
+
+        // Reconcile fs-watches against the current expanded set. Cheap
+        // when the diff is empty (most frames). Runs after dispatch so
+        // newly-expanded dirs from this key event are watched before
+        // the next render.
+        sync_watches(&mut watcher, &mut watched, watch_targets(&app));
 
         if app.should_quit {
             break;
