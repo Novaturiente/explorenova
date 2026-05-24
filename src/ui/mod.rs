@@ -185,6 +185,21 @@ pub fn render_image(
     }
 }
 
+/// Slice `lines` to a viewport of `visible` rows that keeps `sel` in
+/// view. Anchors selection roughly in the middle when scrolling.
+fn viewport_around<T: Clone>(lines: &[T], sel: usize, visible: usize) -> Vec<T> {
+    if visible == 0 || lines.is_empty() {
+        return Vec::new();
+    }
+    if lines.len() <= visible {
+        return lines.to_vec();
+    }
+    let half = visible / 2;
+    let max_start = lines.len() - visible;
+    let start = sel.saturating_sub(half).min(max_start);
+    lines[start..start + visible].to_vec()
+}
+
 pub fn render_frame(
     f: &mut Frame,
     app: &mut App,
@@ -443,10 +458,11 @@ pub fn render_frame(
         }
         (_, crate::app::Dialog::None) => {}
         (_, crate::app::Dialog::AppPick { items, sel }) => {
-            let rows = items.len() + 1;
+            // Total rows = items + separator + custom-command entry.
+            let total = items.len() + 2;
             let r = crate::ui::modal::centered_rect(
                 50,
-                (rows.min(14) as u16) + 1,
+                (total.min(14) as u16) + 2, // +2 for top/bottom border
                 body,
             );
             f.render_widget(ratatui::widgets::Clear, r);
@@ -456,7 +472,7 @@ pub fn render_frame(
                 .title("Open with");
             let inner = block.inner(r);
             f.render_widget(block, r);
-            let mut lines: Vec<ratatui::text::Line> = Vec::new();
+            let mut lines: Vec<ratatui::text::Line> = Vec::with_capacity(total);
             for (i, a) in items.iter().enumerate() {
                 let marker = if i == *sel { "> " } else { "  " };
                 lines.push(ratatui::text::Line::from(format!(
@@ -470,15 +486,18 @@ pub fn render_frame(
             lines.push(ratatui::text::Line::from(format!(
                 "{cmarker}Custom command…"
             )));
-            f.render_widget(Paragraph::new(lines), inner);
+            let view = viewport_around(&lines, *sel, inner.height as usize);
+            f.render_widget(Paragraph::new(view), inner);
         }
         (_, crate::app::Dialog::Devices { items, sel }) => {
             use ratatui::style::Style;
             use ratatui::text::{Line, Span};
-            let rows = items.len().max(1);
+            // Total = items (or 1 empty-state row) + blank + help line.
+            let body_rows = items.len().max(1);
+            let total = body_rows + 2;
             let r = crate::ui::modal::centered_rect(
                 70,
-                (rows.min(14) as u16) + 2,
+                (total.min(16) as u16) + 2,
                 body,
             );
             f.render_widget(ratatui::widgets::Clear, r);
@@ -488,9 +507,22 @@ pub fn render_frame(
                 .title("Devices");
             let inner = block.inner(r);
             f.render_widget(block, r);
-            let mut lines: Vec<Line> = Vec::new();
+            // Scrollable body for the device rows; reserve last 2 rows
+            // for the (always visible) help/blank footer.
+            let footer_rows = 2u16;
+            let body_h = inner.height.saturating_sub(footer_rows);
+            let body_rect = ratatui::layout::Rect {
+                height: body_h,
+                ..inner
+            };
+            let footer_rect = ratatui::layout::Rect {
+                y: inner.y + body_h,
+                height: footer_rows,
+                ..inner
+            };
+            let mut body_lines: Vec<Line> = Vec::new();
             if items.is_empty() {
-                lines.push(Line::from("  no handleable devices"));
+                body_lines.push(Line::from("  no handleable devices"));
             } else {
                 for (i, d) in items.iter().enumerate() {
                     let marker = if i == *sel { "> " } else { "  " };
@@ -503,18 +535,22 @@ pub fn render_frame(
                         .as_ref()
                         .map(|p| p.display().to_string())
                         .unwrap_or_else(|| "(not mounted)".to_string());
-                    lines.push(Line::from(format!(
+                    body_lines.push(Line::from(format!(
                         "{marker}{mounted} {:<14} {:<8} {:<8} {:<14} {}",
                         d.device, size, fs, label, mp
                     )));
                 }
             }
-            lines.push(Line::from(""));
-            lines.push(Line::from(Span::styled(
-                "  Enter cd/mount   u umount   r refresh   Esc close",
-                Style::default().fg(theme.dim),
-            )));
-            f.render_widget(Paragraph::new(lines), inner);
+            let view = viewport_around(&body_lines, *sel, body_h as usize);
+            f.render_widget(Paragraph::new(view), body_rect);
+            let footer = vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    "  Enter cd/mount   u umount   r refresh   Esc close",
+                    Style::default().fg(theme.dim),
+                )),
+            ];
+            f.render_widget(Paragraph::new(footer), footer_rect);
         }
         (crate::keymap::Mode::Search | crate::keymap::Mode::Input, _) => {
             let title = match app.mode {
