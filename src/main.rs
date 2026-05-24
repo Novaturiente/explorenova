@@ -1173,15 +1173,45 @@ fn handle(
                 return Ok(());
             }
             // Enter: directories re-root the tree at that folder (cd-in
-            // semantics); files open in the default application. Use h/l
-            // (or arrow keys) to expand/collapse without re-rooting.
+            // semantics); archives extract to a sibling dir and reveal;
+            // other files open in the default application. Use h/l (or
+            // arrow keys) to expand/collapse without re-rooting.
             if let Some(&id) = app.visible.get(app.selected) {
                 if app.arena.nodes[id].is_dir() {
                     let p = app.arena.nodes[id].path.clone();
                     reroot(app, &p, git_tx);
                 } else {
                     let p = app.arena.nodes[id].path.clone();
-                    if let Err(e) = open::that_detached(&p) {
+                    if explorenova::fs_ops::is_archive(&p) {
+                        app.status = format!(
+                            "extracting {}...",
+                            p.file_name().and_then(|s| s.to_str()).unwrap_or("?")
+                        );
+                        match explorenova::fs_ops::extract_archive(&p) {
+                            Ok(dest) => {
+                                refresh_in_place(app, git_tx);
+                                if let Ok(Some(rid)) = app.arena.reveal(&dest) {
+                                    app.visible = app.arena.flatten();
+                                    if let Some(i) = app
+                                        .visible
+                                        .iter()
+                                        .position(|&n| n == rid)
+                                    {
+                                        app.selected = i;
+                                    }
+                                }
+                                app.status = format!(
+                                    "extracted to {}",
+                                    dest.file_name()
+                                        .and_then(|s| s.to_str())
+                                        .unwrap_or("?")
+                                );
+                            }
+                            Err(e) => {
+                                app.status = format!("extract failed: {e}");
+                            }
+                        }
+                    } else if let Err(e) = open::that_detached(&p) {
                         app.status = format!("open failed: {e}");
                     }
                 }
