@@ -540,6 +540,17 @@ impl App {
         }
     }
 
+    /// Insert every visible row in `[lo, hi]` (inclusive) into `marks`.
+    /// Used by visual-mode auto-mark on multi-row jumps (G/gg/Ctrl-d).
+    pub fn mark_range(&mut self, lo: usize, hi: usize) {
+        let hi = hi.min(self.visible.len().saturating_sub(1));
+        for i in lo..=hi {
+            if let Some(&id) = self.visible.get(i) {
+                self.marks.insert(self.arena.nodes[id].path.clone());
+            }
+        }
+    }
+
     /// Single chokepoint for the "selection-if-any-else-cursor" rule.
     pub fn targets(&self) -> Vec<PathBuf> {
         if !self.marks.is_empty() {

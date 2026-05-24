@@ -718,7 +718,15 @@ fn main() -> Result<()> {
             if app.selected != prev_selected_outer {
                 app.cursor_moved_at = std::time::Instant::now();
                 if app.visual_mode {
-                    app.mark_cursor();
+                    // Mark every row crossed during the jump (gg, G,
+                    // Ctrl-d, Ctrl-u all skip multiple rows). Single-
+                    // step j/k still works because lo == hi - 1.
+                    let (lo, hi) = if app.selected < prev_selected_outer {
+                        (app.selected, prev_selected_outer)
+                    } else {
+                        (prev_selected_outer, app.selected)
+                    };
+                    app.mark_range(lo, hi);
                 }
             }
         }
@@ -911,7 +919,13 @@ fn handle(
             }
         }
         Action::ShellDrop => {
-            shell::drop_to_shell(cwd)?;
+            // Don't let a shell hiccup tear down the TUI. Convert any
+            // io::Error (raw-mode toggle failure, alt-screen restore
+            // glitch, stdin EOF on readline) into a status message and
+            // keep the app alive.
+            if let Err(e) = shell::drop_to_shell(cwd) {
+                app.status = format!("shell: {e}");
+            }
         }
         Action::ShowDevices => {
             match explorenova::devices::list() {
