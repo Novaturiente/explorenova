@@ -2,7 +2,7 @@ use crate::tree::node::Node;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Clear, Paragraph};
 use ratatui::Frame;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
@@ -95,56 +95,82 @@ pub fn sort_children(indices: &mut [usize], arena_nodes: &[Node], sort: &SortSta
     });
 }
 
-pub fn render_menu(area: Rect, frame: &mut Frame, sort: &SortState) {
+pub fn render_menu(area: Rect, frame: &mut Frame, sort: &SortState, theme: &crate::ui::theme::Theme) {
+    use crate::ui::modal;
     frame.render_widget(Clear, area);
-    let block = Block::default()
-        .title(" Sort ")
-        .borders(Borders::ALL);
-    let mark = |m: SortMode| {
+    let block = modal::modal_block("Sort", theme);
+    let inner = modal::pad_inner(block.inner(area));
+    frame.render_widget(block, area);
+
+    let key = |k: &str| {
+        Span::styled(
+            format!(" {k} "),
+            Style::default()
+                .fg(theme.match_hl)
+                .add_modifier(Modifier::BOLD),
+        )
+    };
+    let active_marker = |m: SortMode| -> Span<'static> {
         if sort.mode == m {
-            " (active)"
+            Span::styled(
+                "  ● active".to_string(),
+                Style::default()
+                    .fg(theme.git_added)
+                    .add_modifier(Modifier::BOLD),
+            )
         } else {
-            ""
+            Span::raw(String::new())
         }
     };
-    let on_off = |b: bool| if b { "on" } else { "off" };
+    let on_off = |b: bool| {
+        if b {
+            Span::styled(
+                "on".to_string(),
+                Style::default()
+                    .fg(theme.git_added)
+                    .add_modifier(Modifier::BOLD),
+            )
+        } else {
+            Span::styled("off".to_string(), modal::dim_style(theme))
+        }
+    };
+    let row = |k: &str, label: &str, m: SortMode| -> Line<'static> {
+        Line::from(vec![
+            key(k),
+            Span::raw(format!(" {label:<10}")),
+            active_marker(m),
+        ])
+    };
+    let toggle_row = |k: &str, label: &str, val: Span<'static>| -> Line<'static> {
+        Line::from(vec![
+            key(k),
+            Span::raw(format!(" {label:<10}")),
+            val,
+        ])
+    };
+
     let lines = vec![
         Line::from(""),
-        Line::from(format!("  1  Name    [n]{}", mark(SortMode::Name))),
-        Line::from(format!("  2  Size    [s]{}", mark(SortMode::Size))),
-        Line::from(format!("  3  Mtime   [m]{}", mark(SortMode::Mtime))),
-        Line::from(format!("  4  Ext     [e]{}", mark(SortMode::Ext))),
+        row("1·n", "Name", SortMode::Name),
+        row("2·s", "Size", SortMode::Size),
+        row("3·m", "Mtime", SortMode::Mtime),
+        row("4·e", "Ext", SortMode::Ext),
         Line::from(""),
-        Line::from(vec![
-            Span::raw("  r  Reverse:   "),
-            Span::styled(
-                on_off(sort.reverse).to_string(),
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-        ]),
-        Line::from(vec![
-            Span::raw("  d  Dir first: "),
-            Span::styled(
-                on_off(sort.dir_first).to_string(),
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-        ]),
+        toggle_row("r", "Reverse", on_off(sort.reverse)),
+        toggle_row("d", "Dir first", on_off(sort.dir_first)),
         Line::from(""),
-        Line::from("  esc  close"),
+        Line::from(Span::styled(
+            " esc to close".to_string(),
+            modal::dim_style(theme),
+        )),
     ];
-    frame.render_widget(Paragraph::new(lines).block(block), area);
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
-/// Center a Rect of given (w, h) inside `area`. Public so help.rs reuses it.
+/// Center a Rect of given (w, h) inside `area`. Kept for callers that
+/// haven't migrated to [`crate::ui::modal::adaptive_rect`] yet.
 pub fn centered_rect(w: u16, h: u16, area: Rect) -> Rect {
-    let x = area.x + area.width.saturating_sub(w) / 2;
-    let y = area.y + area.height.saturating_sub(h) / 2;
-    Rect {
-        x,
-        y,
-        width: w.min(area.width),
-        height: h.min(area.height),
-    }
+    crate::ui::modal::adaptive_rect(w, h, area)
 }
 
 #[cfg(test)]

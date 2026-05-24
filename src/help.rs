@@ -1,8 +1,9 @@
 use crate::keymap::{Action, Keymap};
+use crate::ui::theme::Theme;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Clear, Paragraph};
 use ratatui::Frame;
 
 pub struct HelpCategory {
@@ -89,31 +90,53 @@ pub fn build_entries(km: &Keymap) -> Vec<HelpCategory> {
     out
 }
 
-pub fn render(area: Rect, frame: &mut Frame, entries: &[HelpCategory]) {
+pub fn render(area: Rect, frame: &mut Frame, entries: &[HelpCategory], theme: &Theme) {
+    use crate::ui::modal;
     frame.render_widget(Clear, area);
-    let block = Block::default()
-        .title(" explorenova keys ")
-        .borders(Borders::ALL);
-    let inner_w = area.width.saturating_sub(4) as usize;
+    let block = modal::modal_block("explorenova keys", theme);
+    let inner = modal::pad_inner(block.inner(area));
+    frame.render_widget(block, area);
+
+    let inner_w = inner.width as usize;
     let mut lines: Vec<Line> = Vec::new();
-    for cat in entries {
+    for (idx, cat) in entries.iter().enumerate() {
+        if idx > 0 {
+            lines.push(Line::from(""));
+        }
         lines.push(Line::from(Span::styled(
-            cat.name,
-            Style::default().add_modifier(Modifier::BOLD),
+            cat.name.to_string(),
+            Style::default()
+                .fg(theme.header)
+                .add_modifier(Modifier::BOLD | Modifier::UNDERLINED),
         )));
         for (label, keys) in &cat.rows {
-            let gap = inner_w.saturating_sub(label.len() + keys.len() + 2).max(2);
-            lines.push(Line::from(format!(
-                "  {}{}{}",
-                label,
-                " ".repeat(gap),
-                keys
-            )));
+            // Right-align keys with a dotted leader so the eye tracks
+            // label → key easily across the row.
+            let leader = inner_w
+                .saturating_sub(label.len() + keys.len() + 4)
+                .max(2);
+            lines.push(Line::from(vec![
+                Span::raw(format!("  {label}  ")),
+                Span::styled(
+                    "·".repeat(leader),
+                    Style::default().fg(theme.dim),
+                ),
+                Span::raw("  "),
+                Span::styled(
+                    keys.clone(),
+                    Style::default()
+                        .fg(theme.match_hl)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]));
         }
-        lines.push(Line::from(""));
     }
-    lines.push(Line::from("  [any key dismisses]"));
-    frame.render_widget(Paragraph::new(lines).block(block), area);
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        " any key to close",
+        Style::default().fg(theme.dim),
+    )));
+    frame.render_widget(Paragraph::new(lines), inner);
 }
 
 #[cfg(test)]
