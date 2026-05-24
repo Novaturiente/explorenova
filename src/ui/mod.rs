@@ -577,5 +577,12 @@ pub fn render_frame(
             );
         }
         (crate::keymap::Mode::Normal, _) => {}
+        (crate::keymap::Mode::SortMenu, _) => {
+            let r = crate::sort::centered_rect(40, 12, body);
+            crate::sort::render_menu(r, f, &app.sort);
+        }
+        (crate::keymap::Mode::Help, _) => {
+            // Wired in Task 4. Render is a no-op until help::render exists.
+        }
     }
 }

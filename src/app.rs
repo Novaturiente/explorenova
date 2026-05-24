@@ -68,10 +68,15 @@ pub struct App {
     /// to the other slot so positions stay fixed across Tab swaps —
     /// only the highlight (and which pane receives keystrokes) moves.
     pub active_slot: u8,
+    /// Global sort state (mirrors `state.sort`). Pushed into every Arena
+    /// via `apply_sort_to_arenas`; persisted to state.toml on change.
+    pub sort: crate::sort::SortState,
 }
 
 impl App {
-    pub fn new(arena: Arena, config: Config, state: State) -> Self {
+    pub fn new(mut arena: Arena, config: Config, state: State) -> Self {
+        let sort = state.sort;
+        arena.set_sort(sort);
         let visible = arena.flatten();
         App {
             arena,
@@ -95,7 +100,36 @@ impl App {
             bookmark_sel: 0,
             tabs: Vec::new(),
             active_slot: 0,
+            sort,
         }
+    }
+
+    /// Push current sort to active arena AND each tab snapshot; re-flatten
+    /// all visible lists and reclamp the cursor.
+    pub fn apply_sort(&mut self) {
+        self.arena.set_sort(self.sort);
+        self.visible = self.arena.flatten();
+        let cap = self.visible.len().saturating_sub(1);
+        self.selected = self.selected.min(cap);
+        for tab in self.tabs.iter_mut() {
+            tab.arena.set_sort(self.sort);
+            tab.visible = tab.arena.flatten();
+            let cap = tab.visible.len().saturating_sub(1);
+            tab.selected = tab.selected.min(cap);
+        }
+        self.state.sort = self.sort;
+    }
+
+    pub fn set_sort_mode(&mut self, mode: crate::sort::SortMode) {
+        self.sort.mode = mode;
+    }
+
+    pub fn toggle_sort_reverse(&mut self) {
+        self.sort.reverse = !self.sort.reverse;
+    }
+
+    pub fn toggle_sort_dir_first(&mut self) {
+        self.sort.dir_first = !self.sort.dir_first;
     }
 
     /// True when two tabs are open (split-pane mode).
@@ -111,7 +145,8 @@ impl App {
             return Ok(());
         }
         let root_path = self.arena.nodes[self.arena.root].path.clone();
-        let new_arena = crate::tree::Arena::new(&root_path)?;
+        let mut new_arena = crate::tree::Arena::new(&root_path)?;
+        new_arena.set_sort(self.sort);
         let snap = PaneSnapshot {
             arena: std::mem::replace(&mut self.arena, new_arena),
             visible: std::mem::take(&mut self.visible),

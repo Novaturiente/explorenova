@@ -1,4 +1,9 @@
 use crate::tree::node::Node;
+use ratatui::layout::Rect;
+use ratatui::style::{Modifier, Style};
+use ratatui::text::{Line, Span};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::Frame;
 use serde::{Deserialize, Serialize};
 use std::cmp::Ordering;
 
@@ -88,6 +93,58 @@ pub fn sort_children(indices: &mut [usize], arena_nodes: &[Node], sort: &SortSta
             combined
         }
     });
+}
+
+pub fn render_menu(area: Rect, frame: &mut Frame, sort: &SortState) {
+    frame.render_widget(Clear, area);
+    let block = Block::default()
+        .title(" Sort ")
+        .borders(Borders::ALL);
+    let mark = |m: SortMode| {
+        if sort.mode == m {
+            " (active)"
+        } else {
+            ""
+        }
+    };
+    let on_off = |b: bool| if b { "on" } else { "off" };
+    let lines = vec![
+        Line::from(""),
+        Line::from(format!("  1  Name    [n]{}", mark(SortMode::Name))),
+        Line::from(format!("  2  Size    [s]{}", mark(SortMode::Size))),
+        Line::from(format!("  3  Mtime   [m]{}", mark(SortMode::Mtime))),
+        Line::from(format!("  4  Ext     [e]{}", mark(SortMode::Ext))),
+        Line::from(""),
+        Line::from(vec![
+            Span::raw("  r  Reverse:   "),
+            Span::styled(
+                on_off(sort.reverse).to_string(),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(vec![
+            Span::raw("  d  Dir first: "),
+            Span::styled(
+                on_off(sort.dir_first).to_string(),
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::from(""),
+        Line::from("  esc  close"),
+    ];
+    frame.render_widget(Paragraph::new(lines).block(block), area);
+}
+
+/// Center a Rect of given (w, h) inside `area`. Public so help.rs reuses it.
+pub fn centered_rect(w: u16, h: u16, area: Rect) -> Rect {
+    let x = area.x + area.width.saturating_sub(w) / 2;
+    let y = area.y + area.height.saturating_sub(h) / 2;
+    Rect {
+        x,
+        y,
+        width: w.min(area.width),
+        height: h.min(area.height),
+    }
 }
 
 #[cfg(test)]

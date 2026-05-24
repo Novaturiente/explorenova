@@ -1,4 +1,5 @@
 use super::node::{Node, NodeId, NodeKind};
+use crate::sort::{sort_children, SortState};
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -27,16 +28,40 @@ pub struct Arena {
     pub nodes: Vec<Node>,
     pub root: NodeId,
     pub show_hidden: bool,
+    pub sort: SortState,
 }
 
 impl Arena {
     pub fn new(root_path: &Path) -> io::Result<Self> {
         let kind = NodeKind::Dir;
         let root = Node::new(root_path.to_path_buf(), kind, 0, None);
-        let mut a = Arena { nodes: vec![root], root: 0, show_hidden: false };
+        let mut a = Arena {
+            nodes: vec![root],
+            root: 0,
+            show_hidden: false,
+            sort: SortState::default(),
+        };
         a.load_children(0)?;
         a.nodes[0].expanded = true;
         Ok(a)
+    }
+
+    /// Push a new sort order. Existing loaded children are re-sorted in
+    /// place; future `load_children` uses the new order.
+    pub fn set_sort(&mut self, sort: SortState) {
+        self.sort = sort;
+        self.resort_all();
+    }
+
+    /// Re-sort every already-loaded children list under `self.sort`.
+    pub fn resort_all(&mut self) {
+        let n = self.nodes.len();
+        for id in 0..n {
+            if let Some(mut ch) = self.nodes[id].children.take() {
+                sort_children(&mut ch, &self.nodes, &self.sort);
+                self.nodes[id].children = Some(ch);
+            }
+        }
     }
 
     fn classify(p: &Path) -> (NodeKind, bool, u64, SystemTime) {
@@ -71,7 +96,7 @@ impl Arena {
         }
         let dir = self.nodes[id].path.clone();
         let depth = self.nodes[id].depth + 1;
-        let mut entries: Vec<_> = fs::read_dir(&dir)?
+        let entries: Vec<_> = fs::read_dir(&dir)?
             .filter_map(Result::ok)
             .map(|e| e.path())
             .filter(|p| {
@@ -83,11 +108,6 @@ impl Arena {
                         .unwrap_or(false)
             })
             .collect();
-        entries.sort_by(|a, b| {
-            let ad = a.is_dir();
-            let bd = b.is_dir();
-            bd.cmp(&ad).then(a.file_name().cmp(&b.file_name()))
-        });
         let show_hidden = self.show_hidden;
         let mut child_ids = Vec::with_capacity(entries.len());
         for p in entries {
@@ -102,6 +122,7 @@ impl Arena {
             self.nodes.push(node);
             child_ids.push(self.nodes.len() - 1);
         }
+        sort_children(&mut child_ids, &self.nodes, &self.sort);
         self.nodes[id].children = Some(child_ids);
         Ok(())
     }

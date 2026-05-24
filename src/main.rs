@@ -193,6 +193,20 @@ fn main() -> Result<()> {
                         chord.clear();
                     }
                 }
+                Mode::SortMenu => {
+                    let Some(tok) = key_token(&k) else { continue };
+                    if let Some(action) = keymap.resolve(Mode::SortMenu, &tok) {
+                        if action == Action::Cancel {
+                            app.mode = Mode::Normal;
+                        } else {
+                            handle(&mut app, action, &start, &git_tx)?;
+                        }
+                    }
+                }
+                Mode::Help => {
+                    // Any key (including esc) returns to Normal mode.
+                    app.mode = Mode::Normal;
+                }
                 Mode::Search | Mode::Input
                     if matches!(
                         app.dialog,
@@ -586,6 +600,7 @@ fn main() -> Result<()> {
                 }
                 _ => explorenova::app::Dialog::Input,
             },
+            Mode::SortMenu | Mode::Help => explorenova::app::Dialog::None,
         };
 
         if app.should_quit {
@@ -1148,6 +1163,41 @@ fn handle(
             } else {
                 app.apply(Action::FocusNext);
             }
+        }
+        Action::SortMenu => app.mode = explorenova::keymap::Mode::SortMenu,
+        Action::SortByName => {
+            app.set_sort_mode(explorenova::sort::SortMode::Name);
+            app.apply_sort();
+            app.mode = explorenova::keymap::Mode::Normal;
+            app.status = "sort: name".into();
+        }
+        Action::SortBySize => {
+            app.set_sort_mode(explorenova::sort::SortMode::Size);
+            app.apply_sort();
+            app.mode = explorenova::keymap::Mode::Normal;
+            app.status = "sort: size".into();
+        }
+        Action::SortByMtime => {
+            app.set_sort_mode(explorenova::sort::SortMode::Mtime);
+            app.apply_sort();
+            app.mode = explorenova::keymap::Mode::Normal;
+            app.status = "sort: mtime".into();
+        }
+        Action::SortByExt => {
+            app.set_sort_mode(explorenova::sort::SortMode::Ext);
+            app.apply_sort();
+            app.mode = explorenova::keymap::Mode::Normal;
+            app.status = "sort: ext".into();
+        }
+        Action::SortToggleReverse => {
+            app.toggle_sort_reverse();
+            app.apply_sort();
+            app.status = format!("reverse: {}", if app.sort.reverse { "on" } else { "off" });
+        }
+        Action::SortToggleDirFirst => {
+            app.toggle_sort_dir_first();
+            app.apply_sort();
+            app.status = format!("dir first: {}", if app.sort.dir_first { "on" } else { "off" });
         }
         other => app.apply(other),
     }
