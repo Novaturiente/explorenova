@@ -15,6 +15,7 @@ pub mod search;
 pub mod shell;
 pub mod sort;
 pub mod state;
+pub mod status;
 pub mod textinput;
 pub mod tree;
 pub mod ui;

@@ -71,6 +71,11 @@ pub struct App {
     /// Global sort state (mirrors `state.sort`). Pushed into every Arena
     /// via `apply_sort_to_arenas`; persisted to state.toml on change.
     pub sort: crate::sort::SortState,
+    /// Cached free-disk for current root. Refreshed on cwd change OR
+    /// every 30s.
+    pub disk_free: Option<(PathBuf, u64, std::time::Instant)>,
+    /// Timestamp of last `set_status` call. Status text fades after 3s.
+    pub status_set_at: std::time::Instant,
 }
 
 impl App {
@@ -101,6 +106,44 @@ impl App {
             tabs: Vec::new(),
             active_slot: 0,
             sort,
+            disk_free: None,
+            status_set_at: std::time::Instant::now(),
+        }
+    }
+
+    /// Set transient status text and stamp the time so the status bar
+    /// can fade it after 3 seconds.
+    pub fn set_status<S: Into<String>>(&mut self, s: S) {
+        self.status = s.into();
+        self.status_set_at = std::time::Instant::now();
+    }
+
+    /// Compute the size sum of marked files (skipping directories).
+    /// Called by the status renderer per frame; O(arena × marks) but
+    /// both are small in practice.
+    pub fn marks_bytes(&self) -> u64 {
+        self.marks
+            .iter()
+            .filter_map(|p| {
+                self.arena.nodes.iter()
+                    .find(|n| n.path == *p && !n.is_dir())
+                    .map(|n| n.size)
+            })
+            .sum()
+    }
+
+    /// Refresh `disk_free` if cache is stale (>30s) or cwd changed.
+    pub fn refresh_disk_free(&mut self) {
+        use std::time::{Duration, Instant};
+        let cwd = self.arena.nodes[self.arena.root].path.clone();
+        let stale = match &self.disk_free {
+            None => true,
+            Some((p, _, t)) => p != &cwd || t.elapsed() > Duration::from_secs(30),
+        };
+        if stale {
+            if let Some(b) = crate::status::disk_free_bytes(&cwd) {
+                self.disk_free = Some((cwd, b, Instant::now()));
+            }
         }
     }
 

@@ -416,28 +416,9 @@ pub fn render_frame(
         }
     }
 
-    // Status row: transient messages only.
-    use ratatui::style::{Modifier, Style};
-    use ratatui::text::{Line, Span};
-    let mut spans: Vec<Span> = Vec::new();
-    if app.visual_mode {
-        spans.push(Span::styled(
-            "-- VISUAL --  ",
-            Style::default()
-                .fg(theme.mark)
-                .add_modifier(Modifier::BOLD),
-        ));
-    }
-    spans.push(Span::raw(format!(
-        "{}/{}  ",
-        app.selected + 1,
-        app.visible.len().max(1),
-    )));
-    if !app.marks.is_empty() {
-        spans.push(Span::raw(format!("{} selected  ", app.marks.len())));
-    }
-    spans.push(Span::raw(app.status.clone()));
-    f.render_widget(Paragraph::new(Line::from(spans)), prompt_area);
+    // 3-segment status bar (Left: cursor meta/status, Center: selection,
+    // Right: items + free disk). VISUAL flag is folded into Left segment.
+    crate::status::render(prompt_area, f, app);
 
     // Modal overlay (input / confirm) centered over the body.
     match (&app.mode, &app.dialog) {

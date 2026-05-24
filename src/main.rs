@@ -129,6 +129,7 @@ fn main() -> Result<()> {
     let _guard = TermGuard::new()?;
     let mut term = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     let mut chord = String::new();
+    let mut prev_status = String::new();
     let mut img_cache = ui::ImageCache::default();
     let mut fs_dirty_since: Option<Instant> = None;
 
@@ -158,6 +159,14 @@ fn main() -> Result<()> {
             }
         }
 
+        // Auto-stamp status timestamp on any change so the 3s fade in the
+        // status bar Left segment behaves whether the assignment went
+        // through `set_status` or a direct `app.status = X`.
+        if app.status != prev_status {
+            app.status_set_at = std::time::Instant::now();
+            prev_status = app.status.clone();
+        }
+        app.refresh_disk_free();
         term.draw(|f| {
             ui::render_frame(f, &mut app, &mut preview_cache, &mut picker, &mut img_cache, &keymap)
         })?;
