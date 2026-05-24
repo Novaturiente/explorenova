@@ -53,6 +53,8 @@ pub enum Action {
     JumpHome,
     OpenTrash,
     SysClipCopy,
+    NewTab,
+    CloseTab,
     Quit,
     Cancel,
 }
@@ -81,6 +83,8 @@ impl Action {
             "jump_home" => JumpHome,
             "open_trash" => OpenTrash,
             "sys_clip_copy" => SysClipCopy,
+            "new_tab" => NewTab,
+            "close_tab" => CloseTab,
             "parent" => Parent,
             "toggle_mark" => ToggleMark,
             "toggle_visual_mode" => ToggleVisualMode,
@@ -174,6 +178,7 @@ impl Keymap {
             (ToggleHidden, vec!["."]), (Refresh, vec!["R"]),
             (ShowDevices, vec!["M"]),
             (JumpHome, vec!["H"]),
+            (NewTab, vec!["t"]), (CloseTab, vec!["w"]),
             (Quit, vec!["q"]), (Cancel, vec!["esc"]),
         ]
     }
@@ -325,13 +330,24 @@ mod tests {
     }
 
     #[test]
+    fn t_resolves_to_new_tab_and_w_to_close_tab() {
+        let km = Keymap::build(&std::collections::BTreeMap::new());
+        assert_eq!(km.resolve(Mode::Normal, "t"), Some(Action::NewTab));
+        assert_eq!(km.resolve(Mode::Normal, "w"), Some(Action::CloseTab));
+        assert_eq!(Action::from_name("new_tab"), Some(Action::NewTab));
+        assert_eq!(Action::from_name("close_tab"), Some(Action::CloseTab));
+    }
+
+    #[test]
     fn capital_t_resolves_to_open_trash_not_trash() {
         let km = Keymap::build(&std::collections::BTreeMap::new());
         // T opens the XDG trash dir; x/del move files INTO the trash.
         assert_eq!(km.resolve(Mode::Normal, "T"), Some(Action::OpenTrash));
         assert_eq!(km.resolve(Mode::Normal, "x"), Some(Action::Trash));
         assert_eq!(km.resolve(Mode::Normal, "del"), Some(Action::Trash));
-        assert!(km.resolve(Mode::Normal, "t").is_none());
+        // Lowercase `t` is now NewTab (split-pane mode). Capital `T` still
+        // opens trash; the two are intentionally distinct.
+        assert_eq!(km.resolve(Mode::Normal, "t"), Some(Action::NewTab));
         assert_eq!(
             Action::from_name("open_trash"),
             Some(Action::OpenTrash)

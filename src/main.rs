@@ -1120,6 +1120,35 @@ fn handle(
                 app.apply(Action::Collapse);
             }
         }
+        Action::NewTab => match app.open_tab() {
+            Ok(()) => {
+                app.status = if app.is_split() {
+                    "opened tab".into()
+                } else {
+                    "already split".into()
+                };
+                // New active arena needs a fresh git scan.
+                let _ = git_tx.send(());
+            }
+            Err(e) => app.status = format!("open tab failed: {e}"),
+        },
+        Action::CloseTab => {
+            if app.is_split() {
+                app.close_tab();
+                app.status = "closed tab".into();
+                let _ = git_tx.send(());
+            }
+        }
+        Action::FocusNext => {
+            // Tab key in split mode + Tree focus swaps the two tabs;
+            // otherwise falls back to the existing bookmarks↔tree cycle.
+            if app.is_split() && app.focus == explorenova::app::Pane::Tree {
+                app.swap_tab();
+                let _ = git_tx.send(());
+            } else {
+                app.apply(Action::FocusNext);
+            }
+        }
         other => app.apply(other),
     }
     Ok(())
