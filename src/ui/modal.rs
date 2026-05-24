@@ -86,7 +86,7 @@ pub fn dim_style(theme: &Theme) -> Style {
 /// Render a styled key-hint chip like `[?]` for footer help lines.
 pub fn key_chip(label: &str, theme: &Theme) -> Span<'static> {
     Span::styled(
-        format!("{label}"),
+        label.to_string(),
         Style::default()
             .fg(theme.match_hl)
             .add_modifier(Modifier::BOLD),

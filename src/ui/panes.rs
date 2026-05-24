@@ -90,7 +90,7 @@ pub fn tree_row<'a>(
     // Pad to right-align git glyph (1 cell + 1 trailing space = 2 cells).
     let total = width as usize;
     let git_cells = 2usize;
-    if used + git_cells + 1 <= total {
+    if used + git_cells < total {
         let pad = total - used - git_cells;
         spans.push(Span::raw(" ".repeat(pad)));
     } else {

@@ -38,7 +38,7 @@ fn sanitize_plain(s: &str) -> String {
             '\n' => out.push('\n'),
             '\t' => out.push_str("    "),
             c if (c as u32) < 0x20 => out.push('?'),
-            c if c == '\u{7f}' => out.push('?'),
+            '\u{7f}' => out.push('?'),
             c => out.push(c),
         }
     }

@@ -49,6 +49,9 @@ pub fn disk_free_bytes(path: &Path) -> Option<u64> {
     if rc != 0 {
         return None;
     }
+    // f_bavail/f_frsize widths vary by libc; keep explicit casts for
+    // portability across unix targets.
+    #[allow(clippy::unnecessary_cast)]
     Some(buf.f_bavail as u64 * buf.f_frsize as u64)
 }
 

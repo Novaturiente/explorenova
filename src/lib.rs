@@ -4,6 +4,7 @@ pub mod cli;
 pub mod clipboard;
 pub mod config;
 pub mod devices;
+pub mod dispatch;
 pub mod fs_ops;
 pub mod git;
 pub mod help;

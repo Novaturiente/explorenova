@@ -17,6 +17,20 @@ pub enum Dialog {
     Devices { items: Vec<crate::devices::Device>, sel: usize },
 }
 
+impl Dialog {
+    /// Move the selection cursor on dialogs that have one (AppPick,
+    /// Devices). Wraps around at both ends per [`crate::ui::modal::wrap_nav`].
+    /// No-op on dialogs without a selection (None, Input, Confirm).
+    pub fn nav(&mut self, len: usize, forward: bool) {
+        let sel = match self {
+            Dialog::Devices { sel, .. } => sel,
+            Dialog::AppPick { sel, .. } => sel,
+            _ => return,
+        };
+        *sel = crate::ui::modal::wrap_nav(*sel, len, forward);
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Pane {
     Bookmarks,
@@ -134,6 +148,25 @@ impl App {
     pub fn set_status<S: Into<String>>(&mut self, s: S) {
         self.status = s.into();
         self.status_set_at = std::time::Instant::now();
+    }
+
+    /// Reveal `target` in the tree, reflatten, and move the cursor to
+    /// the revealed row. Returns true if the path was found and selected.
+    ///
+    /// Centralises the reveal → flatten → position pattern used after
+    /// any operation that may expand new ancestors (paste, extract,
+    /// rename, create, refresh, search jump). Callers should prefer this
+    /// over hand-rolling the three-step dance — it is the only way to
+    /// keep `visible` and `selected` consistent.
+    pub fn navigate_to(&mut self, target: &std::path::Path) -> bool {
+        if let Ok(Some(id)) = self.arena.reveal(target) {
+            self.visible = self.arena.flatten();
+            if let Some(i) = self.visible.iter().position(|&n| n == id) {
+                self.selected = i;
+                return true;
+            }
+        }
+        false
     }
 
     /// Compute the size sum of marked files (skipping directories).
@@ -478,12 +511,7 @@ impl App {
 
     pub fn jump_to_search(&mut self) {
         if let Some((p, _)) = self.search_results.get(self.search_idx).cloned() {
-            if let Ok(Some(id)) = self.arena.reveal(&p) {
-                self.visible = self.arena.flatten();
-                if let Some(i) = self.visible.iter().position(|&n| n == id) {
-                    self.selected = i;
-                }
-            }
+            self.navigate_to(&p);
         }
     }
 
@@ -514,11 +542,11 @@ impl App {
         let target = base.join(stripped);
         let out = match crate::fs_ops::create(&base.join(&raw)) {
             Ok(_) => {
-                self.status = format!("created {}", target.display());
+                self.set_status(format!("created {}", target.display()));
                 Some(target)
             }
             Err(e) => {
-                self.status = format!("create failed: {e}");
+                self.set_status(format!("create failed: {e}"));
                 None
             }
         };
@@ -534,10 +562,10 @@ impl App {
             let p = self.arena.nodes[id].path.clone();
             match crate::fs_ops::rename(&p, &self.input.value()) {
                 Ok(np) => {
-                    self.status = format!("renamed -> {}", np.display());
+                    self.set_status(format!("renamed -> {}", np.display()));
                     out = Some(np);
                 }
-                Err(e) => self.status = format!("rename failed: {e}"),
+                Err(e) => self.set_status(format!("rename failed: {e}")),
             }
         }
         self.mode = Mode::Normal;
@@ -627,7 +655,7 @@ impl App {
                     Err(_) => failed.push(p.display().to_string()),
                 }
             }
-            self.status = if failed.is_empty() {
+            let msg = if failed.is_empty() {
                 if n == 1 {
                     format!("deleted {}", targets[0].display())
                 } else {
@@ -646,6 +674,7 @@ impl App {
                     tail
                 )
             };
+            self.set_status(msg);
             self.marks.clear();
         }
         self.pending = None;
