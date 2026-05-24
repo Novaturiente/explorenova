@@ -121,6 +121,163 @@ pub fn permanent_delete(path: &Path) -> io::Result<()> {
     }
 }
 
+/// Known archive extensions. Multi-part compounds (`tar.gz`, `tar.xz`,
+/// `tar.bz2`, `tar.zst`) are detected by checking the full lowercase
+/// name suffix; single extensions match the path's `extension()`.
+pub fn is_archive(path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_lowercase())
+        .unwrap_or_default();
+    const MULTI: &[&str] = &[".tar.gz", ".tar.xz", ".tar.bz2", ".tar.zst", ".tar.lz"];
+    if MULTI.iter().any(|m| name.ends_with(m)) {
+        return true;
+    }
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_lowercase())
+        .unwrap_or_default();
+    matches!(
+        ext.as_str(),
+        "zip" | "tar" | "tgz" | "tbz2" | "txz" | "tzst" | "7z" | "rar" | "gz" | "bz2" | "xz" | "zst"
+    )
+}
+
+/// Pick a destination directory for the extracted contents. Strips
+/// the archive extension(s) from the file name; if a path with that
+/// name already exists, falls back to the unique-dest scheme.
+fn extract_dest_for(archive: &Path) -> PathBuf {
+    let parent = archive.parent().unwrap_or_else(|| Path::new("."));
+    let stem = archive
+        .file_name()
+        .and_then(|s| s.to_str())
+        .map(|s| {
+            let lower = s.to_lowercase();
+            for m in [".tar.gz", ".tar.xz", ".tar.bz2", ".tar.zst", ".tar.lz"] {
+                if let Some(idx) = lower.rfind(m) {
+                    return s[..idx].to_string();
+                }
+            }
+            // Single extension strip via Path::file_stem (preserves case).
+            Path::new(s)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| s.to_string())
+        })
+        .unwrap_or_else(|| "extracted".to_string());
+    let candidate = parent.join(&stem);
+    if !candidate.exists() {
+        return candidate;
+    }
+    unique_dest(parent, std::ffi::OsStr::new(&stem))
+}
+
+/// Extract `archive` into a sibling directory (`unique_dest` rules).
+/// Returns the destination path on success. Shells out to system tools
+/// (unzip / tar / 7z / unrar / gunzip / bunzip2 / xz / zstd) per
+/// extension. Tar handles its own compression detection.
+pub fn extract_archive(archive: &Path) -> io::Result<PathBuf> {
+    use std::process::Command;
+    let dest = extract_dest_for(archive);
+    fs::create_dir_all(&dest)?;
+    let name = archive
+        .file_name()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_lowercase())
+        .unwrap_or_default();
+    let ext = archive
+        .extension()
+        .and_then(|s| s.to_str())
+        .map(|s| s.to_lowercase())
+        .unwrap_or_default();
+    let status = if name.ends_with(".tar.gz")
+        || name.ends_with(".tar.xz")
+        || name.ends_with(".tar.bz2")
+        || name.ends_with(".tar.zst")
+        || name.ends_with(".tar.lz")
+        || ext == "tar"
+        || ext == "tgz"
+        || ext == "tbz2"
+        || ext == "txz"
+        || ext == "tzst"
+    {
+        Command::new("tar")
+            .arg("-xf")
+            .arg(archive)
+            .arg("-C")
+            .arg(&dest)
+            .status()
+    } else if ext == "zip" {
+        Command::new("unzip")
+            .arg("-q")
+            .arg("-o")
+            .arg(archive)
+            .arg("-d")
+            .arg(&dest)
+            .status()
+    } else if ext == "7z" {
+        Command::new("7z")
+            .arg("x")
+            .arg("-y")
+            .arg(format!("-o{}", dest.display()))
+            .arg(archive)
+            .status()
+    } else if ext == "rar" {
+        Command::new("unrar")
+            .arg("x")
+            .arg("-y")
+            .arg(archive)
+            .arg(format!("{}/", dest.display()))
+            .status()
+    } else if matches!(ext.as_str(), "gz" | "bz2" | "xz" | "zst") {
+        // Single-file compressors: write decompressed bytes to dest/<stem>.
+        let stem = Path::new(&name)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or("out")
+            .to_string();
+        let out_path = dest.join(stem);
+        let tool = match ext.as_str() {
+            "gz" => "gunzip",
+            "bz2" => "bunzip2",
+            "xz" => "unxz",
+            "zst" => "zstd",
+            _ => unreachable!(),
+        };
+        // tool -dc <archive> > out_path
+        let out_file = fs::File::create(&out_path)?;
+        let args: Vec<&str> = if tool == "zstd" {
+            vec!["-dc"]
+        } else {
+            vec!["-c"]
+        };
+        Command::new(tool)
+            .args(args)
+            .arg(archive)
+            .stdout(out_file)
+            .status()
+    } else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "unsupported archive type",
+        ));
+    };
+    match status {
+        Ok(s) if s.success() => Ok(dest),
+        Ok(s) => Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("extractor exited with status {s}"),
+        )),
+        Err(e) => Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("failed to spawn extractor: {e}"),
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -132,5 +289,31 @@ mod tests {
         std::fs::write(d.path().join("a.txt"), "1").unwrap();
         let u = unique_dest(d.path(), std::ffi::OsStr::new("a.txt"));
         assert_eq!(u.file_name().unwrap(), "a (1).txt");
+    }
+
+    #[test]
+    fn is_archive_detects_common_extensions() {
+        assert!(is_archive(Path::new("foo.zip")));
+        assert!(is_archive(Path::new("foo.tar")));
+        assert!(is_archive(Path::new("foo.tar.gz")));
+        assert!(is_archive(Path::new("foo.TAR.XZ")));
+        assert!(is_archive(Path::new("foo.7z")));
+        assert!(is_archive(Path::new("foo.gz")));
+        assert!(!is_archive(Path::new("foo.txt")));
+        assert!(!is_archive(Path::new("foo")));
+    }
+
+    #[test]
+    fn extract_dest_strips_multipart_ext() {
+        let p = Path::new("/tmp/foo.tar.gz");
+        let d = extract_dest_for(p);
+        assert_eq!(d, PathBuf::from("/tmp/foo"));
+    }
+
+    #[test]
+    fn extract_dest_strips_single_ext() {
+        let p = Path::new("/tmp/bar.zip");
+        let d = extract_dest_for(p);
+        assert_eq!(d, PathBuf::from("/tmp/bar"));
     }
 }

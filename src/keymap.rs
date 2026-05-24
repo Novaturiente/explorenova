@@ -7,6 +7,8 @@ pub enum Mode {
     Search,
     Input,
     Confirm,
+    SortMenu,
+    Help,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +57,14 @@ pub enum Action {
     SysClipCopy,
     NewTab,
     CloseTab,
+    SortMenu,
+    SortByName,
+    SortBySize,
+    SortByMtime,
+    SortByExt,
+    SortToggleReverse,
+    SortToggleDirFirst,
+    Help,
     Quit,
     Cancel,
 }
@@ -85,6 +95,14 @@ impl Action {
             "sys_clip_copy" => SysClipCopy,
             "new_tab" => NewTab,
             "close_tab" => CloseTab,
+            "sort_menu" => SortMenu,
+            "sort_name" => SortByName,
+            "sort_size" => SortBySize,
+            "sort_mtime" => SortByMtime,
+            "sort_ext" => SortByExt,
+            "sort_reverse" => SortToggleReverse,
+            "sort_dir_first" => SortToggleDirFirst,
+            "help" => Help,
             "parent" => Parent,
             "toggle_mark" => ToggleMark,
             "toggle_visual_mode" => ToggleVisualMode,
@@ -179,6 +197,8 @@ impl Keymap {
             (ShowDevices, vec!["M"]),
             (JumpHome, vec!["H"]),
             (NewTab, vec!["t"]), (CloseTab, vec!["w"]),
+            (SortMenu, vec!["s"]),
+            (Help, vec!["?"]),
             (Quit, vec!["q"]), (Cancel, vec!["esc"]),
         ]
     }
@@ -194,12 +214,34 @@ impl Keymap {
                 _ => None,
             },
             Mode::Confirm => None,
+            Mode::SortMenu => match buffer {
+                "esc" => Some(Action::Cancel),
+                "1" | "n" => Some(Action::SortByName),
+                "2" | "s" => Some(Action::SortBySize),
+                "3" | "m" => Some(Action::SortByMtime),
+                "4" | "e" => Some(Action::SortByExt),
+                "r" => Some(Action::SortToggleReverse),
+                "d" => Some(Action::SortToggleDirFirst),
+                _ => None,
+            },
+            // Help: any key dismisses (Cancel). Esc included.
+            Mode::Help => Some(Action::Cancel),
         }
     }
 
     /// Could `buffer` still grow into a binding (e.g. "g" -> "gg")?
     pub fn is_prefix(&self, buffer: &str) -> bool {
         self.normal.keys().any(|k| k.len() > buffer.len() && k.starts_with(buffer))
+    }
+
+    /// Reverse-lookup: all chords currently bound to `action`, sorted.
+    pub fn keys_for(&self, action: Action) -> Vec<String> {
+        let mut v: Vec<String> = self.normal.iter()
+            .filter(|(_, &a)| a == action)
+            .map(|(k, _)| k.clone())
+            .collect();
+        v.sort();
+        v
     }
 }
 
@@ -336,6 +378,30 @@ mod tests {
         assert_eq!(km.resolve(Mode::Normal, "w"), Some(Action::CloseTab));
         assert_eq!(Action::from_name("new_tab"), Some(Action::NewTab));
         assert_eq!(Action::from_name("close_tab"), Some(Action::CloseTab));
+    }
+
+    #[test]
+    fn s_resolves_to_sort_menu() {
+        let km = Keymap::build(&std::collections::BTreeMap::new());
+        assert_eq!(km.resolve(Mode::Normal, "s"), Some(Action::SortMenu));
+        assert_eq!(Action::from_name("sort_menu"), Some(Action::SortMenu));
+        assert_eq!(Action::from_name("sort_name"), Some(Action::SortByName));
+        assert_eq!(Action::from_name("sort_reverse"), Some(Action::SortToggleReverse));
+    }
+
+    #[test]
+    fn sort_menu_routes_digits_letters_and_esc() {
+        let km = Keymap::build(&std::collections::BTreeMap::new());
+        assert_eq!(km.resolve(Mode::SortMenu, "1"), Some(Action::SortByName));
+        assert_eq!(km.resolve(Mode::SortMenu, "n"), Some(Action::SortByName));
+        assert_eq!(km.resolve(Mode::SortMenu, "2"), Some(Action::SortBySize));
+        assert_eq!(km.resolve(Mode::SortMenu, "s"), Some(Action::SortBySize));
+        assert_eq!(km.resolve(Mode::SortMenu, "3"), Some(Action::SortByMtime));
+        assert_eq!(km.resolve(Mode::SortMenu, "4"), Some(Action::SortByExt));
+        assert_eq!(km.resolve(Mode::SortMenu, "r"), Some(Action::SortToggleReverse));
+        assert_eq!(km.resolve(Mode::SortMenu, "d"), Some(Action::SortToggleDirFirst));
+        assert_eq!(km.resolve(Mode::SortMenu, "esc"), Some(Action::Cancel));
+        assert_eq!(km.resolve(Mode::SortMenu, "x"), None);
     }
 
     #[test]

@@ -23,6 +23,7 @@ anyhow = "1"
 thiserror = "2"
 mime_guess = "2"
 calamine = "0.28"
+libc = "0.2"
 
 [dev-dependencies]
 tempfile = "3"

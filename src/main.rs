@@ -1,6 +1,6 @@
 use anyhow::Result;
 use clap::Parser;
-use crossterm::event::{self, Event, KeyCode};
+use crossterm::event::{self, Event, KeyCode, KeyModifiers};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -42,6 +42,31 @@ fn config_path() -> PathBuf {
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config"));
     base.join("explorenova").join("config.toml")
+}
+
+/// Case-insensitive substring filter. Returns indices into `items`
+/// whose `.name` contains every space-separated token in `filter`.
+fn filter_app_indices(
+    items: &[explorenova::apps::AppEntry],
+    filter: &str,
+) -> Vec<usize> {
+    if filter.is_empty() {
+        return (0..items.len()).collect();
+    }
+    let needle = filter.to_lowercase();
+    let tokens: Vec<&str> = needle.split_whitespace().collect();
+    items
+        .iter()
+        .enumerate()
+        .filter_map(|(i, a)| {
+            let hay = a.name.to_lowercase();
+            if tokens.iter().all(|t| hay.contains(t)) {
+                Some(i)
+            } else {
+                None
+            }
+        })
+        .collect()
 }
 
 fn state_path() -> PathBuf {
@@ -129,6 +154,7 @@ fn main() -> Result<()> {
     let _guard = TermGuard::new()?;
     let mut term = Terminal::new(CrosstermBackend::new(io::stdout()))?;
     let mut chord = String::new();
+    let mut prev_status = String::new();
     let mut img_cache = ui::ImageCache::default();
     let mut fs_dirty_since: Option<Instant> = None;
 
@@ -158,8 +184,43 @@ fn main() -> Result<()> {
             }
         }
 
+        // Poll any in-flight background op (copy/move/extract). On
+        // terminal status, refresh the tree, reveal the destination,
+        // and surface the worker's status text.
+        if let Some(op) = app.op.as_mut() {
+            op.poll();
+            if op.finished.is_some() {
+                let state = app.op.take().unwrap();
+                let reveal = state.reveal_hint.clone();
+                let res = state.finished.unwrap();
+                refresh_in_place(&mut app, &git_tx);
+                if let Some(target) = reveal {
+                    if let Ok(Some(id)) = app.arena.reveal(&target) {
+                        app.visible = app.arena.flatten();
+                        if let Some(i) =
+                            app.visible.iter().position(|&n| n == id)
+                        {
+                            app.selected = i;
+                        }
+                    }
+                }
+                app.status = match res {
+                    Ok(s) => s,
+                    Err(e) => format!("op failed: {e}"),
+                };
+            }
+        }
+
+        // Auto-stamp status timestamp on any change so the 3s fade in the
+        // status bar Left segment behaves whether the assignment went
+        // through `set_status` or a direct `app.status = X`.
+        if app.status != prev_status {
+            app.status_set_at = std::time::Instant::now();
+            prev_status = app.status.clone();
+        }
+        app.refresh_disk_free();
         term.draw(|f| {
-            ui::render_frame(f, &mut app, &mut preview_cache, &mut picker, &mut img_cache)
+            ui::render_frame(f, &mut app, &mut preview_cache, &mut picker, &mut img_cache, &keymap)
         })?;
 
         const PREVIEW_DEBOUNCE_MS: u64 = 150;
@@ -169,7 +230,11 @@ fn main() -> Result<()> {
             // 200ms is the existing default; never wait longer than that
             // (so fs/git channels still get drained promptly).
             // When debounce is already past, remaining == 0 and we use 200.
-            if remaining == 0 { 200 } else { remaining.min(200) }
+            let base = if remaining == 0 { 200 } else { remaining.min(200) };
+            // During a long op, poll on a short tick so the progress
+            // gauge / spinner refreshes smoothly even when no key event
+            // arrives.
+            if app.op.is_some() { base.min(80) } else { base }
         };
         if !event::poll(Duration::from_millis(poll_ms))? {
             continue;
@@ -191,6 +256,67 @@ fn main() -> Result<()> {
                         // wait for more keys
                     } else {
                         chord.clear();
+                    }
+                }
+                Mode::SortMenu => {
+                    let Some(tok) = key_token(&k) else { continue };
+                    if let Some(action) = keymap.resolve(Mode::SortMenu, &tok) {
+                        if action == Action::Cancel {
+                            app.mode = Mode::Normal;
+                        } else {
+                            handle(&mut app, action, &start, &git_tx)?;
+                        }
+                    }
+                }
+                Mode::Help => {
+                    // Arrow keys + Ctrl-d/u scroll; Backspace trims
+                    // filter; Esc closes (or clears filter first when
+                    // non-empty); printable chars append to filter.
+                    let scroll_step = |app: &mut explorenova::app::App, by: i32| {
+                        if by < 0 {
+                            app.help_scroll =
+                                app.help_scroll.saturating_sub((-by) as usize);
+                        } else {
+                            app.help_scroll =
+                                app.help_scroll.saturating_add(by as usize);
+                        }
+                    };
+                    let ctrl = k.modifiers.contains(KeyModifiers::CONTROL);
+                    match (k.code, ctrl) {
+                        (KeyCode::Down, _) => scroll_step(&mut app, 1),
+                        (KeyCode::Up, _) => scroll_step(&mut app, -1),
+                        (KeyCode::PageDown, _) => scroll_step(&mut app, 8),
+                        (KeyCode::PageUp, _) => scroll_step(&mut app, -8),
+                        (KeyCode::Char('d'), true) => scroll_step(&mut app, 8),
+                        (KeyCode::Char('u'), true) => scroll_step(&mut app, -8),
+                        (KeyCode::Home, _) => app.help_scroll = 0,
+                        (KeyCode::End, _) => app.help_scroll = usize::MAX / 2,
+                        (KeyCode::Esc, _) => {
+                            if app.help_filter.is_empty() {
+                                app.mode = Mode::Normal;
+                                app.help_scroll = 0;
+                            } else {
+                                app.help_filter.clear();
+                                app.help_scroll = 0;
+                            }
+                        }
+                        (KeyCode::Backspace, _) => {
+                            app.help_filter.pop();
+                            app.help_scroll = 0;
+                        }
+                        (KeyCode::Char(c), false) => {
+                            // Allow any printable char for the filter.
+                            // Space, punctuation, digits all useful for
+                            // multi-token search (e.g. "ctrl t").
+                            app.help_filter.push(c);
+                            app.help_scroll = 0;
+                        }
+                        _ => {
+                            // Enter / unknown key: close.
+                            app.mode = Mode::Normal;
+                            app.help_scroll = 0;
+                            app.help_filter.clear();
+                        }
                     }
                 }
                 Mode::Search | Mode::Input
@@ -382,9 +508,14 @@ fn main() -> Result<()> {
                     ) =>
                 {
                     use explorenova::app::Dialog;
-                    let (len, sel) = match &app.dialog {
-                        Dialog::AppPick { items, sel } => (items.len() + 1, *sel),
-                        _ => (1, 0),
+                    // `len` = filtered apps + 1 (custom-command row).
+                    // `sel` is the index into that filtered+custom view.
+                    let (len, sel, filtered_idx) = match &app.dialog {
+                        Dialog::AppPick { items, sel, filter } => {
+                            let fi = filter_app_indices(items, filter);
+                            (fi.len() + 1, *sel, fi)
+                        }
+                        _ => (1, 0, Vec::new()),
                     };
                     match k.code {
                         KeyCode::Esc => {
@@ -406,6 +537,22 @@ fn main() -> Result<()> {
                                 );
                             }
                         }
+                        KeyCode::Backspace => {
+                            if let Dialog::AppPick { sel, filter, .. } =
+                                &mut app.dialog
+                            {
+                                filter.pop();
+                                *sel = 0;
+                            }
+                        }
+                        KeyCode::Char(c) => {
+                            if let Dialog::AppPick { sel, filter, .. } =
+                                &mut app.dialog
+                            {
+                                filter.push(c);
+                                *sel = 0;
+                            }
+                        }
                         KeyCode::Enter => {
                             if sel == len - 1 {
                                 // "Custom command…" → typed-command path
@@ -419,7 +566,9 @@ fn main() -> Result<()> {
                                     ..
                                 } = &app.dialog
                                 {
-                                    items.get(sel).cloned()
+                                    filtered_idx
+                                        .get(sel)
+                                        .and_then(|&i| items.get(i).cloned())
                                 } else {
                                     None
                                 };
@@ -445,13 +594,19 @@ fn main() -> Result<()> {
                 }
                 Mode::Search | Mode::Input => match k.code {
                     KeyCode::Esc => {
+                        if app.mode == Mode::Search {
+                            app.end_search();
+                        }
                         app.mode = Mode::Normal;
                         app.input.clear();
                         app.pending = None;
                     }
                     KeyCode::Enter => match app.mode {
                         Mode::Search => {
-                            app.run_search();
+                            // Cursor is already on the top live match;
+                            // Enter just dismisses the prompt. Cached
+                            // candidates can be freed now.
+                            app.end_search();
                             app.mode = Mode::Normal;
                         }
                         Mode::Input => match app.pending.take() {
@@ -542,13 +697,31 @@ fn main() -> Result<()> {
                     KeyCode::Right => app.input.right(),
                     KeyCode::Home => app.input.home(),
                     KeyCode::End => app.input.end(),
-                    KeyCode::Delete => app.input.delete(),
-                    KeyCode::Backspace => app.input.backspace(),
+                    KeyCode::Delete => {
+                        app.input.delete();
+                        if app.mode == Mode::Search {
+                            app.live_search();
+                        }
+                    }
+                    KeyCode::Backspace => {
+                        app.input.backspace();
+                        if app.mode == Mode::Search {
+                            app.live_search();
+                        }
+                    }
                     // Some terminals send Backspace as DEL (0x7f) or Ctrl-H (0x08).
                     KeyCode::Char('\u{7f}') | KeyCode::Char('\u{8}') => {
-                        app.input.backspace()
+                        app.input.backspace();
+                        if app.mode == Mode::Search {
+                            app.live_search();
+                        }
                     }
-                    KeyCode::Char(ch) if !ch.is_control() => app.input.insert(ch),
+                    KeyCode::Char(ch) if !ch.is_control() => {
+                        app.input.insert(ch);
+                        if app.mode == Mode::Search {
+                            app.live_search();
+                        }
+                    }
                     _ => {}
                 },
                 Mode::Confirm => match k.code {
@@ -569,7 +742,15 @@ fn main() -> Result<()> {
             if app.selected != prev_selected_outer {
                 app.cursor_moved_at = std::time::Instant::now();
                 if app.visual_mode {
-                    app.mark_cursor();
+                    // Mark every row crossed during the jump (gg, G,
+                    // Ctrl-d, Ctrl-u all skip multiple rows). Single-
+                    // step j/k still works because lo == hi - 1.
+                    let (lo, hi) = if app.selected < prev_selected_outer {
+                        (app.selected, prev_selected_outer)
+                    } else {
+                        (prev_selected_outer, app.selected)
+                    };
+                    app.mark_range(lo, hi);
                 }
             }
         }
@@ -578,14 +759,15 @@ fn main() -> Result<()> {
             Mode::Normal => explorenova::app::Dialog::None,
             Mode::Confirm => explorenova::app::Dialog::Confirm,
             Mode::Search | Mode::Input => match std::mem::take(&mut app.dialog) {
-                explorenova::app::Dialog::AppPick { items, sel } => {
-                    explorenova::app::Dialog::AppPick { items, sel }
+                explorenova::app::Dialog::AppPick { items, sel, filter } => {
+                    explorenova::app::Dialog::AppPick { items, sel, filter }
                 }
                 explorenova::app::Dialog::Devices { items, sel } => {
                     explorenova::app::Dialog::Devices { items, sel }
                 }
                 _ => explorenova::app::Dialog::Input,
             },
+            Mode::SortMenu | Mode::Help => explorenova::app::Dialog::None,
         };
 
         if app.should_quit {
@@ -761,7 +943,13 @@ fn handle(
             }
         }
         Action::ShellDrop => {
-            shell::drop_to_shell(cwd)?;
+            // Don't let a shell hiccup tear down the TUI. Convert any
+            // io::Error (raw-mode toggle failure, alt-screen restore
+            // glitch, stdin EOF on readline) into a status message and
+            // keep the app alive.
+            if let Err(e) = shell::drop_to_shell(cwd) {
+                app.status = format!("shell: {e}");
+            }
         }
         Action::ShowDevices => {
             match explorenova::devices::list() {
@@ -898,7 +1086,10 @@ fn handle(
                 }
             }
         }
-        Action::Search => app.enter_mode(Mode::Search, ""),
+        Action::Search => {
+            app.begin_search();
+            app.enter_mode(Mode::Search, "");
+        }
         Action::SearchNext => app.search_cycle(true),
         Action::SearchPrev => app.search_cycle(false),
         Action::PathInput => {
@@ -967,6 +1158,10 @@ fn handle(
             }
         }
         Action::Paste => {
+            if app.op.is_some() {
+                app.status = "another op in progress".into();
+                return Ok(());
+            }
             let snapshot = app.clipboard.clone();
             let Some((srcs, is_cut)) = snapshot else {
                 app.status = "nothing to paste".into();
@@ -989,44 +1184,17 @@ fn handle(
             } else {
                 explorenova::fs_ops::PasteMode::Copy
             };
-            let n = srcs.len();
-            let mut ok = 0usize;
-            let mut failed: Vec<String> = Vec::new();
-            let mut moved: Vec<std::path::PathBuf> = Vec::new();
-            for src in &srcs {
-                match explorenova::fs_ops::paste(src, &dst_dir, mode) {
-                    Ok(_) => {
-                        ok += 1;
-                        if is_cut {
-                            moved.push(src.clone());
-                        }
-                    }
-                    Err(_) => failed.push(src.display().to_string()),
-                }
-            }
-            app.status = if failed.is_empty() {
-                format!("pasted {n} -> {}", dst_dir.display())
-            } else {
-                let preview =
-                    failed.iter().take(2).cloned().collect::<Vec<_>>().join(", ");
-                let tail = if failed.len() > 2 { ", …" } else { "" };
-                format!(
-                    "pasted {}/{} -> {} ({} failed: {}{})",
-                    ok,
-                    n,
-                    dst_dir.display(),
-                    failed.len(),
-                    preview,
-                    tail
-                )
-            };
+            // Cut clears clipboard + marks immediately (matches the
+            // pre-async behaviour where moved sources became unreachable
+            // post-paste). Capture src list before moving into worker.
             if is_cut {
                 app.clipboard = None;
-                for p in &moved {
+                for p in &srcs {
                     app.marks.remove(p);
                 }
             }
-            refresh_in_place(app, git_tx);
+            app.op = Some(explorenova::ops::spawn_paste(srcs, dst_dir, mode));
+            app.status = "starting…".into();
         }
         Action::OpenWith => {
             if let Some(&id) = app.visible.get(app.selected) {
@@ -1035,7 +1203,11 @@ fn handle(
                 app.mode = Mode::Input;
                 app.pending = Some(Action::OpenWith);
                 app.status.clear();
-                app.dialog = explorenova::app::Dialog::AppPick { items, sel: 0 };
+                app.dialog = explorenova::app::Dialog::AppPick {
+                    items,
+                    sel: 0,
+                    filter: String::new(),
+                };
             }
         }
         Action::ShellOnce => {
@@ -1096,14 +1268,26 @@ fn handle(
                 }
                 return Ok(());
             }
-            // Enter: directories toggle expand/collapse (pure reducer);
-            // files open in the default application.
+            // Enter: directories re-root the tree at that folder (cd-in
+            // semantics); archives extract to a sibling dir and reveal;
+            // other files open in the default application. Use h/l (or
+            // arrow keys) to expand/collapse without re-rooting.
             if let Some(&id) = app.visible.get(app.selected) {
                 if app.arena.nodes[id].is_dir() {
-                    app.apply(Action::Toggle);
+                    let p = app.arena.nodes[id].path.clone();
+                    reroot(app, &p, git_tx);
                 } else {
                     let p = app.arena.nodes[id].path.clone();
-                    if let Err(e) = open::that_detached(&p) {
+                    if explorenova::fs_ops::is_archive(&p) {
+                        if app.op.is_some() {
+                            app.status = "another op in progress".into();
+                        } else if let Some(state) =
+                            explorenova::ops::spawn_extract(p.clone())
+                        {
+                            app.op = Some(state);
+                            app.status = "starting…".into();
+                        }
+                    } else if let Err(e) = open::that_detached(&p) {
                         app.status = format!("open failed: {e}");
                     }
                 }
@@ -1148,6 +1332,46 @@ fn handle(
             } else {
                 app.apply(Action::FocusNext);
             }
+        }
+        Action::SortMenu => app.mode = explorenova::keymap::Mode::SortMenu,
+        Action::Help => {
+            app.help_scroll = 0;
+            app.help_filter.clear();
+            app.mode = explorenova::keymap::Mode::Help;
+        }
+        Action::SortByName => {
+            app.set_sort_mode(explorenova::sort::SortMode::Name);
+            app.apply_sort();
+            app.mode = explorenova::keymap::Mode::Normal;
+            app.status = "sort: name".into();
+        }
+        Action::SortBySize => {
+            app.set_sort_mode(explorenova::sort::SortMode::Size);
+            app.apply_sort();
+            app.mode = explorenova::keymap::Mode::Normal;
+            app.status = "sort: size".into();
+        }
+        Action::SortByMtime => {
+            app.set_sort_mode(explorenova::sort::SortMode::Mtime);
+            app.apply_sort();
+            app.mode = explorenova::keymap::Mode::Normal;
+            app.status = "sort: mtime".into();
+        }
+        Action::SortByExt => {
+            app.set_sort_mode(explorenova::sort::SortMode::Ext);
+            app.apply_sort();
+            app.mode = explorenova::keymap::Mode::Normal;
+            app.status = "sort: ext".into();
+        }
+        Action::SortToggleReverse => {
+            app.toggle_sort_reverse();
+            app.apply_sort();
+            app.status = format!("reverse: {}", if app.sort.reverse { "on" } else { "off" });
+        }
+        Action::SortToggleDirFirst => {
+            app.toggle_sort_dir_first();
+            app.apply_sort();
+            app.status = format!("dir first: {}", if app.sort.dir_first { "on" } else { "off" });
         }
         other => app.apply(other),
     }

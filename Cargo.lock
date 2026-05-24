@@ -637,6 +637,7 @@ dependencies = [
  "git2",
  "ignore",
  "image",
+ "libc",
  "mime_guess",
  "notify",
  "nucleo",

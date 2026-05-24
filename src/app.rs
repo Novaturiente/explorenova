@@ -13,7 +13,7 @@ pub enum Dialog {
     None,
     Input,
     Confirm,
-    AppPick { items: Vec<AppEntry>, sel: usize },
+    AppPick { items: Vec<AppEntry>, sel: usize, filter: String },
     Devices { items: Vec<crate::devices::Device>, sel: usize },
 }
 
@@ -68,10 +68,34 @@ pub struct App {
     /// to the other slot so positions stay fixed across Tab swaps —
     /// only the highlight (and which pane receives keystrokes) moves.
     pub active_slot: u8,
+    /// Global sort state (mirrors `state.sort`). Pushed into every Arena
+    /// via `apply_sort_to_arenas`; persisted to state.toml on change.
+    pub sort: crate::sort::SortState,
+    /// Cached free-disk for current root. Refreshed on cwd change OR
+    /// every 30s.
+    pub disk_free: Option<(PathBuf, u64, std::time::Instant)>,
+    /// Timestamp of last `set_status` call. Status text fades after 3s.
+    pub status_set_at: std::time::Instant,
+    /// In-flight long-running op (copy/move/extract). `None` when idle.
+    /// While `Some`, the modal overlay renders a progress bar / spinner
+    /// and conflicting dispatch arms are no-ops.
+    pub op: Option<crate::ops::OpState>,
+    /// Scroll offset (in lines) for the help overlay. Reset to 0 each
+    /// time the user opens `?`.
+    pub help_scroll: usize,
+    /// Filter string for the help overlay. Typed chars narrow the
+    /// visible entries (substring, case-insensitive). Cleared on open.
+    pub help_filter: String,
+    /// Cached candidate path list for the live `/` search. Populated
+    /// when Search mode is entered (one tree-walk) so every keystroke
+    /// only needs to re-rank, not re-collect. None when not in search.
+    pub search_cands: Option<Vec<PathBuf>>,
 }
 
 impl App {
-    pub fn new(arena: Arena, config: Config, state: State) -> Self {
+    pub fn new(mut arena: Arena, config: Config, state: State) -> Self {
+        let sort = state.sort;
+        arena.set_sort(sort);
         let visible = arena.flatten();
         App {
             arena,
@@ -95,7 +119,78 @@ impl App {
             bookmark_sel: 0,
             tabs: Vec::new(),
             active_slot: 0,
+            sort,
+            disk_free: None,
+            status_set_at: std::time::Instant::now(),
+            op: None,
+            help_scroll: 0,
+            help_filter: String::new(),
+            search_cands: None,
         }
+    }
+
+    /// Set transient status text and stamp the time so the status bar
+    /// can fade it after 3 seconds.
+    pub fn set_status<S: Into<String>>(&mut self, s: S) {
+        self.status = s.into();
+        self.status_set_at = std::time::Instant::now();
+    }
+
+    /// Compute the size sum of marked files (skipping directories).
+    /// Called by the status renderer per frame; O(arena × marks) but
+    /// both are small in practice.
+    pub fn marks_bytes(&self) -> u64 {
+        self.marks
+            .iter()
+            .filter_map(|p| {
+                self.arena.nodes.iter()
+                    .find(|n| n.path == *p && !n.is_dir())
+                    .map(|n| n.size)
+            })
+            .sum()
+    }
+
+    /// Refresh `disk_free` if cache is stale (>30s) or cwd changed.
+    pub fn refresh_disk_free(&mut self) {
+        use std::time::{Duration, Instant};
+        let cwd = self.arena.nodes[self.arena.root].path.clone();
+        let stale = match &self.disk_free {
+            None => true,
+            Some((p, _, t)) => p != &cwd || t.elapsed() > Duration::from_secs(30),
+        };
+        if stale {
+            if let Some(b) = crate::status::disk_free_bytes(&cwd) {
+                self.disk_free = Some((cwd, b, Instant::now()));
+            }
+        }
+    }
+
+    /// Push current sort to active arena AND each tab snapshot; re-flatten
+    /// all visible lists and reclamp the cursor.
+    pub fn apply_sort(&mut self) {
+        self.arena.set_sort(self.sort);
+        self.visible = self.arena.flatten();
+        let cap = self.visible.len().saturating_sub(1);
+        self.selected = self.selected.min(cap);
+        for tab in self.tabs.iter_mut() {
+            tab.arena.set_sort(self.sort);
+            tab.visible = tab.arena.flatten();
+            let cap = tab.visible.len().saturating_sub(1);
+            tab.selected = tab.selected.min(cap);
+        }
+        self.state.sort = self.sort;
+    }
+
+    pub fn set_sort_mode(&mut self, mode: crate::sort::SortMode) {
+        self.sort.mode = mode;
+    }
+
+    pub fn toggle_sort_reverse(&mut self) {
+        self.sort.reverse = !self.sort.reverse;
+    }
+
+    pub fn toggle_sort_dir_first(&mut self) {
+        self.sort.dir_first = !self.sort.dir_first;
     }
 
     /// True when two tabs are open (split-pane mode).
@@ -111,7 +206,8 @@ impl App {
             return Ok(());
         }
         let root_path = self.arena.nodes[self.arena.root].path.clone();
-        let new_arena = crate::tree::Arena::new(&root_path)?;
+        let mut new_arena = crate::tree::Arena::new(&root_path)?;
+        new_arena.set_sort(self.sort);
         let snap = PaneSnapshot {
             arena: std::mem::replace(&mut self.arena, new_arena),
             visible: std::mem::take(&mut self.visible),
@@ -342,6 +438,44 @@ impl App {
         self.jump_to_search();
     }
 
+    /// One-shot tree walk; cache the result for live re-ranking on
+    /// every keystroke during Search mode.
+    pub fn begin_search(&mut self) {
+        let root = self.arena.nodes[self.arena.root].path.clone();
+        self.search_cands = Some(crate::search::collect(&root, self.arena.show_hidden));
+        self.search_results.clear();
+        self.search_idx = 0;
+    }
+
+    /// Re-rank the cached candidate list against the current input,
+    /// then jump the cursor to the top match. Cheap enough to run on
+    /// every keystroke during Search mode.
+    pub fn live_search(&mut self) {
+        let Some(cands) = self.search_cands.as_ref() else {
+            return;
+        };
+        let root = self.arena.nodes[self.arena.root].path.clone();
+        let query = self.input.value();
+        if query.is_empty() {
+            self.search_results.clear();
+            self.search_idx = 0;
+            return;
+        }
+        let ranked = crate::search::rank(cands, &root, &query);
+        self.search_results = ranked
+            .into_iter()
+            .map(|(p, _, idx)| (p, idx))
+            .collect();
+        self.search_idx = 0;
+        self.jump_to_search();
+    }
+
+    /// Drop the cached candidate list. Called when Search mode exits
+    /// (Enter or Esc) so we don't hold a giant Vec around indefinitely.
+    pub fn end_search(&mut self) {
+        self.search_cands = None;
+    }
+
     pub fn jump_to_search(&mut self) {
         if let Some((p, _)) = self.search_results.get(self.search_idx).cloned() {
             if let Ok(Some(id)) = self.arena.reveal(&p) {
@@ -446,6 +580,17 @@ impl App {
     pub fn mark_cursor(&mut self) {
         if let Some(&id) = self.visible.get(self.selected) {
             self.marks.insert(self.arena.nodes[id].path.clone());
+        }
+    }
+
+    /// Insert every visible row in `[lo, hi]` (inclusive) into `marks`.
+    /// Used by visual-mode auto-mark on multi-row jumps (G/gg/Ctrl-d).
+    pub fn mark_range(&mut self, lo: usize, hi: usize) {
+        let hi = hi.min(self.visible.len().saturating_sub(1));
+        for i in lo..=hi {
+            if let Some(&id) = self.visible.get(i) {
+                self.marks.insert(self.arena.nodes[id].path.clone());
+            }
         }
     }
 

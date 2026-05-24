@@ -1,3 +1,4 @@
+use crate::sort::SortState;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -18,6 +19,7 @@ pub struct State {
     pub bookmarks_pane: PaneOverride,
     pub tree_pane: PaneOverride,
     pub preview_pane: PaneOverride,
+    pub sort: SortState,
 }
 
 impl State {
@@ -109,6 +111,25 @@ mod tests {
     fn bad_toml_yields_default() {
         let s = State::from_str("@@@");
         assert_eq!(s, State::default());
+    }
+
+    #[test]
+    fn sort_persists_through_toml() {
+        use crate::sort::{SortMode, SortState};
+        let mut s = State::default();
+        s.sort = SortState {
+            mode: SortMode::Size,
+            reverse: true,
+            dir_first: false,
+        };
+        let back = State::from_str(&s.to_toml());
+        assert_eq!(back.sort, s.sort);
+    }
+
+    #[test]
+    fn missing_sort_section_yields_default() {
+        let s = State::from_str("bookmarks = []\n");
+        assert_eq!(s.sort, crate::sort::SortState::default());
     }
 
     #[test]

@@ -1,7 +1,9 @@
 use super::node::{Node, NodeId, NodeKind};
+use crate::sort::{sort_children, SortState};
 use std::fs;
 use std::io;
 use std::path::Path;
+use std::time::SystemTime;
 
 /// Quick probe: does `dir` contain at least one entry that survives the
 /// hidden-files filter? Returns true on read failure to err on the safe
@@ -26,22 +28,52 @@ pub struct Arena {
     pub nodes: Vec<Node>,
     pub root: NodeId,
     pub show_hidden: bool,
+    pub sort: SortState,
 }
 
 impl Arena {
     pub fn new(root_path: &Path) -> io::Result<Self> {
         let kind = NodeKind::Dir;
         let root = Node::new(root_path.to_path_buf(), kind, 0, None);
-        let mut a = Arena { nodes: vec![root], root: 0, show_hidden: false };
+        let mut a = Arena {
+            nodes: vec![root],
+            root: 0,
+            show_hidden: false,
+            sort: SortState::default(),
+        };
         a.load_children(0)?;
         a.nodes[0].expanded = true;
         Ok(a)
     }
 
-    fn classify(p: &Path) -> (NodeKind, bool) {
+    /// Push a new sort order. Existing loaded children are re-sorted in
+    /// place; future `load_children` uses the new order.
+    pub fn set_sort(&mut self, sort: SortState) {
+        self.sort = sort;
+        self.resort_all();
+    }
+
+    /// Re-sort every already-loaded children list under `self.sort`.
+    pub fn resort_all(&mut self) {
+        let n = self.nodes.len();
+        for id in 0..n {
+            if let Some(mut ch) = self.nodes[id].children.take() {
+                sort_children(&mut ch, &self.nodes, &self.sort);
+                self.nodes[id].children = Some(ch);
+            }
+        }
+    }
+
+    fn classify(p: &Path) -> (NodeKind, bool, u64, SystemTime) {
         match fs::symlink_metadata(p) {
-            Ok(m) if m.file_type().is_symlink() => (NodeKind::Symlink, false),
-            Ok(m) if m.is_dir() => (NodeKind::Dir, false),
+            Ok(m) if m.file_type().is_symlink() => {
+                let mt = m.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                (NodeKind::Symlink, false, m.len(), mt)
+            }
+            Ok(m) if m.is_dir() => {
+                let mt = m.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                (NodeKind::Dir, false, 0, mt)
+            }
             Ok(m) => {
                 #[cfg(unix)]
                 let ex = {
@@ -50,9 +82,10 @@ impl Arena {
                 };
                 #[cfg(not(unix))]
                 let ex = false;
-                (NodeKind::File, ex)
+                let mt = m.modified().unwrap_or(SystemTime::UNIX_EPOCH);
+                (NodeKind::File, ex, m.len(), mt)
             }
-            Err(_) => (NodeKind::File, false),
+            Err(_) => (NodeKind::File, false, 0, SystemTime::UNIX_EPOCH),
         }
     }
 
@@ -63,7 +96,7 @@ impl Arena {
         }
         let dir = self.nodes[id].path.clone();
         let depth = self.nodes[id].depth + 1;
-        let mut entries: Vec<_> = fs::read_dir(&dir)?
+        let entries: Vec<_> = fs::read_dir(&dir)?
             .filter_map(Result::ok)
             .map(|e| e.path())
             .filter(|p| {
@@ -75,23 +108,21 @@ impl Arena {
                         .unwrap_or(false)
             })
             .collect();
-        entries.sort_by(|a, b| {
-            let ad = a.is_dir();
-            let bd = b.is_dir();
-            bd.cmp(&ad).then(a.file_name().cmp(&b.file_name()))
-        });
         let show_hidden = self.show_hidden;
         let mut child_ids = Vec::with_capacity(entries.len());
         for p in entries {
-            let (kind, exec) = Self::classify(&p);
+            let (kind, exec, size, mtime) = Self::classify(&p);
             let mut node = Node::new(p.clone(), kind, depth, Some(id));
             node.exec = exec;
+            node.size = size;
+            node.mtime = mtime;
             if matches!(kind, NodeKind::Dir) {
                 node.empty = Some(dir_is_empty(&p, show_hidden));
             }
             self.nodes.push(node);
             child_ids.push(self.nodes.len() - 1);
         }
+        sort_children(&mut child_ids, &self.nodes, &self.sort);
         self.nodes[id].children = Some(child_ids);
         Ok(())
     }
@@ -174,6 +205,21 @@ mod tests {
         fs::write(d.path().join("a.txt"), "x").unwrap();
         fs::write(d.path().join(".hidden"), "x").unwrap();
         d
+    }
+
+    #[test]
+    fn size_and_mtime_populated_on_load() {
+        let d = tempdir().unwrap();
+        fs::write(d.path().join("hello.txt"), "12345").unwrap();
+        let a = Arena::new(d.path()).unwrap();
+        let kids = a.nodes[a.root].children.as_ref().unwrap();
+        let file = kids
+            .iter()
+            .map(|&i| &a.nodes[i])
+            .find(|n| n.path.ends_with("hello.txt"))
+            .unwrap();
+        assert_eq!(file.size, 5);
+        assert!(file.mtime > std::time::UNIX_EPOCH);
     }
 
     #[test]

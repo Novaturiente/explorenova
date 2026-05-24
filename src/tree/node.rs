@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::time::SystemTime;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeKind {
@@ -64,6 +65,8 @@ pub struct Node {
     /// after the hidden-files filter; `Some(false)` = has at least one;
     /// `None` = not yet probed (e.g. files, or dirs we couldn't read).
     pub empty: Option<bool>,
+    pub size: u64,
+    pub mtime: SystemTime,
 }
 
 impl Node {
@@ -78,6 +81,8 @@ impl Node {
             parent,
             exec: false,
             empty: None,
+            size: 0,
+            mtime: SystemTime::UNIX_EPOCH,
         }
     }
 
