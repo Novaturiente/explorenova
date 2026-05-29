@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -89,6 +89,54 @@ pub fn parse_url(raw: &str) -> anyhow::Result<Parsed> {
 /// Display name = the share segment.
 pub fn derive_name(p: &Parsed) -> String {
     p.share.clone()
+}
+
+/// Directory gvfs FUSE-mounts live under: `$XDG_RUNTIME_DIR/gvfs`,
+/// falling back to `/run/user/<uid>/gvfs`.
+fn gvfs_dir() -> PathBuf {
+    if let Some(rt) = std::env::var_os("XDG_RUNTIME_DIR") {
+        return PathBuf::from(rt).join("gvfs");
+    }
+    let uid = unsafe { libc::getuid() };
+    PathBuf::from(format!("/run/user/{uid}/gvfs"))
+}
+
+/// Scan `gvfs_dir` for an `smb-share:` entry whose name contains both
+/// `server=<host>` and `share=<share>` (case-insensitive). Returns its
+/// absolute path. Split out from [`mountpoint`] so tests can point at a
+/// temp dir.
+fn mountpoint_in(
+    gvfs_dir: &Path,
+    host: &str,
+    share: &str,
+) -> Option<PathBuf> {
+    let want_server =
+        format!("server={}", host.to_lowercase());
+    let want_share =
+        format!("share={}", share.to_lowercase());
+    let entries = std::fs::read_dir(gvfs_dir).ok()?;
+    for ent in entries.flatten() {
+        let name = ent.file_name();
+        let name = name.to_string_lossy().to_lowercase();
+        if name.starts_with("smb-share:")
+            && name.contains(&want_server)
+            && name.contains(&want_share)
+        {
+            return Some(ent.path());
+        }
+    }
+    None
+}
+
+/// Resolve the live mount path for a host/share, or None if not mounted.
+pub fn mountpoint(host: &str, share: &str) -> Option<PathBuf> {
+    mountpoint_in(&gvfs_dir(), host, share)
+}
+
+/// Some(path) if the share is currently mounted.
+pub fn is_mounted(share: &SmbShare) -> Option<PathBuf> {
+    let p = parse_url(&share.url).ok()?;
+    mountpoint(&p.host, &p.share)
 }
 
 #[cfg(test)]
@@ -201,5 +249,64 @@ mod tests {
         )
         .unwrap();
         assert!(path.exists());
+    }
+
+    fn touch_dir(base: &Path, name: &str) {
+        std::fs::create_dir_all(base.join(name)).unwrap();
+    }
+
+    #[test]
+    fn mountpoint_in_matches_server_and_share_any_key_order() {
+        let dir = tempfile::tempdir().unwrap();
+        let g = dir.path();
+        touch_dir(g, "smb-share:server=nas.local,share=media");
+        let mp =
+            mountpoint_in(g, "nas.local", "media").unwrap();
+        assert_eq!(
+            mp,
+            g.join("smb-share:server=nas.local,share=media")
+        );
+    }
+
+    #[test]
+    fn mountpoint_in_matches_with_user_and_domain_tokens() {
+        let dir = tempfile::tempdir().unwrap();
+        let g = dir.path();
+        touch_dir(
+            g,
+            "smb-share:domain=WG,server=nas.local,\
+             share=media,user=alice",
+        );
+        let mp = mountpoint_in(g, "nas.local", "media");
+        assert!(mp.is_some());
+    }
+
+    #[test]
+    fn mountpoint_in_is_case_insensitive_on_tokens() {
+        let dir = tempfile::tempdir().unwrap();
+        let g = dir.path();
+        touch_dir(g, "smb-share:server=NAS.LOCAL,share=Media");
+        assert!(
+            mountpoint_in(g, "nas.local", "media").is_some()
+        );
+    }
+
+    #[test]
+    fn mountpoint_in_none_when_absent() {
+        let dir = tempfile::tempdir().unwrap();
+        let g = dir.path();
+        touch_dir(g, "smb-share:server=other,share=media");
+        assert!(
+            mountpoint_in(g, "nas.local", "media").is_none()
+        );
+    }
+
+    #[test]
+    fn mountpoint_in_none_when_gvfs_dir_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let g = dir.path().join("does-not-exist");
+        assert!(
+            mountpoint_in(&g, "nas.local", "media").is_none()
+        );
     }
 }
