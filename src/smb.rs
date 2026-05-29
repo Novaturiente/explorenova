@@ -29,9 +29,11 @@ pub fn parse_url(raw: &str) -> anyhow::Result<Parsed> {
         Some((u, h)) if !u.is_empty() => {
             (Some(u.to_string()), h)
         }
-        _ => (None, rest),
+        Some((_, h)) => (None, h), // empty user: drop the @
+        None => (None, rest),
     };
     // hostpart = "host/share/...". Host is up to the first '/'.
+    // host may include ":port" (e.g. "nas.local:445"); gio handles it.
     let (host, tail) = match hostpart.split_once('/') {
         Some((h, t)) => (h, t),
         None => (hostpart, ""),
@@ -64,6 +66,13 @@ mod tests {
         let p = parse_url("smb://nas.local/media").unwrap();
         assert_eq!(p.host, "nas.local");
         assert_eq!(p.share, "media");
+        assert_eq!(p.user, None);
+    }
+
+    #[test]
+    fn parse_url_with_empty_user_treats_as_no_user() {
+        let p = parse_url("smb://@nas.local/media").unwrap();
+        assert_eq!(p.host, "nas.local");
         assert_eq!(p.user, None);
     }
 
