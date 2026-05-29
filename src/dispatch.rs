@@ -602,9 +602,15 @@ fn text_input_enter(app: &mut App, start: &Path, git_tx: &mpsc::Sender<()>) {
                             &app.shares_path,
                             &app.shares,
                         ) {
+                            // Persist failed — undo the in-memory add so
+                            // we don't show a share that vanishes on
+                            // restart, and surface the error.
+                            app.shares.pop();
                             app.set_status(
                                 format!("save failed: {e}"),
                             );
+                            app.mode = Mode::Normal;
+                            return;
                         }
                         // Interactive mount: gio prompts for the
                         // password on the real TTY and can remember
