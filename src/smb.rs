@@ -1,4 +1,38 @@
+use std::path::Path;
+
 use serde::{Deserialize, Serialize};
+
+/// On-disk wrapper so the file is `[[share]]` tables.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct SharesFile {
+    #[serde(default, rename = "share")]
+    shares: Vec<SmbShare>,
+}
+
+/// Load saved shares. A missing or unparseable file yields an empty
+/// Vec — never panics, so a corrupt file can't brick startup.
+pub fn load(path: &Path) -> Vec<SmbShare> {
+    let Ok(s) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+    toml::from_str::<SharesFile>(&s)
+        .map(|f| f.shares)
+        .unwrap_or_default()
+}
+
+/// Persist shares as TOML, creating the parent directory if needed.
+pub fn save(path: &Path, shares: &[SmbShare]) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let f = SharesFile { shares: shares.to_vec() };
+    let body = toml::to_string_pretty(&f)?;
+    std::fs::write(
+        path,
+        format!("# explorenova SMB shares\n{body}"),
+    )?;
+    Ok(())
+}
 
 /// A persisted SMB share. Password is NEVER stored here — it lives
 /// in the system keyring via gio. `url` carries any username
@@ -118,5 +152,54 @@ mod tests {
     fn derive_name_is_share_segment() {
         let p = parse_url("smb://alice@nas.local/media").unwrap();
         assert_eq!(derive_name(&p), "media");
+    }
+
+    #[test]
+    fn save_then_load_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shares.toml");
+        let shares = vec![
+            SmbShare {
+                name: "media".into(),
+                url: "smb://nas/media".into(),
+            },
+            SmbShare {
+                name: "backup".into(),
+                url: "smb://u@nas/backup".into(),
+            },
+        ];
+        save(&path, &shares).unwrap();
+        let loaded = load(&path);
+        assert_eq!(loaded, shares);
+    }
+
+    #[test]
+    fn load_missing_file_is_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nope.toml");
+        assert!(load(&path).is_empty());
+    }
+
+    #[test]
+    fn load_garbage_is_empty_not_panic() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shares.toml");
+        std::fs::write(&path, "this = = not toml").unwrap();
+        assert!(load(&path).is_empty());
+    }
+
+    #[test]
+    fn save_creates_parent_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested/sub/shares.toml");
+        save(
+            &path,
+            &[SmbShare {
+                name: "m".into(),
+                url: "smb://h/m".into(),
+            }],
+        )
+        .unwrap();
+        assert!(path.exists());
     }
 }
