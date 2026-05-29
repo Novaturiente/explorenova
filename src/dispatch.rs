@@ -61,8 +61,17 @@ pub fn reroot(app: &mut App, path: &Path, git_tx: &mpsc::Sender<()>) {
             app.arena = na;
             app.visible = app.arena.flatten();
             app.selected = 0;
-            // Leaving any mounted device: drop the ascend boundary.
-            app.mount_floor = None;
+            // Keep the mount boundary when rerooting deeper INTO the
+            // mounted storage (Enter cd-in stays inside the mount); drop
+            // it only when leaving the mount (Home/Trash/bookmark away).
+            let leaving = app
+                .mount_floor
+                .as_ref()
+                .map(|floor| !path.starts_with(floor))
+                .unwrap_or(false);
+            if leaving {
+                app.mount_floor = None;
+            }
             app.set_status(format!("rooted at {}", path.display()));
             let _ = git_tx.send(());
         }
@@ -145,12 +154,6 @@ pub fn refresh_in_place(app: &mut App, git_tx: &mpsc::Sender<()>) {
 /// on the directory we just ascended out of. No-op at filesystem root.
 pub fn ascend(app: &mut App) {
     let root_path = app.arena.nodes[app.arena.root].path.clone();
-    // Confine browsing to a mounted device/share: never ascend above
-    // the mountpoint the user entered from the devices modal.
-    if app.mount_floor.as_deref() == Some(root_path.as_path()) {
-        app.set_status("at storage root");
-        return;
-    }
     let parent = match root_path.parent() {
         Some(p) if p != root_path => p.to_path_buf(),
         _ => {
@@ -158,6 +161,16 @@ pub fn ascend(app: &mut App) {
             return;
         }
     };
+    // Confine browsing to a mounted device/share: refuse to ascend to a
+    // parent that lies outside the mountpoint entered from the M modal.
+    // (Enter cd-in can root us several levels below the floor, so check
+    // the parent against the floor, not exact equality with the root.)
+    if let Some(floor) = &app.mount_floor {
+        if !parent.starts_with(floor) {
+            app.set_status("at storage root");
+            return;
+        }
+    }
     let prev_hidden = app.arena.show_hidden;
     match Arena::new(&parent) {
         Ok(mut na) => {
