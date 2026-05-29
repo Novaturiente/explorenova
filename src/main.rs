@@ -46,6 +46,16 @@ fn config_path() -> PathBuf {
     base.join("explorenova").join("config.toml")
 }
 
+fn shares_path() -> PathBuf {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| {
+            PathBuf::from(std::env::var("HOME").unwrap_or_default())
+                .join(".config")
+        });
+    base.join("explorenova").join("shares.toml")
+}
+
 fn state_path() -> PathBuf {
     let base = std::env::var_os("XDG_DATA_HOME")
         .map(PathBuf::from)
@@ -139,6 +149,24 @@ fn main() -> Result<()> {
 
     let arena = Arena::new(&start)?;
     let mut app = App::new(arena, config, state.clone());
+    let sharesp = shares_path();
+    app.shares = explorenova::smb::load(&sharesp);
+    app.shares_path = sharesp;
+    // Background auto-mount: fire `gio mount` per saved share off-thread
+    // so the first draw is never blocked by network I/O. An unreachable
+    // server / locked keyring fails quietly; the share just shows
+    // unmounted. NOTE: gio mount has no connect timeout, so a worker
+    // thread can block for the OS TCP timeout on a dead host — acceptable
+    // for a detached thread that owns no resources.
+    {
+        let urls: Vec<String> =
+            app.shares.iter().map(|s| s.url.clone()).collect();
+        std::thread::spawn(move || {
+            for url in urls {
+                explorenova::smb::mount_background(&url);
+            }
+        });
+    }
     let keymap = Keymap::build(&app.config.keys);
     let mut preview_cache = PreviewCache::default();
 
