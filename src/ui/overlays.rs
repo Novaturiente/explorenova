@@ -283,7 +283,7 @@ fn render_devices(
         ..inner
     };
     let cols = format!(
-        "  {:<14} {:<8} {:<8} {:<14} {}",
+        "      {:<14} {:<8} {:<8} {:<14} {}",
         "DEVICE", "SIZE", "FS", "LABEL", "MOUNTPOINT"
     );
     let header_lines = vec![

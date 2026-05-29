@@ -329,8 +329,10 @@ fn devices_delete_selected(app: &mut App) {
     if d.is_mounted() {
         let _ = crate::smb::unmount(&url);
     }
+    let backup = app.shares.clone();
     app.shares.retain(|s| s.url != url);
     if let Err(e) = crate::smb::save(&app.shares_path, &app.shares) {
+        app.shares = backup; // roll back: disk still has the share
         app.set_status(format!("save failed: {e}"));
     } else {
         app.set_status(format!("removed {}", d.device));
@@ -593,6 +595,14 @@ fn text_input_enter(app: &mut App, start: &Path, git_tx: &mpsc::Sender<()>) {
                 let raw = app.input.value();
                 match crate::smb::parse_url(&raw) {
                     Ok(p) => {
+                        if app.shares.iter().any(|s| s.url == raw) {
+                            app.set_status("already saved");
+                            let items = build_device_rows(app);
+                            app.dialog =
+                                Dialog::Devices { items, sel: 0 };
+                            app.mode = Mode::Input;
+                            return;
+                        }
                         let name = crate::smb::derive_name(&p);
                         app.shares.push(crate::smb::SmbShare {
                             name,
@@ -634,7 +644,11 @@ fn text_input_enter(app: &mut App, start: &Path, git_tx: &mpsc::Sender<()>) {
                         app.set_status(
                             format!("bad smb url: {e}"),
                         );
-                        app.mode = Mode::Normal;
+                        // Keep the input open so the user can correct the
+                        // typo rather than reopening the modal from `M`.
+                        app.pending = Some(Action::AddSmb);
+                        app.mode = Mode::Input;
+                        app.dialog = Dialog::Input;
                     }
                 }
             }
