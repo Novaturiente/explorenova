@@ -97,6 +97,8 @@ fn gvfs_dir() -> PathBuf {
     if let Some(rt) = std::env::var_os("XDG_RUNTIME_DIR") {
         return PathBuf::from(rt).join("gvfs");
     }
+    // SAFETY: getuid() always succeeds; no invariants to
+    // uphold.
     let uid = unsafe { libc::getuid() };
     PathBuf::from(format!("/run/user/{uid}/gvfs"))
 }
@@ -118,10 +120,23 @@ fn mountpoint_in(
     for ent in entries.flatten() {
         let name = ent.file_name();
         let name = name.to_string_lossy().to_lowercase();
-        if name.starts_with("smb-share:")
-            && name.contains(&want_server)
-            && name.contains(&want_share)
-        {
+        let Some(rest) = name.strip_prefix("smb-share:")
+        else {
+            continue;
+        };
+        // gvfs joins key=value pairs with ','. Match whole
+        // tokens so `server=nas.local` can't match
+        // `server=nas.local2`.
+        let mut has_server = false;
+        let mut has_share = false;
+        for tok in rest.split(',') {
+            if tok == want_server {
+                has_server = true;
+            } else if tok == want_share {
+                has_share = true;
+            }
+        }
+        if has_server && has_share {
             return Some(ent.path());
         }
     }
@@ -307,6 +322,19 @@ mod tests {
         let g = dir.path().join("does-not-exist");
         assert!(
             mountpoint_in(&g, "nas.local", "media").is_none()
+        );
+    }
+
+    #[test]
+    fn mountpoint_in_no_prefix_false_positive() {
+        let dir = tempfile::tempdir().unwrap();
+        let g = dir.path();
+        touch_dir(
+            g,
+            "smb-share:server=nas.local2,share=media",
+        );
+        assert!(
+            mountpoint_in(g, "nas.local", "media").is_none()
         );
     }
 }
