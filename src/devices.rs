@@ -2,17 +2,29 @@ use std::path::PathBuf;
 use std::process::Command;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeviceKind {
+    /// Physical/removable block device discovered via udiskie.
+    Block,
+    /// Saved SMB network share. `url` is the gio mount URL.
+    Smb { url: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Device {
     pub device: String,
     pub label: Option<String>,
     pub size: Option<String>,
     pub fstype: Option<String>,
     pub mountpoint: Option<PathBuf>,
+    pub kind: DeviceKind,
 }
 
 impl Device {
     pub fn is_mounted(&self) -> bool {
         self.mountpoint.is_some()
+    }
+    pub fn is_smb(&self) -> bool {
+        matches!(self.kind, DeviceKind::Smb { .. })
     }
 }
 
@@ -55,6 +67,7 @@ fn parse_line(line: &str) -> Option<Device> {
         size: opt(cols[3]),
         fstype: opt(cols[5]),
         mountpoint,
+        kind: DeviceKind::Block,
     })
 }
 

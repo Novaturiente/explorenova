@@ -1,6 +1,8 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
+use crate::devices::{Device, DeviceKind};
+
 use serde::{Deserialize, Serialize};
 
 /// On-disk wrapper so the file is `[[share]]` tables.
@@ -201,6 +203,32 @@ pub fn unmount(url: &str) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Map a saved share + its (optional) live mount path to a
+/// devices-modal row. Pure — `mountpoint` is injected so this
+/// is unit-testable.
+pub fn share_to_row(
+    share: &SmbShare,
+    mountpoint: Option<PathBuf>,
+) -> Device {
+    Device {
+        device: share.name.clone(),
+        label: Some(share.url.clone()),
+        size: None,
+        fstype: Some("smb".to_string()),
+        mountpoint,
+        kind: DeviceKind::Smb { url: share.url.clone() },
+    }
+}
+
+/// Build a devices-modal row per saved share, resolving live
+/// mount status.
+pub fn to_device_rows(shares: &[SmbShare]) -> Vec<Device> {
+    shares
+        .iter()
+        .map(|s| share_to_row(s, is_mounted(s)))
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -370,6 +398,44 @@ mod tests {
         assert!(
             mountpoint_in(&g, "nas.local", "media").is_none()
         );
+    }
+
+    #[test]
+    fn share_to_row_unmounted() {
+        let s = SmbShare {
+            name: "media".into(),
+            url: "smb://nas/media".into(),
+        };
+        let row = share_to_row(&s, None);
+        assert_eq!(row.device, "media");
+        assert_eq!(row.fstype.as_deref(), Some("smb"));
+        assert_eq!(
+            row.label.as_deref(),
+            Some("smb://nas/media")
+        );
+        assert_eq!(row.mountpoint, None);
+        assert!(!row.is_mounted());
+        assert!(row.is_smb());
+        assert_eq!(
+            row.kind,
+            DeviceKind::Smb {
+                url: "smb://nas/media".into()
+            }
+        );
+    }
+
+    #[test]
+    fn share_to_row_mounted() {
+        let s = SmbShare {
+            name: "media".into(),
+            url: "smb://nas/media".into(),
+        };
+        let mp = std::path::PathBuf::from(
+            "/run/user/1000/gvfs/smb-share:server=nas,share=media",
+        );
+        let row = share_to_row(&s, Some(mp.clone()));
+        assert_eq!(row.mountpoint, Some(mp));
+        assert!(row.is_mounted());
     }
 
     #[test]
