@@ -20,7 +20,11 @@ use crate::ui::{render_image, short_bookmark_label, ImageCache};
 /// Render the top header bar showing the current arena root path.
 /// Left-truncates with an ellipsis when the path exceeds the area width.
 pub fn render_header(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
-    let root_path = app.arena.nodes[app.arena.root].path.display().to_string();
+    let root = &app.arena.nodes[app.arena.root].path;
+    // A gvfs SMB mount has an unreadable dir name
+    // (smb-share:server=...,share=...); show "share on server" instead.
+    let root_path = crate::smb::gvfs_display_label(root)
+        .unwrap_or_else(|| root.display().to_string());
     let w = area.width.max(1) as usize;
     let chars: Vec<char> = root_path.chars().collect();
     let shown = if chars.len() > w {

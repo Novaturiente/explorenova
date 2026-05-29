@@ -109,6 +109,11 @@ pub struct App {
     pub shares: Vec<crate::smb::SmbShare>,
     /// Path to shares.toml; written on every add/delete.
     pub shares_path: PathBuf,
+    /// When browsing a device/share mounted via the `M` modal, the
+    /// mountpoint the user may not ascend above. `ascend` refuses to
+    /// go past it; cleared by `reroot` (Home/Trash/bookmark jumps).
+    /// `None` during ordinary filesystem browsing.
+    pub mount_floor: Option<PathBuf>,
 }
 
 impl App {
@@ -147,6 +152,7 @@ impl App {
             search_cands: None,
             shares: Vec::new(),
             shares_path: PathBuf::new(),
+            mount_floor: None,
         }
     }
 
