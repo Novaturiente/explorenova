@@ -18,6 +18,8 @@ depends=(
   'poppler' 'libavif' 'ffmpegthumbnailer'
   # Devices modal mount/unmount/list.
   'udiskie'
+  # SMB network shares (gio mount smb://...).
+  'gvfs' 'gvfs-smb'
 )
 makedepends=('cargo' 'git' 'pkgconf')
 optdepends=(
