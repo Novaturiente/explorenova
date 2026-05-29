@@ -52,6 +52,9 @@ pub enum Action {
     ToggleHidden,
     Refresh,
     ShowDevices,
+    /// Pending sentinel for the SMB-add text input. No keybinding —
+    /// triggered from inside the devices modal.
+    AddSmb,
     JumpHome,
     OpenTrash,
     SysClipCopy,

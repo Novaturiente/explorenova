@@ -283,7 +283,7 @@ fn render_devices(
         ..inner
     };
     let cols = format!(
-        "  {:<14} {:<8} {:<8} {:<14} {}",
+        "      {:<14} {:<8} {:<8} {:<14} {}",
         "DEVICE", "SIZE", "FS", "LABEL", "MOUNTPOINT"
     );
     let header_lines = vec![
@@ -322,6 +322,13 @@ fn render_devices(
                 Style::default()
             };
             let marker = if i == sel { "▸ " } else { "  " };
+            // SMB rows get a network glyph; block rows get blank padding
+            // so the columns stay aligned (both are 2 cells wide).
+            let kind_glyph = if d.is_smb() {
+                "\u{f233} "
+            } else {
+                "  "
+            };
             let mounted_span = if d.is_mounted() {
                 Span::styled(
                     "● ",
@@ -342,6 +349,7 @@ fn render_devices(
                 .unwrap_or_else(|| "(not mounted)".to_string());
             body_lines.push(Line::from(vec![
                 Span::styled(marker, style),
+                Span::styled(kind_glyph, style),
                 mounted_span,
                 Span::styled(
                     format!(
@@ -365,7 +373,7 @@ fn render_devices(
     let footer = vec![
         Line::from(""),
         Line::from(Span::styled(
-            " enter cd/mount · u umount · r refresh · esc close",
+            " enter cd/mount · a add · d delete · u umount · r refresh · esc close",
             modal::dim_style(theme),
         )),
     ];
@@ -381,6 +389,7 @@ fn render_input(f: &mut Frame, body: Rect, app: &App, theme: &Theme) {
             Some(Action::Rename) => "Rename",
             Some(Action::OpenWith) => "Open with (command)",
             Some(Action::ShellOnce) => "Shell",
+            Some(Action::AddSmb) => "Add SMB share (smb://user@host/share)",
             _ => "Input",
         },
     };

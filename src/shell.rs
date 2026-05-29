@@ -33,6 +33,15 @@ pub fn run_once(cwd: &Path, cmd: &str) -> io::Result<()> {
     })
 }
 
+/// Suspend the TUI, run `prog args` with inherited stdio (so the child can
+/// prompt the user directly), wait for Enter, restore the TUI. Used for
+/// `gio mount`, whose own auth prompt is the password UI.
+pub fn run_interactive(prog: &str, args: &[&str]) -> io::Result<()> {
+    around_terminal(|| {
+        Command::new(prog).args(args).status().map(|_| ())
+    })
+}
+
 pub fn drop_to_shell(cwd: &Path) -> io::Result<()> {
     let sh = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
     around_terminal(|| Command::new(sh).current_dir(cwd).status().map(|_| ()))

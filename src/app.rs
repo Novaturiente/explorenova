@@ -104,6 +104,11 @@ pub struct App {
     /// when Search mode is entered (one tree-walk) so every keystroke
     /// only needs to re-rank, not re-collect. None when not in search.
     pub search_cands: Option<Vec<PathBuf>>,
+    /// Saved SMB shares (loaded from shares.toml at startup, mutated on
+    /// add/delete in the devices modal).
+    pub shares: Vec<crate::smb::SmbShare>,
+    /// Path to shares.toml; written on every add/delete.
+    pub shares_path: PathBuf,
 }
 
 impl App {
@@ -140,6 +145,8 @@ impl App {
             help_scroll: 0,
             help_filter: String::new(),
             search_cands: None,
+            shares: Vec::new(),
+            shares_path: PathBuf::new(),
         }
     }
 
