@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
 
 use serde::{Deserialize, Serialize};
 
@@ -152,6 +153,52 @@ pub fn mountpoint(host: &str, share: &str) -> Option<PathBuf> {
 pub fn is_mounted(share: &SmbShare) -> Option<PathBuf> {
     let p = parse_url(&share.url).ok()?;
     mountpoint(&p.host, &p.share)
+}
+
+fn mount_argv(url: &str) -> Vec<String> {
+    vec!["mount".into(), url.into()]
+}
+
+fn unmount_argv(url: &str) -> Vec<String> {
+    vec!["mount".into(), "-u".into(), url.into()]
+}
+
+/// Interactive mount: gio prompts for credentials on the real TTY
+/// (and can "remember forever" into the keyring). Suspends the TUI
+/// for the duration.
+pub fn mount_interactive(url: &str) -> std::io::Result<()> {
+    let args = mount_argv(url);
+    let refs: Vec<&str> =
+        args.iter().map(String::as_str).collect();
+    crate::shell::run_interactive("gio", &refs)
+}
+
+/// Background mount: no TTY. Succeeds silently if the keyring
+/// already holds the credentials; fails quietly otherwise (cannot
+/// prompt). Safe to call from a worker thread; never touches the
+/// terminal.
+pub fn mount_background(url: &str) {
+    let _ = Command::new("gio")
+        .args(mount_argv(url))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+/// Unmount via gio. Surfaces a clear error if gio is absent or the
+/// unmount fails.
+pub fn unmount(url: &str) -> anyhow::Result<()> {
+    let out = Command::new("gio")
+        .args(unmount_argv(url))
+        .output()
+        .map_err(|e| anyhow::anyhow!("gio not available: {e}"))?;
+    if !out.status.success() {
+        let err =
+            String::from_utf8_lossy(&out.stderr).into_owned();
+        anyhow::bail!("{}", err.trim());
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -322,6 +369,29 @@ mod tests {
         let g = dir.path().join("does-not-exist");
         assert!(
             mountpoint_in(&g, "nas.local", "media").is_none()
+        );
+    }
+
+    #[test]
+    fn mount_argv_is_gio_mount_url() {
+        assert_eq!(
+            mount_argv("smb://nas/media"),
+            vec![
+                "mount".to_string(),
+                "smb://nas/media".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn unmount_argv_is_gio_mount_u_url() {
+        assert_eq!(
+            unmount_argv("smb://nas/media"),
+            vec![
+                "mount".to_string(),
+                "-u".to_string(),
+                "smb://nas/media".to_string()
+            ]
         );
     }
 
