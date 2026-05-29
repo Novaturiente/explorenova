@@ -288,23 +288,64 @@ fn handle_devices_key(app: &mut App, k: &KeyEvent) {
         KeyCode::Up | KeyCode::Char('k') => app.dialog.nav(len, false),
         KeyCode::Char('r') => refresh_devices(app),
         KeyCode::Char('u') => devices_unmount_selected(app),
+        KeyCode::Char('a') => devices_begin_add(app),
+        KeyCode::Char('d') => devices_delete_selected(app),
         KeyCode::Enter => devices_enter_selected(app),
         _ => {}
     }
 }
 
+/// Build the full devices-modal row list: physical block devices
+/// first, then saved SMB shares with live mount status.
+fn build_device_rows(app: &App) -> Vec<crate::devices::Device> {
+    let mut items = crate::devices::list().unwrap_or_default();
+    items.extend(crate::smb::to_device_rows(&app.shares));
+    items
+}
+
+fn devices_begin_add(app: &mut App) {
+    // Mirror the AppPick custom-command branch: set Dialog::Input
+    // EXPLICITLY. main.rs's dialog-sync keeps Dialog::Devices while
+    // mode==Input unless we change the dialog ourselves.
+    app.input.clear();
+    app.pending = Some(Action::AddSmb);
+    app.mode = Mode::Input;
+    app.dialog = Dialog::Input;
+    app.set_status("smb url (e.g. smb://user@host/share)");
+}
+
+fn devices_delete_selected(app: &mut App) {
+    let dev = match &app.dialog {
+        Dialog::Devices { items, sel } => items.get(*sel).cloned(),
+        _ => None,
+    };
+    let Some(d) = dev else { return };
+    let crate::devices::DeviceKind::Smb { url } = &d.kind else {
+        app.set_status("not a saved share");
+        return;
+    };
+    let url = url.clone();
+    // Best-effort unmount before forgetting it.
+    if d.is_mounted() {
+        let _ = crate::smb::unmount(&url);
+    }
+    app.shares.retain(|s| s.url != url);
+    if let Err(e) = crate::smb::save(&app.shares_path, &app.shares) {
+        app.set_status(format!("save failed: {e}"));
+    } else {
+        app.set_status(format!("removed {}", d.device));
+    }
+    refresh_devices(app);
+}
+
 fn refresh_devices(app: &mut App) {
-    match crate::devices::list() {
-        Ok(items) => {
-            let new_len = items.len();
-            if let Dialog::Devices { items: it, sel } = &mut app.dialog {
-                *it = items;
-                if *sel >= new_len {
-                    *sel = new_len.saturating_sub(1);
-                }
-            }
+    let items = build_device_rows(app);
+    let new_len = items.len();
+    if let Dialog::Devices { items: it, sel } = &mut app.dialog {
+        *it = items;
+        if *sel >= new_len {
+            *sel = new_len.saturating_sub(1);
         }
-        Err(e) => app.set_status(format!("devices: {e}")),
     }
 }
 
@@ -318,7 +359,15 @@ fn devices_unmount_selected(app: &mut App) {
         app.set_status("not mounted");
         return;
     }
-    match crate::devices::unmount(&d.device) {
+    let res = match &d.kind {
+        crate::devices::DeviceKind::Smb { url } => {
+            crate::smb::unmount(url)
+        }
+        crate::devices::DeviceKind::Block => {
+            crate::devices::unmount(&d.device)
+        }
+    };
+    match res {
         Ok(_) => app.set_status(format!("unmounted {}", d.device)),
         Err(e) => app.set_status(format!("umount failed: {e}")),
     }
@@ -358,8 +407,17 @@ fn devices_enter_selected(app: &mut App) {
         app.mode = Mode::Normal;
         app.dialog = Dialog::None;
     } else {
-        // unmounted → mount + refresh, stay
-        match crate::devices::mount(&d.device) {
+        // unmounted → mount + refresh, stay open
+        let res = match &d.kind {
+            crate::devices::DeviceKind::Smb { url } => {
+                crate::smb::mount_interactive(url)
+                    .map_err(|e| anyhow::anyhow!("{e}"))
+            }
+            crate::devices::DeviceKind::Block => {
+                crate::devices::mount(&d.device)
+            }
+        };
+        match res {
             Ok(_) => app.set_status(format!("mounted {}", d.device)),
             Err(e) => app.set_status(format!("mount failed: {e}")),
         }
@@ -531,6 +589,49 @@ fn text_input_enter(app: &mut App, start: &Path, git_tx: &mpsc::Sender<()>) {
                     app.set_status(format!("shell failed: {e}"));
                 }
             }
+            Some(Action::AddSmb) => {
+                let raw = app.input.value();
+                match crate::smb::parse_url(&raw) {
+                    Ok(p) => {
+                        let name = crate::smb::derive_name(&p);
+                        app.shares.push(crate::smb::SmbShare {
+                            name,
+                            url: raw.clone(),
+                        });
+                        if let Err(e) = crate::smb::save(
+                            &app.shares_path,
+                            &app.shares,
+                        ) {
+                            app.set_status(
+                                format!("save failed: {e}"),
+                            );
+                        }
+                        // Interactive mount: gio prompts for the
+                        // password on the real TTY and can remember
+                        // it in the keyring.
+                        if let Err(e) =
+                            crate::smb::mount_interactive(&raw)
+                        {
+                            app.set_status(
+                                format!("mount failed: {e}"),
+                            );
+                        } else {
+                            app.set_status(format!("added {raw}"));
+                        }
+                        // Reopen the devices modal with the new share.
+                        let items = build_device_rows(app);
+                        app.dialog =
+                            Dialog::Devices { items, sel: 0 };
+                        app.mode = Mode::Input;
+                    }
+                    Err(e) => {
+                        app.set_status(
+                            format!("bad smb url: {e}"),
+                        );
+                        app.mode = Mode::Normal;
+                    }
+                }
+            }
             _ => app.mode = Mode::Normal,
         },
         _ => {}
@@ -582,13 +683,11 @@ pub fn handle(
                 app.set_status(format!("shell: {e}"));
             }
         }
-        Action::ShowDevices => match crate::devices::list() {
-            Ok(items) => {
-                app.dialog = Dialog::Devices { items, sel: 0 };
-                app.mode = Mode::Input;
-            }
-            Err(e) => app.set_status(format!("devices: {e}")),
-        },
+        Action::ShowDevices => {
+            let items = build_device_rows(app);
+            app.dialog = Dialog::Devices { items, sel: 0 };
+            app.mode = Mode::Input;
+        }
         Action::Refresh => {
             let _ = git_tx.send(());
         }
