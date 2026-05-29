@@ -61,6 +61,8 @@ pub fn reroot(app: &mut App, path: &Path, git_tx: &mpsc::Sender<()>) {
             app.arena = na;
             app.visible = app.arena.flatten();
             app.selected = 0;
+            // Leaving any mounted device: drop the ascend boundary.
+            app.mount_floor = None;
             app.set_status(format!("rooted at {}", path.display()));
             let _ = git_tx.send(());
         }
@@ -143,6 +145,12 @@ pub fn refresh_in_place(app: &mut App, git_tx: &mpsc::Sender<()>) {
 /// on the directory we just ascended out of. No-op at filesystem root.
 pub fn ascend(app: &mut App) {
     let root_path = app.arena.nodes[app.arena.root].path.clone();
+    // Confine browsing to a mounted device/share: never ascend above
+    // the mountpoint the user entered from the devices modal.
+    if app.mount_floor.as_deref() == Some(root_path.as_path()) {
+        app.set_status("at storage root");
+        return;
+    }
     let parent = match root_path.parent() {
         Some(p) if p != root_path => p.to_path_buf(),
         _ => {
@@ -386,7 +394,9 @@ fn devices_enter_selected(app: &mut App) {
         // mounted → cd then close. Try reveal within current arena
         // first; if the mountpoint is outside (typical: /run/media/...)
         // re-root the arena at the mountpoint.
-        if !app.navigate_to(&mp) {
+        let cd_ok = if app.navigate_to(&mp) {
+            true
+        } else {
             let prev_hidden = app.arena.show_hidden;
             match Arena::new(&mp) {
                 Ok(mut na) => {
@@ -400,11 +410,18 @@ fn devices_enter_selected(app: &mut App) {
                     app.visible = app.arena.flatten();
                     app.selected = 0;
                     app.set_status(format!("rooted at {}", mp.display()));
+                    true
                 }
                 Err(e) => {
                     app.set_status(format!("cannot open {}: {e}", mp.display()));
+                    false
                 }
             }
+        };
+        // Confine subsequent `ascend` to this mountpoint (network share
+        // or removable disk) — the user can't browse above the mount.
+        if cd_ok {
+            app.mount_floor = Some(mp.clone());
         }
         app.mode = Mode::Normal;
         app.dialog = Dialog::None;

@@ -157,6 +157,30 @@ pub fn is_mounted(share: &SmbShare) -> Option<PathBuf> {
     mountpoint(&p.host, &p.share)
 }
 
+/// Friendly header label for a gvfs SMB mount directory such as
+/// `smb-share:server=nas.local,share=media` -> "media on nas.local".
+/// Returns the share name alone if no server token is present, and
+/// None when `path` is not a gvfs smb-share entry (so callers fall
+/// back to the raw path).
+pub fn gvfs_display_label(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_str()?;
+    let rest = name.strip_prefix("smb-share:")?;
+    let mut share = None;
+    let mut server = None;
+    for tok in rest.split(',') {
+        if let Some(v) = tok.strip_prefix("share=") {
+            share = Some(v);
+        } else if let Some(v) = tok.strip_prefix("server=") {
+            server = Some(v);
+        }
+    }
+    let share = share?;
+    Some(match server {
+        Some(s) => format!("{share} on {s}"),
+        None => share.to_string(),
+    })
+}
+
 fn mount_argv(url: &str) -> Vec<String> {
     vec!["mount".into(), url.into()]
 }
@@ -472,5 +496,50 @@ mod tests {
         assert!(
             mountpoint_in(g, "nas.local", "media").is_none()
         );
+    }
+
+    #[test]
+    fn gvfs_label_share_on_server() {
+        let p = Path::new(
+            "/run/user/1000/gvfs/\
+             smb-share:server=nas.local,share=media",
+        );
+        assert_eq!(
+            gvfs_display_label(p).as_deref(),
+            Some("media on nas.local")
+        );
+    }
+
+    #[test]
+    fn gvfs_label_token_order_independent() {
+        let p = Path::new(
+            "smb-share:share=media,server=nas,user=alice",
+        );
+        assert_eq!(
+            gvfs_display_label(p).as_deref(),
+            Some("media on nas")
+        );
+    }
+
+    #[test]
+    fn gvfs_label_share_only_when_no_server() {
+        let p = Path::new("smb-share:share=media");
+        assert_eq!(
+            gvfs_display_label(p).as_deref(),
+            Some("media")
+        );
+    }
+
+    #[test]
+    fn gvfs_label_none_for_non_smb_path() {
+        assert!(
+            gvfs_display_label(Path::new("/home/nova")).is_none()
+        );
+    }
+
+    #[test]
+    fn gvfs_label_none_when_no_share_token() {
+        let p = Path::new("smb-share:server=nas");
+        assert!(gvfs_display_label(p).is_none());
     }
 }
