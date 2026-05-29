@@ -15,6 +15,7 @@ pub mod ops;
 pub mod preview;
 pub mod search;
 pub mod shell;
+pub mod smb;
 pub mod sort;
 pub mod state;
 pub mod status;
