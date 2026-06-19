@@ -71,6 +71,9 @@ pub struct App {
     pub dialog: Dialog,
     pub visual_mode: bool,
     pub cursor_moved_at: std::time::Instant,
+    /// Visible tree rows, updated each frame from the terminal size. Drives
+    /// the half-page jump (Ctrl-d/u) so it scales with the window.
+    pub viewport_h: usize,
     /// Cursor inside the bookmarks pane (when focused). Independent of
     /// the tree cursor so switching focus doesn't shuffle either.
     pub bookmark_sel: usize,
@@ -145,6 +148,7 @@ impl App {
             dialog: Dialog::None,
             visual_mode: false,
             cursor_moved_at: std::time::Instant::now(),
+            viewport_h: 0,
             bookmark_sel: 0,
             tabs: Vec::new(),
             active_slot: 0,
@@ -373,20 +377,24 @@ impl App {
                 }
             }
             Action::HalfDown => {
+                // Half the visible page, scaling with the window; fall back
+                // to 10 before the first frame sets viewport_h.
+                let step = if self.viewport_h >= 2 { self.viewport_h / 2 } else { 10 };
                 if self.focus == Pane::Bookmarks {
                     let n = self.state.bookmarks.len();
                     self.bookmark_sel =
-                        (self.bookmark_sel + 10).min(n.saturating_sub(1));
+                        (self.bookmark_sel + step).min(n.saturating_sub(1));
                 } else {
-                    self.selected = (self.selected + 10)
+                    self.selected = (self.selected + step)
                         .min(self.visible.len().saturating_sub(1));
                 }
             }
             Action::HalfUp => {
+                let step = if self.viewport_h >= 2 { self.viewport_h / 2 } else { 10 };
                 if self.focus == Pane::Bookmarks {
-                    self.bookmark_sel = self.bookmark_sel.saturating_sub(10);
+                    self.bookmark_sel = self.bookmark_sel.saturating_sub(step);
                 } else {
-                    self.selected = self.selected.saturating_sub(10);
+                    self.selected = self.selected.saturating_sub(step);
                 }
             }
             Action::Open => {

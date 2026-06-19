@@ -291,6 +291,9 @@ fn main() -> Result<()> {
             let end = (app.selected + win).min(app.visible.len());
             let ids: Vec<usize> = app.visible[start..end].to_vec();
             app.arena.probe_empty(&ids);
+            // Tree pane visible rows ≈ height minus header, status, borders.
+            // Drives the half-page jump (Ctrl-d/u).
+            app.viewport_h = win.saturating_sub(4);
         }
         term.draw(|f| {
             ui::render_frame(f, &mut app, &mut preview_cache, &mut picker, &mut img_cache, &keymap)
