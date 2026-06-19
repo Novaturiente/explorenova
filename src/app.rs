@@ -773,6 +773,16 @@ mod tests {
     }
 
     #[test]
+    fn hiding_bookmarks_pane_moves_focus_to_tree() {
+        let mut a = app();
+        a.config.panes.bookmarks.visible = true;
+        a.focus = Pane::Bookmarks;
+        a.apply(Action::ToggleBookmarksPane); // hides it
+        assert!(!a.config.panes.bookmarks.visible);
+        assert_eq!(a.focus, Pane::Tree, "focus must not stay on a hidden pane");
+    }
+
+    #[test]
     fn down_then_up_returns_to_zero() {
         let mut a = app();
         a.apply(Action::Down);
