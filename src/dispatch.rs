@@ -48,7 +48,7 @@ pub fn filter_app_indices(items: &[AppEntry], filter: &str) -> Vec<usize> {
 /// Re-root the arena at `path`, preserving hidden-files toggle, resetting
 /// selection, and kicking a git rescan. Used by JumpHome, OpenTrash, and
 /// the devices-modal "navigate outside current root" fallback.
-pub fn reroot(app: &mut App, path: &Path, git_tx: &mpsc::Sender<()>) {
+pub fn reroot(app: &mut App, path: &Path, git_tx: &mpsc::Sender<std::path::PathBuf>) {
     let prev_hidden = app.arena.show_hidden;
     match Arena::new(path) {
         Ok(mut na) => {
@@ -73,7 +73,7 @@ pub fn reroot(app: &mut App, path: &Path, git_tx: &mpsc::Sender<()>) {
                 app.mount_floor = None;
             }
             app.set_status(format!("rooted at {}", path.display()));
-            let _ = git_tx.send(());
+            let _ = git_tx.send(app.arena.nodes[app.arena.root].path.clone());
         }
         Err(e) => {
             app.set_status(format!("cannot open {}: {e}", path.display()));
@@ -87,7 +87,7 @@ pub fn reroot(app: &mut App, path: &Path, git_tx: &mpsc::Sender<()>) {
 /// to drop stale entries immediately instead of waiting on the fs-watch
 /// debounce — which can miss `trash` crate moves entirely when they go
 /// through D-Bus.
-pub fn refresh_in_place(app: &mut App, git_tx: &mpsc::Sender<()>) {
+pub fn refresh_in_place(app: &mut App, git_tx: &mpsc::Sender<std::path::PathBuf>) {
     let cur_root = app.arena.nodes[app.arena.root].path.clone();
     let prev_hidden = app.arena.show_hidden;
     let sel_path = app
@@ -147,7 +147,7 @@ pub fn refresh_in_place(app: &mut App, git_tx: &mpsc::Sender<()>) {
             app.selected = app.visible.len() - 1;
         }
     }
-    let _ = git_tx.send(());
+    let _ = git_tx.send(app.arena.nodes[app.arena.root].path.clone());
 }
 
 /// Incrementally refresh only the directories whose contents changed.
@@ -155,7 +155,7 @@ pub fn refresh_in_place(app: &mut App, git_tx: &mpsc::Sender<()>) {
 /// re-flattens once, restores the cursor by path, and re-triggers git.
 /// Falls back to a full `refresh_in_place` if any changed dir isn't in
 /// the arena (e.g. a change above the current root).
-pub fn refresh_dirs(app: &mut App, dirs: &[std::path::PathBuf], git_tx: &mpsc::Sender<()>) {
+pub fn refresh_dirs(app: &mut App, dirs: &[std::path::PathBuf], git_tx: &mpsc::Sender<std::path::PathBuf>) {
     let sel_path = app
         .visible
         .get(app.selected)
@@ -187,7 +187,7 @@ pub fn refresh_dirs(app: &mut App, dirs: &[std::path::PathBuf], git_tx: &mpsc::S
     if !app.visible.is_empty() && app.selected >= app.visible.len() {
         app.selected = app.visible.len() - 1;
     }
-    let _ = git_tx.send(());
+    let _ = git_tx.send(app.arena.nodes[app.arena.root].path.clone());
 }
 
 /// Re-root to the parent of the current arena root, leaving the cursor
@@ -243,7 +243,7 @@ pub fn handle_key(
     keymap: &Keymap,
     chord: &mut String,
     start: &Path,
-    git_tx: &mpsc::Sender<()>,
+    git_tx: &mpsc::Sender<std::path::PathBuf>,
 ) -> Result<()> {
     match app.mode {
         Mode::Normal => {
@@ -563,7 +563,7 @@ fn handle_text_input_key(
     app: &mut App,
     k: &KeyEvent,
     start: &Path,
-    git_tx: &mpsc::Sender<()>,
+    git_tx: &mpsc::Sender<std::path::PathBuf>,
 ) {
     match k.code {
         KeyCode::Esc => {
@@ -612,7 +612,7 @@ fn handle_text_input_key(
     }
 }
 
-fn text_input_enter(app: &mut App, start: &Path, git_tx: &mpsc::Sender<()>) {
+fn text_input_enter(app: &mut App, start: &Path, git_tx: &mpsc::Sender<std::path::PathBuf>) {
     match app.mode {
         Mode::Search => {
             // Cursor is already on the top live match; Enter just
@@ -730,7 +730,7 @@ fn text_input_enter(app: &mut App, start: &Path, git_tx: &mpsc::Sender<()>) {
     }
 }
 
-fn handle_confirm_key(app: &mut App, k: &KeyEvent, git_tx: &mpsc::Sender<()>) {
+fn handle_confirm_key(app: &mut App, k: &KeyEvent, git_tx: &mpsc::Sender<std::path::PathBuf>) {
     match k.code {
         KeyCode::Char('y') | KeyCode::Char('Y') => {
             app.confirm_yes();
@@ -756,7 +756,7 @@ pub fn handle(
     app: &mut App,
     action: Action,
     cwd: &Path,
-    git_tx: &mpsc::Sender<()>,
+    git_tx: &mpsc::Sender<std::path::PathBuf>,
 ) -> Result<()> {
     match action {
         Action::OpenDefault => {
@@ -782,7 +782,7 @@ pub fn handle(
             app.mode = Mode::Input;
         }
         Action::Refresh => {
-            let _ = git_tx.send(());
+            let _ = git_tx.send(app.arena.nodes[app.arena.root].path.clone());
         }
         Action::JumpHome => {
             let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from)
@@ -901,7 +901,7 @@ pub fn handle(
             Ok(()) => {
                 app.set_status(if app.is_split() { "opened tab" } else { "already split" });
                 // New active arena needs a fresh git scan.
-                let _ = git_tx.send(());
+                let _ = git_tx.send(app.arena.nodes[app.arena.root].path.clone());
             }
             Err(e) => app.set_status(format!("open tab failed: {e}")),
         },
@@ -909,7 +909,7 @@ pub fn handle(
             if app.is_split() {
                 app.close_tab();
                 app.set_status("closed tab");
-                let _ = git_tx.send(());
+                let _ = git_tx.send(app.arena.nodes[app.arena.root].path.clone());
             }
         }
         Action::FocusNext => {
@@ -917,7 +917,7 @@ pub fn handle(
             // otherwise falls back to the existing bookmarks↔tree cycle.
             if app.is_split() && app.focus == Pane::Tree {
                 app.swap_tab();
-                let _ = git_tx.send(());
+                let _ = git_tx.send(app.arena.nodes[app.arena.root].path.clone());
             } else {
                 app.apply(Action::FocusNext);
             }
@@ -979,7 +979,7 @@ fn sysclip_copy(app: &mut App) {
     }
 }
 
-fn trash_targets(app: &mut App, git_tx: &mpsc::Sender<()>) {
+fn trash_targets(app: &mut App, git_tx: &mpsc::Sender<std::path::PathBuf>) {
     let targets = app.targets();
     let n = targets.len();
     if n == 0 {
@@ -1112,7 +1112,7 @@ fn paste(app: &mut App, cwd: &Path) {
     app.set_status("starting…");
 }
 
-fn toggle_action(app: &mut App, git_tx: &mpsc::Sender<()>) {
+fn toggle_action(app: &mut App, git_tx: &mpsc::Sender<std::path::PathBuf>) {
     // Bookmarks pane focused: Enter opens the highlighted entry. If
     // the path is under the current arena root we reveal it in-place;
     // otherwise we re-root at the bookmark (matches the device-mount /

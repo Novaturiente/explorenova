@@ -170,14 +170,16 @@ fn main() -> Result<()> {
     let keymap = Keymap::build(&app.config.keys);
     let mut preview_cache = PreviewCache::default();
 
-    let (git_tx, git_rx) = mpsc::channel::<()>();
+    let (git_tx, git_rx) = mpsc::channel::<PathBuf>();
     let (git_res_tx, git_res_rx) = mpsc::channel();
     {
-        let root = start.clone();
+        let start_root = start.clone();
         std::thread::spawn(move || {
             let send = |r| { let _ = git_res_tx.send(r); };
-            send(scan_status(&root).unwrap_or_default());
-            while git_rx.recv().is_ok() {
+            send(scan_status(&start_root).unwrap_or_default());
+            while let Ok(root) = git_rx.recv() {
+                // Coalesce a burst of triggers into one scan of the latest root.
+                let root = explorenova::git::coalesce_latest(root, git_rx.try_iter());
                 send(scan_status(&root).unwrap_or_default());
             }
         });

@@ -3,6 +3,12 @@ use git2::{Repository, Status, StatusOptions};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
+/// Given the first received root plus any others already queued, return
+/// the last one (most recent) — a burst of triggers coalesces to one scan.
+pub fn coalesce_latest(first: PathBuf, rest: impl IntoIterator<Item = PathBuf>) -> PathBuf {
+    rest.into_iter().last().unwrap_or(first)
+}
+
 /// Map every changed path (absolute) to its GitStatus, plus aggregate the
 /// worst status onto each ancestor directory up to the repo workdir.
 pub fn scan_status(root: &Path) -> anyhow::Result<HashMap<PathBuf, GitStatus>> {
@@ -73,10 +79,26 @@ fn classify(st: Status) -> GitStatus {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     #[test]
     fn non_repo_returns_empty_map() {
         let d = tempfile::tempdir().unwrap();
         assert!(scan_status(d.path()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn coalesce_takes_most_recent() {
+        let r = coalesce_latest(
+            PathBuf::from("/a"),
+            vec![PathBuf::from("/b"), PathBuf::from("/c")],
+        );
+        assert_eq!(r, PathBuf::from("/c"));
+    }
+
+    #[test]
+    fn coalesce_single_keeps_first() {
+        let r = coalesce_latest(PathBuf::from("/a"), Vec::<PathBuf>::new());
+        assert_eq!(r, PathBuf::from("/a"));
     }
 }
