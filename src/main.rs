@@ -104,10 +104,10 @@ fn sync_watches(
     *watched = desired;
 }
 
-fn load_config() -> Config {
+fn load_config() -> (Config, Option<String>) {
     let p = config_path();
     match std::fs::read_to_string(&p) {
-        Ok(s) => Config::load_str(&s).0,
+        Ok(s) => Config::load_str(&s),
         Err(_) => {
             if let Some(parent) = p.parent() {
                 let _ = std::fs::create_dir_all(parent);
@@ -116,7 +116,7 @@ fn load_config() -> Config {
             if let Ok(s) = toml::to_string_pretty(&c) {
                 let _ = std::fs::write(&p, format!("# explorenova config\n{s}"));
             }
-            c
+            (c, None)
         }
     }
 }
@@ -129,7 +129,7 @@ fn main() -> Result<()> {
         .map(|s| State::parse(&s))
         .unwrap_or_default();
 
-    let mut config = load_config();
+    let (mut config, config_err) = load_config();
     state.apply_to(&mut config.panes);
     if args.tree_only {
         config.panes.bookmarks.visible = false;
@@ -149,6 +149,9 @@ fn main() -> Result<()> {
 
     let arena = Arena::new(&start)?;
     let mut app = App::new(arena, config, state.clone());
+    if let Some(e) = config_err {
+        app.set_status(format!("config error: {e} (using defaults)"));
+    }
     let sharesp = shares_path();
     app.shares = explorenova::smb::load(&sharesp);
     app.shares_path = sharesp;
@@ -168,7 +171,7 @@ fn main() -> Result<()> {
         });
     }
     let keymap = Keymap::build(&app.config.keys);
-    let mut preview_cache = PreviewCache::default();
+    let mut preview_cache = PreviewCache::with_cap(app.config.preview.cache_cap);
 
     let (git_tx, git_rx) = mpsc::channel::<PathBuf>();
     let (git_res_tx, git_res_rx) = mpsc::channel();
@@ -247,7 +250,7 @@ fn main() -> Result<()> {
             fs_dirty_since = Some(Instant::now());
         }
         if let Some(t0) = fs_dirty_since {
-            if t0.elapsed() >= Duration::from_millis(150) {
+            if t0.elapsed() >= Duration::from_millis(app.config.fs_refresh_debounce_ms) {
                 let dirs: Vec<PathBuf> = pending_dirs.drain().collect();
                 if !dirs.is_empty() {
                     refresh_dirs(&mut app, &dirs, &git_tx);
