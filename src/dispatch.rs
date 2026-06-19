@@ -94,6 +94,7 @@ pub fn refresh_in_place(app: &mut App, git_tx: &mpsc::Sender<std::path::PathBuf>
         .visible
         .get(app.selected)
         .map(|&id| app.arena.nodes[id].path.clone());
+    let sel_idx = app.selected;
     // Snapshot every expanded directory path so we can replay the
     // expansion state on the new arena. Filter to dirs that still
     // exist on disk so stale entries (the ones the user just deleted)
@@ -126,22 +127,14 @@ pub fn refresh_in_place(app: &mut App, git_tx: &mpsc::Sender<std::path::PathBuf>
         }
         app.visible = app.arena.flatten();
         app.selected = 0;
-        // Restore cursor. If the original path was deleted (Trash /
-        // PermanentDelete), reveal returns Ok(None) — walk up to the
-        // nearest existing ancestor so the user lands on the parent
-        // of what they just removed rather than the tree root.
-        if let Some(mut p) = sel_path {
-            loop {
-                if app.navigate_to(&p) {
-                    break;
-                }
-                match p.parent() {
-                    Some(parent) if parent != p.as_path() => {
-                        p = parent.to_path_buf();
-                    }
-                    _ => break,
-                }
-            }
+        // Restore the cursor. If the selected entry still exists, snap to
+        // it. If it was just deleted (Trash / PermanentDelete), stay on the
+        // same row index — which now holds the next sibling (or the last
+        // row if it was the last entry) — instead of jumping up to the
+        // parent folder.
+        match sel_path {
+            Some(p) if app.navigate_to(&p) => {}
+            _ => app.selected = sel_idx.min(app.visible.len().saturating_sub(1)),
         }
         if !app.visible.is_empty() && app.selected >= app.visible.len() {
             app.selected = app.visible.len() - 1;
@@ -160,6 +153,7 @@ pub fn refresh_dirs(app: &mut App, dirs: &[std::path::PathBuf], git_tx: &mpsc::S
         .visible
         .get(app.selected)
         .map(|&id| app.arena.nodes[id].path.clone());
+    let sel_idx = app.selected;
     let mut all_known = true;
     for d in dirs {
         if !app.arena.reload_dir(d) {
@@ -173,16 +167,12 @@ pub fn refresh_dirs(app: &mut App, dirs: &[std::path::PathBuf], git_tx: &mpsc::S
     }
     app.visible = app.arena.flatten();
     app.selected = 0;
-    if let Some(mut p) = sel_path {
-        loop {
-            if app.navigate_to(&p) {
-                break;
-            }
-            match p.parent() {
-                Some(parent) if parent != p.as_path() => p = parent.to_path_buf(),
-                _ => break,
-            }
-        }
+    // Keep the cursor on the selected entry; if it was just deleted, stay
+    // on the same row index (the next sibling) rather than jumping to the
+    // parent folder.
+    match sel_path {
+        Some(p) if app.navigate_to(&p) => {}
+        _ => app.selected = sel_idx.min(app.visible.len().saturating_sub(1)),
     }
     if !app.visible.is_empty() && app.selected >= app.visible.len() {
         app.selected = app.visible.len() - 1;
@@ -1298,6 +1288,47 @@ mod tests {
         reroot(&mut app, &sub, &tx);
         assert_eq!(app.arena.nodes[app.arena.root].path, sub);
         assert!(names(&app).contains(&"inner.txt".to_string()));
+    }
+
+    #[test]
+    fn delete_keeps_cursor_on_sibling_not_parent() {
+        let d = tempdir().unwrap();
+        for f in ["a.txt", "b.txt", "c.txt"] {
+            std::fs::write(d.path().join(f), "x").unwrap();
+        }
+        let (mut app, tx, _rx) = app_at(d.path());
+        app.selected = app
+            .visible
+            .iter()
+            .position(|&id| app.arena.nodes[id].path.ends_with("b.txt"))
+            .unwrap();
+        std::fs::remove_file(d.path().join("b.txt")).unwrap();
+        refresh_in_place(&mut app, &tx);
+        let cur = app.arena.nodes[app.visible[app.selected]].path.clone();
+        assert!(
+            cur.ends_with("c.txt"),
+            "cursor should land on the next sibling, got {cur:?}"
+        );
+        // and specifically NOT jump up to the parent/root row.
+        assert_ne!(app.selected, 0, "must not jump to the parent folder row");
+    }
+
+    #[test]
+    fn delete_last_entry_falls_back_to_previous() {
+        let d = tempdir().unwrap();
+        for f in ["a.txt", "b.txt"] {
+            std::fs::write(d.path().join(f), "x").unwrap();
+        }
+        let (mut app, tx, _rx) = app_at(d.path());
+        app.selected = app
+            .visible
+            .iter()
+            .position(|&id| app.arena.nodes[id].path.ends_with("b.txt"))
+            .unwrap();
+        std::fs::remove_file(d.path().join("b.txt")).unwrap();
+        refresh_in_place(&mut app, &tx);
+        let cur = app.arena.nodes[app.visible[app.selected]].path.clone();
+        assert!(cur.ends_with("a.txt"), "last entry deleted → previous, got {cur:?}");
     }
 
     #[test]
