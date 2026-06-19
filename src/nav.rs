@@ -11,9 +11,11 @@ pub fn expand(input: &str) -> String {
     }
     while let Some(start) = s.find('$') {
         let bytes = &s[start + 1..];
-        let (name, end) = if bytes.starts_with('{') {
-            match bytes.find('}') {
-                Some(i) => (&bytes[1..i], start + 1 + i + 1),
+        let (name, end) = if let Some(inner) = bytes.strip_prefix('{') {
+            match inner.find('}') {
+                // inner starts after '{'; `i` is a byte offset into `inner`
+                // and `find` returns a char boundary, so this slice is safe.
+                Some(i) => (&inner[..i], start + 1 + 1 + i + 1),
                 None => break,
             }
         } else {
@@ -67,6 +69,9 @@ pub fn longest_common(input: &str, candidates: &[PathBuf]) -> Option<String> {
         .filter_map(|p| p.file_name())
         .map(|n| n.to_string_lossy().to_string())
         .collect();
+    if names.is_empty() {
+        return None;
+    }
     let mut lcp = names[0].clone();
     for n in &names[1..] {
         while !n.starts_with(&lcp) {
@@ -105,6 +110,20 @@ mod tests {
         let inp = format!("{}/al", d.path().display());
         let c = completions(&inp);
         assert_eq!(c.len(), 2);
+    }
+
+    #[test]
+    fn longest_common_handles_no_file_names() {
+        // candidates non-empty but none has a file_name → must not panic
+        let c = vec![PathBuf::from("/")];
+        assert_eq!(longest_common("", &c), None);
+    }
+
+    #[test]
+    fn expand_handles_multibyte_in_braces() {
+        // ${€} — multibyte var name must not panic; undefined → empty
+        let out = expand("a${€}b");
+        assert_eq!(out, "ab");
     }
 
     #[test]
