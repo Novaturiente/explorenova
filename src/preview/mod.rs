@@ -3,8 +3,9 @@ pub mod media;
 pub mod text;
 pub mod xlsx;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::SystemTime;
 
 #[derive(Debug, Clone)]
@@ -138,34 +139,70 @@ fn meta_string(p: &Path, m: &std::fs::Metadata) -> String {
     format!("{}\n{} bytes\n(binary or oversized)", p.display(), m.len())
 }
 
-/// (path, mtime)-keyed preview cache.
-#[derive(Default)]
+/// (path, mtime)-keyed preview cache backed by a worker thread.
 pub struct PreviewCache {
     map: HashMap<(PathBuf, SystemTime), PreviewKind>,
+    in_flight: HashSet<(PathBuf, SystemTime)>,
+    req_tx: Sender<(PathBuf, SystemTime, u64)>,
+    res_rx: Receiver<((PathBuf, SystemTime), PreviewKind)>,
+}
+
+impl Default for PreviewCache {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl PreviewCache {
-    /// True if `path` is in the cache at its current mtime. Used by
-    /// the UI to skip rendering a placeholder when a cached preview
-    /// can be returned synchronously.
-    pub fn contains(&self, path: &Path) -> bool {
-        let mtime = std::fs::metadata(path)
-            .and_then(|m| m.modified())
-            .unwrap_or(SystemTime::UNIX_EPOCH);
-        self.map.contains_key(&(path.to_path_buf(), mtime))
+    pub fn new() -> Self {
+        let (req_tx, req_rx) = mpsc::channel::<(PathBuf, SystemTime, u64)>();
+        let (res_tx, res_rx) = mpsc::channel();
+        std::thread::spawn(move || {
+            while let Ok((path, mtime, max_bytes)) = req_rx.recv() {
+                let kind = render(&path, max_bytes);
+                let _ = res_tx.send(((path, mtime), kind));
+            }
+        });
+        Self { map: HashMap::new(), in_flight: HashSet::new(), req_tx, res_rx }
     }
 
-    pub fn get_or_render(&mut self, path: &Path, max_bytes: u64) -> PreviewKind {
+    fn key(path: &Path) -> (PathBuf, SystemTime) {
         let mtime = std::fs::metadata(path)
             .and_then(|m| m.modified())
             .unwrap_or(SystemTime::UNIX_EPOCH);
-        let key = (path.to_path_buf(), mtime);
+        (path.to_path_buf(), mtime)
+    }
+
+    /// True if `path` is in the cache at its current mtime. Used by
+    /// the UI settle gate to skip the placeholder when a cached preview
+    /// can be returned synchronously.
+    pub fn contains(&self, path: &Path) -> bool {
+        self.map.contains_key(&Self::key(path))
+    }
+
+    /// Return the cached preview if present; otherwise dispatch the render
+    /// off-thread and return `None`. Never blocks on I/O.
+    pub fn request(&mut self, path: &Path, max_bytes: u64) -> Option<PreviewKind> {
+        let key = Self::key(path);
         if let Some(v) = self.map.get(&key) {
-            return v.clone();
+            return Some(v.clone());
         }
-        let v = render(path, max_bytes);
-        self.map.insert(key, v.clone());
-        v
+        if self.in_flight.insert(key.clone()) {
+            let _ = self.req_tx.send((key.0, key.1, max_bytes));
+        }
+        None
+    }
+
+    /// Move any completed worker results into the cache. Returns `true` if
+    /// at least one arrived (caller should redraw).
+    pub fn drain(&mut self) -> bool {
+        let mut got = false;
+        while let Ok((key, kind)) = self.res_rx.try_recv() {
+            self.in_flight.remove(&key);
+            self.map.insert(key, kind);
+            got = true;
+        }
+        got
     }
 }
 
@@ -237,11 +274,40 @@ mod tests {
         let d = tempdir().unwrap();
         let f = d.path().join("c.txt");
         fs::write(&f, "x").unwrap();
-        let mut c = PreviewCache::default();
-        let a = c.get_or_render(&f, 1024);
-        let b = c.get_or_render(&f, 1024);
+        let mut c = PreviewCache::new();
+        // First request: not cached → None, work dispatched off-thread.
+        assert!(c.request(&f, 1024).is_none());
+        // Drain until the worker delivers.
+        let mut got = false;
+        for _ in 0..200 {
+            if c.drain() { got = true; break; }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(got, "worker should deliver a result");
+        // Now cached — two consecutive requests return the same value.
+        let a = c.request(&f, 1024).expect("should be cached");
+        let b = c.request(&f, 1024).expect("should still be cached");
         // PreviewKind dropped PartialEq when Text started carrying styled
         // spans (Style doesn't compare cleanly). Compare via Debug repr.
         assert_eq!(format!("{a:?}"), format!("{b:?}"));
+    }
+
+    #[test]
+    fn request_is_async_then_drains_into_cache() {
+        let d = tempdir().unwrap();
+        let f = d.path().join("a.txt");
+        fs::write(&f, "hello").unwrap();
+        let mut c = PreviewCache::new();
+        // First request: not cached → None, work dispatched off-thread.
+        assert!(c.request(&f, 1024).is_none());
+        // Wait for the worker, draining until the result lands.
+        let mut got = false;
+        for _ in 0..200 {
+            if c.drain() { got = true; break; }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(got, "worker should deliver a result");
+        // Now cached → Some, synchronously.
+        assert!(matches!(c.request(&f, 1024), Some(PreviewKind::Text(_))));
     }
 }

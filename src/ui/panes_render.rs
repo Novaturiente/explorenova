@@ -220,7 +220,10 @@ pub fn render_pane_preview(
         return;
     }
 
-    let kind = cache.get_or_render(&path, app.config.preview_max_bytes);
+    let Some(kind) = cache.request(&path, app.config.preview_max_bytes) else {
+        f.render_widget(Paragraph::new("(loading…)"), inner);
+        return;
+    };
     match kind {
         PreviewKind::Image(p) => {
             let already_decoded = img_cache

@@ -209,6 +209,10 @@ fn main() -> Result<()> {
     let mut pending_dirs: HashSet<PathBuf> = HashSet::new();
 
     loop {
+        // Pull in any preview that finished rendering off-thread; a fresh
+        // one means the preview pane has new content to show.
+        let preview_ready = preview_cache.drain();
+
         while let Ok(map) = git_res_rx.try_recv() {
             for n in app.arena.nodes.iter_mut() {
                 if let Some(s) = map.get(&n.path) {
@@ -308,7 +312,7 @@ fn main() -> Result<()> {
             // During a long op, poll on a short tick so the progress
             // gauge / spinner refreshes smoothly even when no key event
             // arrives.
-            if app.op.is_some() { base.min(80) } else { base }
+            if app.op.is_some() { base.min(80) } else if preview_ready { 0 } else { base }
         };
         if !event::poll(Duration::from_millis(poll_ms))? {
             continue;
