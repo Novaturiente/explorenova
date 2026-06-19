@@ -112,11 +112,8 @@ fn load_config() -> (Config, Option<String>) {
             if let Some(parent) = p.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
-            let c = Config::with_defaults();
-            if let Ok(s) = toml::to_string_pretty(&c) {
-                let _ = std::fs::write(&p, format!("# explorenova config\n{s}"));
-            }
-            (c, None)
+            let _ = std::fs::write(&p, explorenova::config::SAMPLE_CONFIG);
+            (Config::with_defaults(), None)
         }
     }
 }

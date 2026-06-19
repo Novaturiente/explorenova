@@ -1,6 +1,70 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+/// First-run config: every option documented as a comment. Active settings
+/// must round-trip to `Config::with_defaults()` (enforced by a drift test).
+pub const SAMPLE_CONFIG: &str = r##"# explorenova configuration
+# Every option below is shown with its default. Uncomment and edit to change.
+
+# Show Nerd Font filetype icons in the tree.
+# icons = true
+
+# Prompt y/N before trashing (x/Del). Permanent delete (X) always confirms.
+# confirm_trash = false
+
+# Max file size (bytes) to preview. 0 -> 1 MiB default.
+# preview_max_bytes = 1048576
+
+# Debounce (ms) for filesystem-watch refreshes. Clamped to <= 5000.
+# fs_refresh_debounce_ms = 150
+
+# --- Panes -------------------------------------------------------------
+# order = ["bookmarks", "tree", "preview"]
+# [panes.bookmarks]
+# visible = false
+# width = 24
+# weight = 1
+# [panes.tree]
+# visible = true
+# weight = 2
+# [panes.preview]
+# visible = true
+# weight = 3
+
+# --- Preview tuning ----------------------------------------------------
+# [preview]
+# settle_cheap_ms = 150   # delay before rendering text/dir/image previews
+# settle_heavy_ms = 400   # delay before pdf/video/xlsx/archive (>= cheap)
+# cache_cap = 128         # max cached previews before FIFO eviction
+
+# --- Keybindings -------------------------------------------------------
+# action -> list of key chords, e.g.:
+# [keys]
+# quit = ["q"]
+
+# --- Theme -------------------------------------------------------------
+# preset: omit (tuned RGB default) or "terminal" (follow your terminal palette).
+# Override any field with an ANSI name ("blue", "light_cyan") or hex ("#50C8FA").
+# A bad value warns in the status bar and keeps the default.
+# [theme]
+# preset = "terminal"
+# dir = "blue"
+# file = "white"
+# selected_bg = "#3C5082"
+# git_modified = "#FFC33C"
+# git_added = "green"
+# git_untracked = "light_blue"
+# git_conflict = "red"
+# match_hl = "magenta"
+# mark = "light_yellow"
+# executable = "light_green"
+# symlink = "light_cyan"
+# media = "magenta"
+# archive = "#FF8C50"
+# header = "light_blue"
+# dim = "#78788C"
+"##;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(default)]
 pub struct PaneConfig {
@@ -212,5 +276,14 @@ mod tests {
         // missing [theme] -> empty map, no error
         let (c2, _) = Config::load_str("icons = true\n");
         assert!(c2.theme.is_empty());
+    }
+
+    #[test]
+    fn sample_config_parses_to_defaults() {
+        let (c, err) = Config::load_str(super::SAMPLE_CONFIG);
+        assert!(err.is_none(), "sample config must parse: {err:?}");
+        // The sample documents defaults via comments; its active (uncommented)
+        // settings must round-trip to with_defaults so the sample never lies.
+        assert_eq!(c, Config::with_defaults());
     }
 }
