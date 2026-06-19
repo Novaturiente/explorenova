@@ -34,6 +34,37 @@ layout — visibility, width/weight, order):
 changes persist across restarts, except under `--tree-only`
 (a non-persisted session override).
 
+### Theme
+
+Colors default to a tuned RGB palette (looks the same in every terminal).
+To follow your terminal's color scheme instead, opt in:
+
+    [theme]
+    preset = "terminal"
+
+Override any individual color with an ANSI name (`blue`, `light_cyan`) or
+hex (`#50C8FA`):
+
+    [theme]
+    dir = "blue"
+    git_modified = "#FFC33C"
+
+Fields: `dir`, `file`, `selected_bg`, `git_modified`, `git_added`,
+`git_untracked`, `git_conflict`, `match_hl`, `mark`, `executable`,
+`symlink`, `media`, `archive`, `header`, `dim`. A bad value warns in the
+status bar and keeps the default — it never discards the rest of your config.
+
+### Preview tuning
+
+    [preview]
+    settle_cheap_ms = 150   # delay before text/dir/image previews
+    settle_heavy_ms = 400   # delay before pdf/video/xlsx/archive previews
+    cache_cap = 128         # max cached previews before eviction
+
+    fs_refresh_debounce_ms = 150   # filesystem-watch refresh debounce
+
+The first run writes a fully commented `config.toml` documenting every option.
+
 ## Keys
 
 | Action | Keys |
