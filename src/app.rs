@@ -59,6 +59,8 @@ pub struct App {
     pub mode: Mode,
     pub focus: Pane,
     pub config: Config,
+    /// Parsed color theme, built once from `config.theme` in `App::new`.
+    pub theme: crate::ui::theme::Theme,
     pub state: State,
     pub clipboard: Option<(Vec<PathBuf>, bool)>, // (paths, is_cut) — batch (shared across tabs)
     /// A cut clipboard stashed while its move is in flight, restored if the
@@ -132,6 +134,12 @@ impl App {
         let sort = state.sort;
         arena.set_sort(sort);
         let visible = arena.flatten();
+        let (theme, theme_warnings) = crate::ui::theme::Theme::from_config(&config.theme);
+        let status = if theme_warnings.is_empty() {
+            String::new()
+        } else {
+            format!("config: {}", theme_warnings.join("; "))
+        };
         App {
             arena,
             visible,
@@ -139,11 +147,12 @@ impl App {
             mode: Mode::Normal,
             focus: Pane::Tree,
             config,
+            theme,
             state,
             clipboard: None,
             cut_restore: None,
             marks: BTreeSet::new(),
-            status: String::new(),
+            status,
             should_quit: false,
             input: TextInput::new(),
             search_results: Vec::new(),
@@ -808,6 +817,29 @@ mod tests {
             Arena::new(std::env::temp_dir().as_path()).unwrap()
         });
         App::new(arena, Config::with_defaults(), State::default())
+    }
+
+    fn app_with_theme(pairs: &[(&str, &str)]) -> App {
+        let arena = Arena::new(std::path::Path::new(".")).unwrap_or_else(|_| {
+            Arena::new(std::env::temp_dir().as_path()).unwrap()
+        });
+        let mut config = Config::with_defaults();
+        for (k, v) in pairs {
+            config.theme.insert((*k).to_string(), (*v).to_string());
+        }
+        App::new(arena, config, State::default())
+    }
+
+    #[test]
+    fn app_new_builds_theme_from_config() {
+        let app = app_with_theme(&[("dir", "#102030")]);
+        assert_eq!(app.theme.dir, ratatui::style::Color::Rgb(16, 32, 48));
+    }
+
+    #[test]
+    fn app_new_surfaces_theme_warnings_to_status() {
+        let app = app_with_theme(&[("dir", "blu")]);
+        assert!(app.status.contains("dir"), "bad theme color should surface in status");
     }
 
     #[test]

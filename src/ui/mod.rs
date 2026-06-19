@@ -263,7 +263,7 @@ pub fn render_frame(
 ) {
     use crate::ui::overlays;
     use crate::ui::panes_render;
-    let theme = crate::ui::theme::Theme::default();
+    let theme = app.theme.clone();
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
