@@ -6,7 +6,7 @@ pkgrel=1
 pkgdesc='Daily-driver Rust TUI file manager (ratatui + crossterm)'
 arch=('x86_64')
 url='https://github.com/Novaturiente/explorenova'
-license=('MIT')
+license=('GPL-3.0-or-later')
 depends=(
   'gcc-libs' 'glibc'
   # Native C libraries linked dynamically (vendored builds fail under
@@ -85,4 +85,5 @@ package() {
   cd "$srcdir/$pkgname"
   install -Dm755 "target/release/$pkgname" "$pkgdir/usr/bin/$pkgname"
   install -Dm644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
 }
