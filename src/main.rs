@@ -368,7 +368,9 @@ fn main() -> Result<()> {
         }
     }
 
-    app.state.last_cwd = Some(start.clone());
+    // Persist the directory the user is actually in at quit, so the next
+    // launch resumes there — not the directory we happened to start in.
+    app.state.last_cwd = Some(app.arena.nodes[app.arena.root].path.clone());
     if !args.tree_only {
         app.state.capture_panes(&app.config.panes);
     }

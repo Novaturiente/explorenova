@@ -612,7 +612,7 @@ fn handle_text_input_key(
     }
 }
 
-fn text_input_enter(app: &mut App, start: &Path, git_tx: &mpsc::Sender<std::path::PathBuf>) {
+fn text_input_enter(app: &mut App, _start: &Path, git_tx: &mpsc::Sender<std::path::PathBuf>) {
     match app.mode {
         Mode::Search => {
             // Cursor is already on the top live match; Enter just
@@ -647,19 +647,31 @@ fn text_input_enter(app: &mut App, start: &Path, git_tx: &mpsc::Sender<std::path
             Some(Action::OpenWith) => {
                 if let Some(&id) = app.visible.get(app.selected) {
                     let p = app.arena.nodes[id].path.clone();
-                    if let Err(e) = std::process::Command::new(app.input.value())
-                        .arg(&p)
-                        .spawn()
-                    {
-                        app.set_status(format!("open failed: {e}"));
+                    // Split the typed command so "code --reuse-window" runs
+                    // `code` with an arg, not a program literally named with
+                    // the whole string.
+                    let input = app.input.value();
+                    let mut parts = input.split_whitespace();
+                    if let Some(prog) = parts.next() {
+                        let args: Vec<&str> = parts.collect();
+                        if let Err(e) = std::process::Command::new(prog)
+                            .args(&args)
+                            .arg(&p)
+                            .spawn()
+                        {
+                            app.set_status(format!("open failed: {e}"));
+                        }
+                    } else {
+                        app.set_status("no command");
                     }
                 }
                 app.mode = Mode::Normal;
             }
             Some(Action::ShellOnce) => {
                 let cmd = app.input.value();
+                let root = app.arena.nodes[app.arena.root].path.clone();
                 app.mode = Mode::Normal;
-                if let Err(e) = crate::shell::run_once(start, &cmd) {
+                if let Err(e) = crate::shell::run_once(&root, &cmd) {
                     app.set_status(format!("shell failed: {e}"));
                 }
             }
@@ -772,7 +784,8 @@ pub fn handle(
             // io::Error (raw-mode toggle failure, alt-screen restore
             // glitch, stdin EOF on readline) into a status message and
             // keep the app alive.
-            if let Err(e) = crate::shell::drop_to_shell(cwd) {
+            let root = app.arena.nodes[app.arena.root].path.clone();
+            if let Err(e) = crate::shell::drop_to_shell(&root) {
                 app.set_status(format!("shell: {e}"));
             }
         }
@@ -782,7 +795,9 @@ pub fn handle(
             app.mode = Mode::Input;
         }
         Action::Refresh => {
-            let _ = git_tx.send(app.arena.nodes[app.arena.root].path.clone());
+            // Re-read the tree from disk (picks up external changes) and
+            // re-trigger the git scan. refresh_in_place sends git_tx itself.
+            refresh_in_place(app, git_tx);
         }
         Action::JumpHome => {
             let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from)

@@ -433,6 +433,11 @@ impl App {
             }
             Action::ToggleBookmarksPane => {
                 self.config.panes.bookmarks.visible = !self.config.panes.bookmarks.visible;
+                // Don't leave focus stranded on a now-hidden pane, or j/k
+                // and Enter would drive an invisible cursor.
+                if !self.config.panes.bookmarks.visible && self.focus == Pane::Bookmarks {
+                    self.focus = Pane::Tree;
+                }
             }
             Action::TogglePreviewPane => {
                 self.config.panes.preview.visible = !self.config.panes.preview.visible;

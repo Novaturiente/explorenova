@@ -41,8 +41,18 @@ fn temp_png_for(prefix: &str, src: &Path) -> Option<PathBuf> {
 /// Rasterize PDF page 1 to a PNG in the temp dir via `pdftoppm`.
 /// Returns None if poppler is not installed or the call fails.
 pub fn rasterize_pdf(pdf: &Path) -> Option<PathBuf> {
+    // Key the temp name by mtime so two different PDFs sharing a filename
+    // don't read back each other's stale rasterization. (pdftoppm appends
+    // ".png" to this stem.)
+    let mtime = std::fs::metadata(pdf)
+        .ok()?
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?
+        .as_secs();
     let stem = std::env::temp_dir().join(format!(
-        "explorenova-pdf-{}",
+        "explorenova-pdf-{}-{mtime}",
         pdf.file_stem()?.to_string_lossy()
     ));
     let status = run_silent(

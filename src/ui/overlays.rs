@@ -446,17 +446,19 @@ fn render_input(f: &mut Frame, body: Rect, app: &App, theme: &Theme) {
 }
 
 fn render_confirm(f: &mut Frame, body: Rect, app: &App, theme: &Theme) {
-    let name = app
-        .visible
-        .get(app.selected)
-        .map(|&id| {
-            app.arena.nodes[id]
-                .path
-                .file_name()
-                .map(|s| s.to_string_lossy().to_string())
-                .unwrap_or_default()
-        })
-        .unwrap_or_default();
+    // Show what will actually be deleted: a count when multiple files are
+    // marked, otherwise the single target's name. Mirrors `App::targets`
+    // (marks take precedence over the cursor) so the dialog never claims
+    // one file while deleting many.
+    let name = if app.marks.len() > 1 {
+        format!("{} items", app.marks.len())
+    } else {
+        app.targets()
+            .first()
+            .and_then(|p| p.file_name())
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_default()
+    };
     // 5 content rows (header, blank, name, blank, buttons) + 2 border + 1 slack
     let r = modal::adaptive_rect(56, 8, body);
     f.render_widget(Clear, r);
