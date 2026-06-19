@@ -162,12 +162,6 @@ pub fn render_menu(area: Rect, frame: &mut Frame, sort: &SortState, theme: &crat
     frame.render_widget(Paragraph::new(lines), inner);
 }
 
-/// Center a Rect of given (w, h) inside `area`. Kept for callers that
-/// haven't migrated to [`crate::ui::modal::adaptive_rect`] yet.
-pub fn centered_rect(w: u16, h: u16, area: Rect) -> Rect {
-    crate::ui::modal::adaptive_rect(w, h, area)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

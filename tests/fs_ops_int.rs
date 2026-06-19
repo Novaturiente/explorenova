@@ -1,4 +1,4 @@
-use explorenova::fs_ops::{create, paste, permanent_delete, rename, PasteMode};
+use explorenova::fs_ops::{create, permanent_delete, rename};
 use std::fs;
 use tempfile::tempdir;
 
@@ -67,31 +67,6 @@ fn create_treats_extensionless_name_as_directory() {
     assert!(d.path().join("notes").is_dir());
     create(&d.path().join("readme.md")).unwrap();
     assert!(d.path().join("readme.md").is_file());
-}
-
-#[test]
-fn paste_copy_collision_gets_suffix() {
-    let d = tempdir().unwrap();
-    let src = d.path().join("f.txt");
-    fs::write(&src, "1").unwrap();
-    let dst_dir = d.path().join("dst");
-    fs::create_dir(&dst_dir).unwrap();
-    fs::write(dst_dir.join("f.txt"), "old").unwrap();
-    let out = paste(&src, &dst_dir, PasteMode::Copy).unwrap();
-    assert_eq!(out.file_name().unwrap(), "f (1).txt");
-    assert!(d.path().join("f.txt").exists()); // copy keeps source
-}
-
-#[test]
-fn paste_move_removes_source() {
-    let d = tempdir().unwrap();
-    let src = d.path().join("m.txt");
-    fs::write(&src, "1").unwrap();
-    let dst = d.path().join("dst");
-    fs::create_dir(&dst).unwrap();
-    let out = paste(&src, &dst, PasteMode::Move).unwrap();
-    assert!(out.exists());
-    assert!(!src.exists());
 }
 
 #[test]

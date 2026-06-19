@@ -56,42 +56,6 @@ pub fn unique_dest(dir: &Path, file_name: &std::ffi::OsStr) -> PathBuf {
     unreachable!()
 }
 
-pub fn paste(src: &Path, dst_dir: &Path, mode: PasteMode) -> io::Result<PathBuf> {
-    let name = src
-        .file_name()
-        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "no file name"))?;
-    let dst = unique_dest(dst_dir, name);
-    match mode {
-        PasteMode::Copy => {
-            if src.is_dir() {
-                let opts = fs_extra::dir::CopyOptions::new().copy_inside(true);
-                fs_extra::dir::copy(src, &dst, &opts)
-                    .map_err(|e| io::Error::other(e.to_string()))?;
-            } else {
-                fs::copy(src, &dst)?;
-            }
-        }
-        PasteMode::Move => {
-            match fs::rename(src, &dst) {
-                Ok(_) => {}
-                Err(e) if e.kind() == io::ErrorKind::CrossesDevices => {
-                    // cross-device fallback
-                    if src.is_dir() {
-                        let opts = fs_extra::dir::CopyOptions::new().copy_inside(true);
-                        fs_extra::dir::move_dir(src, &dst, &opts)
-                            .map_err(|e| io::Error::other(e.to_string()))?;
-                    } else {
-                        fs::copy(src, &dst)?;
-                        fs::remove_file(src)?;
-                    }
-                }
-                Err(e) => return Err(e),
-            }
-        }
-    }
-    Ok(dst)
-}
-
 pub fn rename(path: &Path, new_name: &str) -> io::Result<PathBuf> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let np = parent.join(new_name);

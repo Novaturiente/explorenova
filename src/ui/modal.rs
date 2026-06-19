@@ -10,18 +10,6 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::Span;
 use ratatui::widgets::{Block, BorderType, Borders};
 
-/// A centered rect `pct_w`% wide and `lines + 2` tall (content + borders),
-/// clamped inside `area`. Legacy helper; new code should prefer
-/// [`adaptive_rect`].
-pub fn centered_rect(pct_w: u16, lines: u16, area: Rect) -> Rect {
-    let w = (area.width as u32 * pct_w as u32 / 100) as u16;
-    let w = w.clamp(10u16.min(area.width), area.width);
-    let h = lines.saturating_add(2).min(area.height.max(3));
-    let x = area.x + (area.width.saturating_sub(w)) / 2;
-    let y = area.y + (area.height.saturating_sub(h)) / 2;
-    Rect { x, y, width: w, height: h }
-}
-
 /// Adaptive floating rect. Takes a *desired* content size (border-
 /// inclusive); shrinks to leave margin inside `area`, never grows past
 /// content_w/content_h. Falls back to a tiny rect on cramped terminals
@@ -83,16 +71,6 @@ pub fn dim_style(theme: &Theme) -> Style {
     Style::default().fg(theme.dim)
 }
 
-/// Render a styled key-hint chip like `[?]` for footer help lines.
-pub fn key_chip(label: &str, theme: &Theme) -> Span<'static> {
-    Span::styled(
-        label.to_string(),
-        Style::default()
-            .fg(theme.match_hl)
-            .add_modifier(Modifier::BOLD),
-    )
-}
-
 /// Move `sel` within `0..len` with wrap-around. Returns the new index.
 pub fn wrap_nav(sel: usize, len: usize, down: bool) -> usize {
     if len == 0 {
@@ -109,16 +87,6 @@ pub fn wrap_nav(sel: usize, len: usize, down: bool) -> usize {
 mod tests {
     use super::*;
     use ratatui::layout::Rect;
-
-    #[test]
-    fn centered_is_within_and_centered() {
-        let area = Rect { x: 0, y: 0, width: 100, height: 40 };
-        let r = centered_rect(50, 3, area);
-        assert_eq!(r.width, 50);
-        assert_eq!(r.height, 5);
-        assert_eq!(r.x, 25);
-        assert_eq!(r.y, (40 - 5) / 2);
-    }
 
     #[test]
     fn wrap_nav_cycles() {

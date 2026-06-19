@@ -31,14 +31,6 @@ impl TextInput {
         self.caret
     }
 
-    pub fn len(&self) -> usize {
-        self.chars.len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.chars.is_empty()
-    }
-
     pub fn insert(&mut self, c: char) {
         self.chars.insert(self.caret, c);
         self.caret += 1;

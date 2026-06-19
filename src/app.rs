@@ -475,15 +475,6 @@ impl App {
         self.input.backspace();
     }
 
-    pub fn run_search(&mut self) {
-        let root = self.arena.nodes[self.arena.root].path.clone();
-        let cands = crate::search::collect(&root, self.arena.show_hidden);
-        let ranked = crate::search::rank(&cands, &root, &self.input.value());
-        self.search_results = ranked.into_iter().map(|(p, _, idx)| (p, idx)).collect();
-        self.search_idx = 0;
-        self.jump_to_search();
-    }
-
     /// One-shot tree walk; cache the result for live re-ranking on
     /// every keystroke during Search mode.
     pub fn begin_search(&mut self) {
