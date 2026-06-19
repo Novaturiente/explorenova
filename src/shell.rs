@@ -38,7 +38,13 @@ pub fn run_once(cwd: &Path, cmd: &str) -> io::Result<()> {
 /// `gio mount`, whose own auth prompt is the password UI.
 pub fn run_interactive(prog: &str, args: &[&str]) -> io::Result<()> {
     around_terminal(|| {
-        Command::new(prog).args(args).status().map(|_| ())
+        Command::new(prog)
+            .args(args)
+            .status()
+            // Name the binary so a missing tool reads "gio: No such file…"
+            // instead of a bare OS error with no context.
+            .map_err(|e| io::Error::new(e.kind(), format!("{prog}: {e}")))
+            .map(|_| ())
     })
 }
 

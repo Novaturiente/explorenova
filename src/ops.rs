@@ -146,8 +146,15 @@ pub fn spawn_paste(srcs: Vec<PathBuf>, dst_dir: PathBuf, mode: PasteMode) -> OpS
                     // Try rename first (instant on same filesystem).
                     match std::fs::rename(src, &dst) {
                         Ok(_) => Ok(()),
+                        // Only a cross-device rename warrants the slow
+                        // copy+remove fallback. Any other error (permission
+                        // denied, etc.) is reported as-is rather than masked
+                        // by a doomed copy attempt.
+                        Err(e) if e.raw_os_error() != Some(libc::EXDEV) => {
+                            Err(format!("move failed: {e}"))
+                        }
                         Err(_) => {
-                            // Cross-device or other error → copy+remove.
+                            // Cross-device → copy+remove.
                             if src.is_dir() {
                                 let opts = fs_extra::dir::CopyOptions::new().copy_inside(true);
                                 let tx2 = tx.clone();

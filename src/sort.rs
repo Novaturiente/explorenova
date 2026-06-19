@@ -80,13 +80,12 @@ pub fn sort_children(indices: &mut [usize], arena_nodes: &[Node], sort: &SortSta
         } else {
             Ordering::Equal
         };
+        // Reverse only flips the sort field, not the dir/file grouping:
+        // with dir_first on, reversing keeps dirs above files and reverses
+        // order *within* each group (the intuitive behavior).
         let secondary = cmp_by(a, b, sort.mode);
-        let combined = primary.then(secondary);
-        if sort.reverse {
-            combined.reverse()
-        } else {
-            combined
-        }
+        let secondary = if sort.reverse { secondary.reverse() } else { secondary };
+        primary.then(secondary)
     });
 }
 
@@ -189,6 +188,22 @@ mod tests {
         sort_children(&mut idx, &nodes, &s);
         // Dirs first (aaa, zzz), then files (a.txt, b.txt).
         assert_eq!(idx, vec![1, 3, 2, 0]);
+    }
+
+    #[test]
+    fn reverse_with_dir_first_keeps_dirs_above_files() {
+        let nodes = vec![
+            mk("a.txt", NodeKind::File, 0, 0),
+            mk("aaa", NodeKind::Dir, 0, 0),
+            mk("b.txt", NodeKind::File, 0, 0),
+            mk("zzz", NodeKind::Dir, 0, 0),
+        ];
+        let mut idx = vec![0, 1, 2, 3];
+        let s = SortState { mode: SortMode::Name, reverse: true, dir_first: true };
+        sort_children(&mut idx, &nodes, &s);
+        // Dirs still first (reversed within group: zzz, aaa), then files
+        // (reversed: b.txt, a.txt) — reverse must NOT interleave files first.
+        assert_eq!(idx, vec![3, 1, 2, 0]);
     }
 
     #[test]

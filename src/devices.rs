@@ -78,7 +78,8 @@ pub fn list() -> anyhow::Result<Vec<Device>> {
             "-o",
             "{device_presentation}\t{is_mounted}\t{mount_paths}\t{device_size}\t{id_label}\t{id_type}",
         ])
-        .output()?;
+        .output()
+        .map_err(|e| anyhow::anyhow!("udiskie-info not available: {e}"))?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr).into_owned();
         anyhow::bail!("udiskie-info failed: {}", err.trim());
@@ -88,7 +89,10 @@ pub fn list() -> anyhow::Result<Vec<Device>> {
 }
 
 pub fn mount(device: &str) -> anyhow::Result<()> {
-    let out = Command::new("udiskie-mount").arg(device).output()?;
+    let out = Command::new("udiskie-mount")
+        .arg(device)
+        .output()
+        .map_err(|e| anyhow::anyhow!("udiskie-mount not available: {e}"))?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr).into_owned();
         anyhow::bail!("{}", err.trim());
@@ -97,7 +101,10 @@ pub fn mount(device: &str) -> anyhow::Result<()> {
 }
 
 pub fn unmount(device: &str) -> anyhow::Result<()> {
-    let out = Command::new("udiskie-umount").arg(device).output()?;
+    let out = Command::new("udiskie-umount")
+        .arg(device)
+        .output()
+        .map_err(|e| anyhow::anyhow!("udiskie-umount not available: {e}"))?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr).into_owned();
         anyhow::bail!("{}", err.trim());

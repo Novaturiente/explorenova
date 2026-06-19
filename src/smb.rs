@@ -115,8 +115,11 @@ fn mountpoint_in(
     host: &str,
     share: &str,
 ) -> Option<PathBuf> {
+    // gvfs strips any `:port` suffix from the server token, so match on
+    // the host without it (e.g. `nas:445` → `server=nas`).
+    let host_no_port = host.split(':').next().unwrap_or(host);
     let want_server =
-        format!("server={}", host.to_lowercase());
+        format!("server={}", host_no_port.to_lowercase());
     let want_share =
         format!("share={}", share.to_lowercase());
     let entries = std::fs::read_dir(gvfs_dir).ok()?;
@@ -380,6 +383,16 @@ mod tests {
             mp,
             g.join("smb-share:server=nas.local,share=media")
         );
+    }
+
+    #[test]
+    fn mountpoint_in_matches_when_host_has_port() {
+        let dir = tempfile::tempdir().unwrap();
+        let g = dir.path();
+        // gvfs drops the :445 from the server token.
+        touch_dir(g, "smb-share:server=nas,share=media");
+        let mp = mountpoint_in(g, "nas:445", "media").unwrap();
+        assert_eq!(mp, g.join("smb-share:server=nas,share=media"));
     }
 
     #[test]

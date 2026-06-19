@@ -43,6 +43,12 @@ pub fn layout_constraints(p: &PanesConfig) -> Vec<(String, Constraint)> {
             visible.push((name.as_str(), pc));
         }
     }
+    // Never hand ratatui an empty constraint set (blank screen / panic).
+    // A hand-edited state.toml hiding every pane, or bad pane names, falls
+    // back to a full-width tree so the app is always usable.
+    if visible.is_empty() {
+        return vec![("tree".to_string(), Constraint::Ratio(1, 1))];
+    }
     let weight_sum: u32 = visible
         .iter()
         .filter(|(_, c)| c.width.is_none())
@@ -74,6 +80,26 @@ mod tests {
         assert_eq!(cons[0].0, "tree");
         p.bookmarks.visible = true;
         assert_eq!(layout_constraints(&p).len(), 3);
+    }
+
+    #[test]
+    fn all_panes_hidden_falls_back_to_tree() {
+        let mut p = PanesConfig::default();
+        p.bookmarks.visible = false;
+        p.tree.visible = false;
+        p.preview.visible = false;
+        let cons = layout_constraints(&p);
+        assert_eq!(cons.len(), 1, "must never be empty");
+        assert_eq!(cons[0].0, "tree");
+    }
+
+    #[test]
+    fn bad_pane_names_fall_back_to_tree() {
+        let mut p = PanesConfig::default();
+        p.order = vec!["x".into(), "y".into(), "z".into()];
+        let cons = layout_constraints(&p);
+        assert_eq!(cons.len(), 1);
+        assert_eq!(cons[0].0, "tree");
     }
 
     #[test]

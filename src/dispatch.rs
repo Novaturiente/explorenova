@@ -912,14 +912,18 @@ pub fn handle(
                 app.apply(Action::Collapse);
             }
         }
-        Action::NewTab => match app.open_tab() {
-            Ok(()) => {
-                app.set_status(if app.is_split() { "opened tab" } else { "already split" });
-                // New active arena needs a fresh git scan.
-                let _ = git_tx.send(app.arena.nodes[app.arena.root].path.clone());
+        Action::NewTab => {
+            // open_tab is a no-op when already split, so check before.
+            let was_split = app.is_split();
+            match app.open_tab() {
+                Ok(()) => {
+                    app.set_status(if was_split { "already split" } else { "opened tab" });
+                    // New active arena needs a fresh git scan.
+                    let _ = git_tx.send(app.arena.nodes[app.arena.root].path.clone());
+                }
+                Err(e) => app.set_status(format!("open tab failed: {e}")),
             }
-            Err(e) => app.set_status(format!("open tab failed: {e}")),
-        },
+        }
         Action::CloseTab => {
             if app.is_split() {
                 app.close_tab();
