@@ -36,6 +36,25 @@ impl Default for PanesConfig {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct PreviewConfig {
+    /// Settle delay (ms) before rendering a cheap preview (text/dir/image).
+    pub settle_cheap_ms: u64,
+    /// Settle delay (ms) before rendering a heavy preview (pdf/video/xlsx/archive/avif).
+    pub settle_heavy_ms: u64,
+    /// Max number of cached previews before FIFO eviction.
+    /// ponytail: bounds cached *entries*, not total preview memory —
+    /// in-flight renders and worker backlog stay unbounded.
+    pub cache_cap: usize,
+}
+
+impl Default for PreviewConfig {
+    fn default() -> Self {
+        Self { settle_cheap_ms: 150, settle_heavy_ms: 400, cache_cap: 128 }
+    }
+}
+
 fn default_true() -> bool {
     true
 }
@@ -54,6 +73,10 @@ pub struct Config {
     /// always confirms regardless. Default off — trash is recoverable, so
     /// the fast path is the sensible default; set true for a safety gate.
     pub confirm_trash: bool,
+    /// Preview timing/cache tunables.
+    pub preview: PreviewConfig,
+    /// Debounce (ms) for coalescing filesystem-watch events before refresh.
+    pub fs_refresh_debounce_ms: u64,
 }
 
 impl Config {
@@ -61,6 +84,8 @@ impl Config {
         let mut c = Config { preview_max_bytes: 1_048_576, ..Default::default() };
         c.panes = PanesConfig::default();
         c.icons = true;
+        c.preview = PreviewConfig::default();
+        c.fs_refresh_debounce_ms = 150;
         c
     }
 
@@ -71,6 +96,22 @@ impl Config {
                 if c.preview_max_bytes == 0 {
                     c.preview_max_bytes = 1_048_576;
                 }
+                if c.preview.settle_cheap_ms == 0 {
+                    c.preview.settle_cheap_ms = 150;
+                }
+                if c.preview.settle_heavy_ms == 0 {
+                    c.preview.settle_heavy_ms = 400;
+                }
+                if c.preview.settle_heavy_ms < c.preview.settle_cheap_ms {
+                    c.preview.settle_heavy_ms = c.preview.settle_cheap_ms;
+                }
+                if c.preview.cache_cap == 0 {
+                    c.preview.cache_cap = 128;
+                }
+                if c.fs_refresh_debounce_ms == 0 {
+                    c.fs_refresh_debounce_ms = 150;
+                }
+                c.fs_refresh_debounce_ms = c.fs_refresh_debounce_ms.min(5000);
                 (c, None)
             }
             Err(e) => (Config::with_defaults(), Some(e.to_string())),
@@ -130,5 +171,31 @@ mod tests {
         assert!(!Config::with_defaults().confirm_trash, "fast trash by default");
         let (c, _) = Config::load_str("confirm_trash = true\n");
         assert!(c.confirm_trash, "opt-in safety gate parses");
+    }
+
+    #[test]
+    fn preview_tunables_default_and_clamp() {
+        // missing [preview] -> defaults
+        let (c, _) = Config::load_str("icons = true\n");
+        assert_eq!(c.preview.settle_cheap_ms, 150);
+        assert_eq!(c.preview.settle_heavy_ms, 400);
+        assert_eq!(c.preview.cache_cap, 128);
+        assert_eq!(c.fs_refresh_debounce_ms, 150);
+
+        // zero values clamp to defaults
+        let src = "[preview]\nsettle_cheap_ms = 0\nsettle_heavy_ms = 0\ncache_cap = 0\n";
+        let (c, _) = Config::load_str(src);
+        assert_eq!(c.preview.settle_cheap_ms, 150);
+        assert_eq!(c.preview.settle_heavy_ms, 400);
+        assert_eq!(c.preview.cache_cap, 128);
+
+        // heavy < cheap is lifted to cheap
+        let (c, _) = Config::load_str("[preview]\nsettle_cheap_ms = 300\nsettle_heavy_ms = 100\n");
+        assert_eq!(c.preview.settle_cheap_ms, 300);
+        assert_eq!(c.preview.settle_heavy_ms, 300);
+
+        // absurd debounce is capped
+        let (c, _) = Config::load_str("fs_refresh_debounce_ms = 999999\n");
+        assert_eq!(c.fs_refresh_debounce_ms, 5000);
     }
 }
