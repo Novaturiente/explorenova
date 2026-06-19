@@ -159,7 +159,16 @@ impl PreviewCache {
         let (res_tx, res_rx) = mpsc::channel();
         std::thread::spawn(move || {
             while let Ok((path, mtime, max_bytes)) = req_rx.recv() {
-                let kind = render(&path, max_bytes);
+                // Isolate a panicking render (e.g. a malformed file tripping
+                // a decoder) so one bad file never kills the worker and
+                // wedges every future preview at "(loading…)".
+                let kind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    render(&path, max_bytes)
+                }))
+                .unwrap_or_else(|_| PreviewKind::Meta(format!(
+                    "{}\n(preview failed)",
+                    path.display()
+                )));
                 let _ = res_tx.send(((path, mtime), kind));
             }
         });
