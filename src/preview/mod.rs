@@ -139,10 +139,17 @@ fn meta_string(p: &Path, m: &std::fs::Metadata) -> String {
     format!("{}\n{} bytes\n(binary or oversized)", p.display(), m.len())
 }
 
+/// Cap on cached previews. A `Text` entry can hold thousands of styled
+/// spans, so without a bound a long browsing session leaks memory. Evicted
+/// entries simply re-render on next view.
+const CACHE_CAP: usize = 128;
+
 /// (path, mtime)-keyed preview cache backed by a worker thread.
 pub struct PreviewCache {
     map: HashMap<(PathBuf, SystemTime), PreviewKind>,
     in_flight: HashSet<(PathBuf, SystemTime)>,
+    /// Insertion order, for FIFO eviction once `CACHE_CAP` is reached.
+    order: std::collections::VecDeque<(PathBuf, SystemTime)>,
     req_tx: Sender<(PathBuf, SystemTime, u64)>,
     res_rx: Receiver<((PathBuf, SystemTime), PreviewKind)>,
 }
@@ -172,7 +179,13 @@ impl PreviewCache {
                 let _ = res_tx.send(((path, mtime), kind));
             }
         });
-        Self { map: HashMap::new(), in_flight: HashSet::new(), req_tx, res_rx }
+        Self {
+            map: HashMap::new(),
+            in_flight: HashSet::new(),
+            order: std::collections::VecDeque::new(),
+            req_tx,
+            res_rx,
+        }
     }
 
     fn key(path: &Path) -> (PathBuf, SystemTime) {
@@ -208,7 +221,15 @@ impl PreviewCache {
         let mut got = false;
         while let Ok((key, kind)) = self.res_rx.try_recv() {
             self.in_flight.remove(&key);
-            self.map.insert(key, kind);
+            if self.map.insert(key.clone(), kind).is_none() {
+                // New key: track for FIFO eviction and trim if over cap.
+                self.order.push_back(key);
+                while self.order.len() > CACHE_CAP {
+                    if let Some(old) = self.order.pop_front() {
+                        self.map.remove(&old);
+                    }
+                }
+            }
             got = true;
         }
         got

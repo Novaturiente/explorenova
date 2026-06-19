@@ -64,7 +64,10 @@ impl Arena {
         }
     }
 
-    fn classify(p: &Path) -> (NodeKind, bool, u64, SystemTime, u32) {
+    /// Returns (kind, exec, size, mtime, mode, link_to_dir). `link_to_dir`
+    /// is true for a symlink whose target is a directory, so the tree can
+    /// let the user descend into it while still showing it as a symlink.
+    fn classify(p: &Path) -> (NodeKind, bool, u64, SystemTime, u32, bool) {
         #[cfg(unix)]
         use std::os::unix::fs::PermissionsExt;
         match fs::symlink_metadata(p) {
@@ -74,7 +77,10 @@ impl Arena {
                 let mode = m.permissions().mode();
                 #[cfg(not(unix))]
                 let mode = 0;
-                (NodeKind::Symlink, false, m.len(), mt, mode)
+                // Follow the link (metadata, not symlink_metadata) to learn
+                // whether the target is a directory.
+                let link_to_dir = fs::metadata(p).map(|t| t.is_dir()).unwrap_or(false);
+                (NodeKind::Symlink, false, m.len(), mt, mode, link_to_dir)
             }
             Ok(m) if m.is_dir() => {
                 let mt = m.modified().unwrap_or(SystemTime::UNIX_EPOCH);
@@ -82,7 +88,7 @@ impl Arena {
                 let mode = m.permissions().mode();
                 #[cfg(not(unix))]
                 let mode = 0;
-                (NodeKind::Dir, false, 0, mt, mode)
+                (NodeKind::Dir, false, 0, mt, mode, false)
             }
             Ok(m) => {
                 #[cfg(unix)]
@@ -94,9 +100,9 @@ impl Arena {
                 #[cfg(not(unix))]
                 let mode = 0;
                 let mt = m.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-                (NodeKind::File, ex, m.len(), mt, mode)
+                (NodeKind::File, ex, m.len(), mt, mode, false)
             }
-            Err(_) => (NodeKind::File, false, 0, SystemTime::UNIX_EPOCH, 0),
+            Err(_) => (NodeKind::File, false, 0, SystemTime::UNIX_EPOCH, 0, false),
         }
     }
 
@@ -121,11 +127,12 @@ impl Arena {
             .collect();
         let mut child_ids = Vec::with_capacity(entries.len());
         for p in entries {
-            let (kind, exec, size, mtime, mode) = Self::classify(&p);
+            let (kind, exec, size, mtime, mode, link_to_dir) = Self::classify(&p);
             let mut node = Node::new(p.clone(), kind, depth, Some(id));
             node.exec = exec;
             node.size = size;
             node.mtime = mtime;
+            node.link_to_dir = link_to_dir;
             node.mode = mode;
             self.nodes.push(node);
             child_ids.push(self.nodes.len() - 1);
@@ -243,22 +250,24 @@ impl Arena {
         for p in entries {
             if let Some(cid) = by_path.remove(&p) {
                 // Survivor: refresh its own metadata, keep subtree/expanded.
-                let (kind, exec, size, mtime, mode) = Self::classify(&p);
+                let (kind, exec, size, mtime, mode, link_to_dir) = Self::classify(&p);
                 let n = &mut self.nodes[cid];
                 n.kind = kind;
                 n.exec = exec;
                 n.size = size;
                 n.mtime = mtime;
                 n.mode = mode;
+                n.link_to_dir = link_to_dir;
                 n.empty = None;
                 new_children.push(cid);
             } else {
-                let (kind, exec, size, mtime, mode) = Self::classify(&p);
+                let (kind, exec, size, mtime, mode, link_to_dir) = Self::classify(&p);
                 let mut node = Node::new(p.clone(), kind, depth, Some(id));
                 node.exec = exec;
                 node.size = size;
                 node.mtime = mtime;
                 node.mode = mode;
+                node.link_to_dir = link_to_dir;
                 self.nodes.push(node);
                 new_children.push(self.nodes.len() - 1);
             }
@@ -420,6 +429,27 @@ mod tests {
             .find(|n| n.path.ends_with("dotonly"))
             .unwrap();
         assert_eq!(n.empty, Some(true), "hidden-only dir reads as empty when show_hidden=false");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn symlink_to_dir_is_traversable_but_stays_symlink() {
+        use std::os::unix::fs::symlink;
+        let d = tempdir().unwrap();
+        fs::create_dir(d.path().join("real")).unwrap();
+        fs::write(d.path().join("real/inner.txt"), "x").unwrap();
+        symlink(d.path().join("real"), d.path().join("link")).unwrap();
+        let mut a = Arena::new(d.path()).unwrap();
+        let link = a.nodes[a.root].children.as_ref().unwrap().iter().copied()
+            .find(|&c| a.nodes[c].path.ends_with("link")).unwrap();
+        assert_eq!(a.nodes[link].kind, NodeKind::Symlink, "display stays a symlink");
+        assert!(a.nodes[link].is_dir(), "but it is traversable");
+        a.expand(link).unwrap();
+        assert!(
+            a.nodes[link].children.as_ref().unwrap().iter()
+                .any(|&c| a.nodes[c].path.ends_with("inner.txt")),
+            "expands into the link target's contents"
+        );
     }
 
     #[test]

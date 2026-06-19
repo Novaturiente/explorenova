@@ -69,6 +69,10 @@ pub struct Node {
     pub mtime: SystemTime,
     /// Unix mode bits captured at load (0 on non-unix or unreadable).
     pub mode: u32,
+    /// True when this is a symlink whose target is a directory — lets the
+    /// tree treat it as traversable while `kind` stays `Symlink` for the
+    /// icon/permissions display.
+    pub link_to_dir: bool,
 }
 
 impl Node {
@@ -86,11 +90,14 @@ impl Node {
             size: 0,
             mtime: SystemTime::UNIX_EPOCH,
             mode: 0,
+            link_to_dir: false,
         }
     }
 
+    /// Treated as a directory for navigation: a real dir, or a symlink
+    /// pointing at one (so the user can descend into linked folders).
     pub fn is_dir(&self) -> bool {
-        matches!(self.kind, NodeKind::Dir)
+        matches!(self.kind, NodeKind::Dir) || self.link_to_dir
     }
 }
 
