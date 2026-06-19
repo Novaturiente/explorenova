@@ -3,6 +3,9 @@ use std::collections::BTreeMap;
 
 /// First-run config: every option documented as a comment. Active settings
 /// must round-trip to `Config::with_defaults()` (enforced by a drift test).
+/// ponytail: the drift test only pins *active* (uncommented) lines. The default
+/// values shown inside comments are documentation, not test-enforced — if you
+/// change a default in code, update its comment here by hand.
 pub const SAMPLE_CONFIG: &str = r##"# explorenova configuration
 # Every option below is shown with its default. Uncomment and edit to change.
 
