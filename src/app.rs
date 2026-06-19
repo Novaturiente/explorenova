@@ -114,6 +114,11 @@ pub struct App {
     /// go past it; cleared by `reroot` (Home/Trash/bookmark jumps).
     /// `None` during ordinary filesystem browsing.
     pub mount_floor: Option<PathBuf>,
+    /// Directories the app just mutated, with an expiry. The fs-watcher
+    /// echo for these is ignored until the deadline so an action doesn't
+    /// trigger a second (redundant) refresh.
+    pub self_write_dirs: std::collections::HashSet<std::path::PathBuf>,
+    pub self_write_until: Option<std::time::Instant>,
 }
 
 impl App {
@@ -153,7 +158,17 @@ impl App {
             shares: Vec::new(),
             shares_path: PathBuf::new(),
             mount_floor: None,
+            self_write_dirs: std::collections::HashSet::new(),
+            self_write_until: None,
         }
+    }
+
+    /// Mark `dirs` as just-written-by-us so the watcher echo is ignored
+    /// for a short window.
+    pub fn mark_self_write(&mut self, dirs: impl IntoIterator<Item = std::path::PathBuf>) {
+        self.self_write_dirs.extend(dirs);
+        self.self_write_until =
+            Some(std::time::Instant::now() + std::time::Duration::from_millis(400));
     }
 
     /// Set transient status text and stamp the time so the status bar

@@ -8,7 +8,7 @@ use crossterm::terminal::{
 use explorenova::app::App;
 use explorenova::cli::{resolve_start_dir, Args};
 use explorenova::config::Config;
-use explorenova::dispatch::{handle_key, refresh_in_place};
+use explorenova::dispatch::{handle_key, refresh_in_place, refresh_dirs};
 use explorenova::git::scan_status;
 use explorenova::keymap::{Keymap, Mode};
 use explorenova::preview::PreviewCache;
@@ -19,7 +19,7 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 use std::io;
 use std::collections::HashSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
@@ -183,10 +183,13 @@ fn main() -> Result<()> {
         });
     }
 
-    let (fs_tx, fs_rx) = mpsc::channel();
+    let (fs_tx, fs_rx) = mpsc::channel::<Vec<PathBuf>>();
     let mut watcher = notify::recommended_watcher(move |res| {
         if let Ok(ev) = res {
-            let _ = fs_tx.send(ev);
+            let ev: notify::Event = ev;
+            if !ev.paths.is_empty() {
+                let _ = fs_tx.send(ev.paths);
+            }
         }
     })?;
     // Lazy per-dir watching (yazi-style). The set of watched dirs
@@ -203,6 +206,7 @@ fn main() -> Result<()> {
     let mut chord = String::new();
     let mut img_cache = ui::ImageCache::default();
     let mut fs_dirty_since: Option<Instant> = None;
+    let mut pending_dirs: HashSet<PathBuf> = HashSet::new();
 
     loop {
         while let Ok(map) = git_res_rx.try_recv() {
@@ -213,19 +217,35 @@ fn main() -> Result<()> {
             }
         }
 
-        let mut fs_changed = false;
-        while fs_rx.try_recv().is_ok() {
-            fs_changed = true;
+        while let Ok(paths) = fs_rx.try_recv() {
+            for p in paths {
+                let dir = if watched.contains(&p) {
+                    p.clone()
+                } else {
+                    p.parent().map(Path::to_path_buf).unwrap_or(p)
+                };
+                pending_dirs.insert(dir);
+            }
         }
-        if fs_changed && fs_dirty_since.is_none() {
+        if let Some(until) = app.self_write_until {
+            if Instant::now() < until {
+                for d in &app.self_write_dirs {
+                    pending_dirs.remove(d);
+                }
+            } else {
+                app.self_write_until = None;
+                app.self_write_dirs.clear();
+            }
+        }
+        if !pending_dirs.is_empty() && fs_dirty_since.is_none() {
             fs_dirty_since = Some(Instant::now());
         }
         if let Some(t0) = fs_dirty_since {
             if t0.elapsed() >= Duration::from_millis(150) {
-                // Rebuild at the CURRENT arena root, not the startup
-                // `start` arg — after H/T/devices/ascend the user may
-                // be rooted elsewhere and we'd otherwise yank them back.
-                refresh_in_place(&mut app, &git_tx);
+                let dirs: Vec<PathBuf> = pending_dirs.drain().collect();
+                if !dirs.is_empty() {
+                    refresh_dirs(&mut app, &dirs, &git_tx);
+                }
                 fs_dirty_since = None;
             }
         }
@@ -239,6 +259,7 @@ fn main() -> Result<()> {
                 let state = app.op.take().unwrap();
                 let reveal = state.reveal_hint.clone();
                 let res = state.finished.unwrap();
+                app.mark_self_write([app.arena.nodes[app.arena.root].path.clone()]);
                 refresh_in_place(&mut app, &git_tx);
                 if let Some(target) = reveal {
                     app.navigate_to(&target);

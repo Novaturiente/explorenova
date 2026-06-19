@@ -2,7 +2,7 @@ use super::node::{Node, NodeId, NodeKind};
 use crate::sort::{sort_children, SortState};
 use std::fs;
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
 /// Quick probe: does `dir` contain at least one entry that survives the
@@ -189,6 +189,73 @@ impl Arena {
         }
     }
 
+    /// Find the node id whose path equals `dir`, if loaded into the arena.
+    fn id_for_path(&self, dir: &Path) -> Option<NodeId> {
+        self.nodes.iter().position(|n| n.path == dir)
+    }
+
+    /// Re-read `dir`'s children from disk in place. Surviving paths keep
+    /// their existing node id (and loaded subtree + expanded state); new
+    /// paths get fresh nodes; removed paths are dropped from the children
+    /// list (their slots orphan). Returns false if `dir` isn't in the
+    /// arena (caller should fall back to a full rebuild). Idempotent.
+    pub fn reload_dir(&mut self, dir: &Path) -> bool {
+        let Some(id) = self.id_for_path(dir) else { return false; };
+        // Only reload a dir we'd already loaded; an unloaded (collapsed,
+        // never-expanded) dir has no children to refresh.
+        if self.nodes[id].children.is_none() {
+            return true;
+        }
+        let depth = self.nodes[id].depth + 1;
+        let show_hidden = self.show_hidden;
+        let entries: Vec<PathBuf> = match fs::read_dir(dir) {
+            Ok(rd) => rd
+                .filter_map(Result::ok)
+                .map(|e| e.path())
+                .filter(|p| {
+                    show_hidden
+                        || !p.file_name()
+                            .and_then(|n| n.to_str())
+                            .map(|n| n.starts_with('.'))
+                            .unwrap_or(false)
+                })
+                .collect(),
+            Err(_) => return true, // unreadable now (e.g. perms): leave as-is
+        };
+        // Index existing children by path so survivors keep their id.
+        let existing: Vec<NodeId> =
+            self.nodes[id].children.take().unwrap_or_default();
+        let mut by_path: std::collections::HashMap<PathBuf, NodeId> =
+            existing.iter().map(|&c| (self.nodes[c].path.clone(), c)).collect();
+        let mut new_children: Vec<NodeId> = Vec::with_capacity(entries.len());
+        for p in entries {
+            if let Some(cid) = by_path.remove(&p) {
+                // Survivor: refresh its own metadata, keep subtree/expanded.
+                let (kind, exec, size, mtime, mode) = Self::classify(&p);
+                let n = &mut self.nodes[cid];
+                n.kind = kind;
+                n.exec = exec;
+                n.size = size;
+                n.mtime = mtime;
+                n.mode = mode;
+                new_children.push(cid);
+            } else {
+                let (kind, exec, size, mtime, mode) = Self::classify(&p);
+                let mut node = Node::new(p.clone(), kind, depth, Some(id));
+                node.exec = exec;
+                node.size = size;
+                node.mtime = mtime;
+                node.mode = mode;
+                self.nodes.push(node);
+                new_children.push(self.nodes.len() - 1);
+            }
+        }
+        // Any ids left in `by_path` were removed on disk → orphaned.
+        sort_children(&mut new_children, &self.nodes, &self.sort);
+        self.nodes[id].children = Some(new_children);
+        true
+    }
+
     /// Expand every ancestor of `target` path so it becomes visible. Returns its id.
     pub fn reveal(&mut self, target: &Path) -> io::Result<Option<NodeId>> {
         let root_path = self.nodes[self.root].path.clone();
@@ -371,6 +438,57 @@ mod tests {
             .iter().copied().find(|&c| a.nodes[c].path.ends_with("sub")).unwrap();
         a.probe_empty(&[sub]);
         assert_eq!(a.nodes[sub].empty, Some(false), "sub has inner.txt → not empty");
+    }
+
+    #[test]
+    fn reload_dir_picks_up_new_and_removed_entries() {
+        let d = tempdir().unwrap();
+        fs::write(d.path().join("a.txt"), "x").unwrap();
+        let mut a = Arena::new(d.path()).unwrap();
+        assert_eq!(a.nodes[a.root].children.as_ref().unwrap().len(), 1);
+
+        // create a new file + remove the old one on disk
+        fs::write(d.path().join("b.txt"), "y").unwrap();
+        fs::remove_file(d.path().join("a.txt")).unwrap();
+
+        assert!(a.reload_dir(d.path()));
+        let names: Vec<String> = a.nodes[a.root].children.as_ref().unwrap()
+            .iter().map(|&c| a.nodes[c].path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.contains(&"b.txt".to_string()), "new file picked up");
+        assert!(!names.contains(&"a.txt".to_string()), "removed file dropped");
+    }
+
+    #[test]
+    fn reload_dir_preserves_expanded_subtree() {
+        let d = tempdir().unwrap();
+        fs::create_dir(d.path().join("sub")).unwrap();
+        fs::write(d.path().join("sub/inner.txt"), "x").unwrap();
+        let mut a = Arena::new(d.path()).unwrap();
+        let sub = a.nodes[a.root].children.as_ref().unwrap()
+            .iter().copied().find(|&c| a.nodes[c].path.ends_with("sub")).unwrap();
+        a.expand(sub).unwrap();
+        let sub_id_before = sub;
+        assert!(a.nodes[sub_id_before].expanded);
+
+        // add a sibling file in root, then reload root
+        fs::write(d.path().join("z.txt"), "z").unwrap();
+        assert!(a.reload_dir(d.path()));
+
+        // "sub" keeps its id and stays expanded with its loaded child
+        let sub_after = a.nodes[a.root].children.as_ref().unwrap()
+            .iter().copied().find(|&c| a.nodes[c].path.ends_with("sub")).unwrap();
+        assert_eq!(sub_after, sub_id_before, "surviving dir keeps its node id");
+        assert!(a.nodes[sub_after].expanded, "expanded state preserved");
+        assert!(a.nodes[sub_after].children.is_some(), "loaded subtree preserved");
+    }
+
+    #[test]
+    fn reload_dir_returns_false_for_unknown_path() {
+        let d = tempdir().unwrap();
+        let a_root = Arena::new(d.path()).unwrap();
+        let mut a = a_root;
+        assert!(!a.reload_dir(Path::new("/nonexistent/elsewhere")));
     }
 
     #[cfg(unix)]

@@ -150,6 +150,46 @@ pub fn refresh_in_place(app: &mut App, git_tx: &mpsc::Sender<()>) {
     let _ = git_tx.send(());
 }
 
+/// Incrementally refresh only the directories whose contents changed.
+/// Reloads each in place (preserving expansion/subtrees elsewhere),
+/// re-flattens once, restores the cursor by path, and re-triggers git.
+/// Falls back to a full `refresh_in_place` if any changed dir isn't in
+/// the arena (e.g. a change above the current root).
+pub fn refresh_dirs(app: &mut App, dirs: &[std::path::PathBuf], git_tx: &mpsc::Sender<()>) {
+    let sel_path = app
+        .visible
+        .get(app.selected)
+        .map(|&id| app.arena.nodes[id].path.clone());
+    let mut all_known = true;
+    for d in dirs {
+        if !app.arena.reload_dir(d) {
+            all_known = false;
+            break;
+        }
+    }
+    if !all_known {
+        refresh_in_place(app, git_tx);
+        return;
+    }
+    app.visible = app.arena.flatten();
+    app.selected = 0;
+    if let Some(mut p) = sel_path {
+        loop {
+            if app.navigate_to(&p) {
+                break;
+            }
+            match p.parent() {
+                Some(parent) if parent != p.as_path() => p = parent.to_path_buf(),
+                _ => break,
+            }
+        }
+    }
+    if !app.visible.is_empty() && app.selected >= app.visible.len() {
+        app.selected = app.visible.len() - 1;
+    }
+    let _ = git_tx.send(());
+}
+
 /// Re-root to the parent of the current arena root, leaving the cursor
 /// on the directory we just ascended out of. No-op at filesystem root.
 pub fn ascend(app: &mut App) {
@@ -583,6 +623,7 @@ fn text_input_enter(app: &mut App, start: &Path, git_tx: &mpsc::Sender<()>) {
         Mode::Input => match app.pending.take() {
             Some(Action::Rename) => {
                 let np = app.commit_rename();
+                app.mark_self_write([app.arena.nodes[app.arena.root].path.clone()]);
                 refresh_in_place(app, git_tx);
                 if let Some(p) = np {
                     app.navigate_to(&p);
@@ -590,6 +631,7 @@ fn text_input_enter(app: &mut App, start: &Path, git_tx: &mpsc::Sender<()>) {
             }
             Some(Action::Create) => {
                 let np = app.commit_create();
+                app.mark_self_write([app.arena.nodes[app.arena.root].path.clone()]);
                 refresh_in_place(app, git_tx);
                 if let Some(p) = np {
                     app.navigate_to(&p);
@@ -695,6 +737,7 @@ fn handle_confirm_key(app: &mut App, k: &KeyEvent, git_tx: &mpsc::Sender<()>) {
             // confirm_yes lives in app.rs and can't see git_tx —
             // refresh from here so the freshly unlinked entries drop
             // out of the tree at once.
+            app.mark_self_write([app.arena.nodes[app.arena.root].path.clone()]);
             refresh_in_place(app, git_tx);
         }
         _ => {
@@ -971,6 +1014,7 @@ fn trash_targets(app: &mut App, git_tx: &mpsc::Sender<()>) {
     };
     app.set_status(msg);
     app.marks.clear();
+    app.mark_self_write([app.arena.nodes[app.arena.root].path.clone()]);
     refresh_in_place(app, git_tx);
 }
 
