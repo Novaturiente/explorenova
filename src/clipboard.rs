@@ -1,45 +1,22 @@
 //! Write file paths to the system clipboard so the user can paste them
-//! into browsers, other file managers, chat apps, etc. Detects Wayland
-//! (`wl-copy`) vs X11 (`xclip`) at runtime and falls through cleanly
-//! when neither tool is available.
+//! into terminals, editors, or other apps. Detects Wayland (`wl-copy`)
+//! vs X11 (`xclip`) at runtime and falls through cleanly when neither
+//! tool is available.
 //!
-//! Format: newline-separated `file://` URIs. Most apps consume this as
-//! either a uri-list or as plain text. Multi-MIME advertisement (e.g.
-//! `x-special/gnome-copied-files`) is intentionally out of scope —
-//! single representation keeps the helper portable.
+//! Format: plain newline-separated absolute paths (no `file://` prefix,
+//! no percent-encoding). Pasting into a terminal or editor yields the
+//! raw path directly.
 
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
-/// URL-encode path for use as the path portion of a file:// URI.
-/// Encodes characters outside [A-Za-z0-9._~-/] as percent-escapes.
-/// (Slashes survive — they delimit segments and don't need encoding.)
-fn encode_path(p: &Path) -> String {
-    let s = p.to_string_lossy();
-    let mut out = String::with_capacity(s.len());
-    for b in s.bytes() {
-        let safe = b.is_ascii_alphanumeric()
-            || matches!(b, b'.' | b'_' | b'~' | b'-' | b'/');
-        if safe {
-            out.push(b as char);
-        } else {
-            out.push_str(&format!("%{b:02X}"));
-        }
-    }
-    out
-}
-
 fn build_payload(paths: &[PathBuf]) -> String {
-    let mut s = String::new();
-    for (i, p) in paths.iter().enumerate() {
-        if i > 0 {
-            s.push('\n');
-        }
-        s.push_str("file://");
-        s.push_str(&encode_path(p));
-    }
-    s
+    paths
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn write_to(cmd: &mut Command, payload: &str) -> std::io::Result<()> {
@@ -87,7 +64,6 @@ pub fn copy_paths(paths: &[PathBuf]) -> anyhow::Result<usize> {
 
     if wayland {
         let mut c = Command::new("wl-copy");
-        c.args(["--type", "text/uri-list"]);
         match write_to(&mut c, &payload) {
             Ok(()) => return Ok(paths.len()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -99,7 +75,7 @@ pub fn copy_paths(paths: &[PathBuf]) -> anyhow::Result<usize> {
 
     if x11 {
         let mut c = Command::new("xclip");
-        c.args(["-selection", "clipboard", "-t", "text/uri-list", "-i"]);
+        c.args(["-selection", "clipboard", "-i"]);
         match write_to(&mut c, &payload) {
             Ok(()) => return Ok(paths.len()),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -117,28 +93,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn encode_preserves_safe_chars() {
-        let s = encode_path(Path::new("/home/u/Pictures/cat.png"));
-        assert_eq!(s, "/home/u/Pictures/cat.png");
-    }
-
-    #[test]
-    fn encode_percent_escapes_spaces_and_unicode() {
-        let s = encode_path(Path::new("/tmp/My File.txt"));
-        assert_eq!(s, "/tmp/My%20File.txt");
-
-        // Unicode (em-dash) → multi-byte percent-encoded
-        let s2 = encode_path(Path::new("/tmp/a—b.txt"));
-        assert!(s2.starts_with("/tmp/a%E2%80%94b.txt"));
-    }
-
-    #[test]
-    fn payload_joins_with_newlines_and_file_scheme() {
+    fn payload_is_plain_newline_joined_paths() {
         let p = build_payload(&[
             PathBuf::from("/a/b"),
             PathBuf::from("/c with space"),
         ]);
-        assert_eq!(p, "file:///a/b\nfile:///c%20with%20space");
+        assert_eq!(p, "/a/b\n/c with space");
+    }
+
+    #[test]
+    fn payload_single_path_has_no_trailing_newline() {
+        let p = build_payload(&[PathBuf::from("/home/u/x.txt")]);
+        assert_eq!(p, "/home/u/x.txt");
     }
 
     #[test]
