@@ -30,6 +30,9 @@ pub enum OpMsg {
     Progress(u64, u64),
     /// `Ok(status_text)` on success, `Err(error_text)` on failure.
     Finished(Result<String, String>),
+    /// The worker's actual destination for the first item, so the cursor
+    /// lands on the real pasted file even when a name collision renamed it.
+    Reveal(PathBuf),
 }
 
 pub struct OpState {
@@ -57,6 +60,9 @@ impl OpState {
                 OpMsg::Progress(d, t) => {
                     self.done_bytes = d;
                     self.total_bytes = t;
+                }
+                OpMsg::Reveal(p) => {
+                    self.reveal_hint = Some(p);
                 }
                 OpMsg::Finished(r) => {
                     self.finished = Some(r);
@@ -116,12 +122,19 @@ pub fn spawn_paste(srcs: Vec<PathBuf>, dst_dir: PathBuf, mode: PasteMode) -> OpS
         let mut done = 0u64;
         let mut failed: Vec<String> = Vec::new();
         let mut claimed: std::collections::HashSet<std::path::PathBuf> = std::collections::HashSet::new();
+        let mut first = true;
         for src in &srcs_for_worker {
             let Some(fname) = src.file_name() else {
                 failed.push(src.display().to_string());
                 continue;
             };
             let dst = crate::fs_ops::claim_dest(&dst_for_worker, fname, &mut claimed);
+            if first {
+                // Report the real first destination so the post-op cursor
+                // lands on the actual (possibly renamed) pasted file.
+                let _ = tx.send(OpMsg::Reveal(dst.clone()));
+                first = false;
+            }
             let src_size = size_of(src);
             let base_done = done;
             let result: Result<(), String> = match mode {

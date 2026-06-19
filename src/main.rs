@@ -275,8 +275,18 @@ fn main() -> Result<()> {
                     app.navigate_to(&target);
                 }
                 let msg = match res {
-                    Ok(s) => s,
-                    Err(e) => format!("op failed: {e}"),
+                    Ok(s) => {
+                        app.cut_restore = None; // move succeeded; drop the stash
+                        s
+                    }
+                    Err(e) => {
+                        // Move failed — sources still exist; restore the cut
+                        // clipboard so the user can retry.
+                        if let Some(c) = app.cut_restore.take() {
+                            app.clipboard = Some(c);
+                        }
+                        format!("op failed: {e}")
+                    }
                 };
                 app.set_status(msg);
             }

@@ -1122,6 +1122,8 @@ fn paste(app: &mut App, cwd: &Path) {
     // behaviour where moved sources became unreachable post-paste).
     // Capture src list before moving into worker.
     if is_cut {
+        // Stash the cut so it can be restored if the move fails.
+        app.cut_restore = Some((srcs.clone(), true));
         app.clipboard = None;
         for p in &srcs {
             app.marks.remove(p);

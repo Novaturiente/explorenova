@@ -28,6 +28,12 @@ pub fn truncate_left(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         return s.to_string();
     }
+    // Below 2 cols the "…/" prefix wouldn't fit; return the bare tail so
+    // the result never exceeds `max`.
+    if max < 2 {
+        let total = s.chars().count();
+        return s.chars().skip(total.saturating_sub(max)).collect();
+    }
     let keep = max.saturating_sub(2);
     // Byte-safe truncation: skip from the start by char count.
     let mut t = String::with_capacity(max + 2);
@@ -211,6 +217,14 @@ mod tests {
         assert!(t.starts_with("…/"));
         assert!(t.ends_with("src/app.rs"));
         assert!(t.chars().count() <= 20);
+    }
+
+    #[test]
+    fn truncate_left_tiny_width_never_overflows() {
+        // Below 2 cols there's no room for "…/"; result must still fit.
+        assert!(truncate_left("/long/path", 1).chars().count() <= 1);
+        assert!(truncate_left("/long/path", 0).is_empty());
+        assert!(truncate_left("/long/path", 2).chars().count() <= 2);
     }
 
     #[test]

@@ -61,6 +61,9 @@ pub struct App {
     pub config: Config,
     pub state: State,
     pub clipboard: Option<(Vec<PathBuf>, bool)>, // (paths, is_cut) — batch (shared across tabs)
+    /// A cut clipboard stashed while its move is in flight, restored if the
+    /// move fails so the user can retry without re-selecting the sources.
+    pub cut_restore: Option<(Vec<PathBuf>, bool)>,
     pub marks: BTreeSet<PathBuf>,
     pub status: String,
     pub should_quit: bool,
@@ -138,6 +141,7 @@ impl App {
             config,
             state,
             clipboard: None,
+            cut_restore: None,
             marks: BTreeSet::new(),
             status: String::new(),
             should_quit: false,
