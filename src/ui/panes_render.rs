@@ -212,7 +212,11 @@ pub fn render_pane_preview(
     // Heavy types (archive/pdf/video/xlsx/avif) wait longer so scrolling
     // past them never triggers their blocking generation. Cached entries
     // short-circuit so revisited paths are instant.
-    let debounce_ms = crate::preview::settle_ms(&path) as u128;
+    let debounce_ms = crate::preview::settle_ms(
+        &path,
+        app.config.preview.settle_cheap_ms,
+        app.config.preview.settle_heavy_ms,
+    ) as u128;
     let elapsed = app.cursor_moved_at.elapsed().as_millis() >= debounce_ms;
     let cached = cache.contains(&path);
     if !(elapsed || cached) {

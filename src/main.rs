@@ -315,7 +315,11 @@ fn main() -> Result<()> {
         let preview_debounce_ms = app
             .visible
             .get(app.selected)
-            .map(|&id| explorenova::preview::settle_ms(&app.arena.nodes[id].path))
+            .map(|&id| explorenova::preview::settle_ms(
+                &app.arena.nodes[id].path,
+                app.config.preview.settle_cheap_ms,
+                app.config.preview.settle_heavy_ms,
+            ))
             .unwrap_or(150);
         let poll_ms = {
             let elapsed = app.cursor_moved_at.elapsed().as_millis() as u64;

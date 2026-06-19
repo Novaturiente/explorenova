@@ -35,9 +35,7 @@ const IMAGE_EXTS: &[&str] =
 /// archive) block the UI thread while they run, so they get a longer
 /// settle — scrolling past them never triggers the expensive work; only
 /// resting on one does.
-pub fn settle_ms(path: &Path) -> u64 {
-    const CHEAP_MS: u64 = 150;
-    const HEAVY_MS: u64 = 400;
+pub fn settle_ms(path: &Path, cheap_ms: u64, heavy_ms: u64) -> u64 {
     let ext = ext_lower(path);
     let heavy = ext == "pdf"
         || ext == "avif"
@@ -45,9 +43,9 @@ pub fn settle_ms(path: &Path) -> u64 {
         || xlsx::is_spreadsheet(&ext)
         || archive::is_archive(&ext);
     if heavy {
-        HEAVY_MS
+        heavy_ms
     } else {
-        CHEAP_MS
+        cheap_ms
     }
 }
 
@@ -150,25 +148,29 @@ pub struct PreviewCache {
     in_flight: HashSet<(PathBuf, SystemTime)>,
     /// Insertion order, for FIFO eviction once `CACHE_CAP` is reached.
     order: std::collections::VecDeque<(PathBuf, SystemTime)>,
+    /// Max cached entries before FIFO eviction (from config).
+    cap: usize,
     req_tx: Sender<(PathBuf, SystemTime, u64)>,
     res_rx: Receiver<((PathBuf, SystemTime), PreviewKind)>,
 }
 
 impl Default for PreviewCache {
     fn default() -> Self {
-        Self::new()
+        Self::with_cap(CACHE_CAP)
     }
 }
 
 impl PreviewCache {
     pub fn new() -> Self {
+        Self::with_cap(CACHE_CAP)
+    }
+
+    pub fn with_cap(cap: usize) -> Self {
+        let cap = if cap == 0 { CACHE_CAP } else { cap };
         let (req_tx, req_rx) = mpsc::channel::<(PathBuf, SystemTime, u64)>();
         let (res_tx, res_rx) = mpsc::channel();
         std::thread::spawn(move || {
             while let Ok((path, mtime, max_bytes)) = req_rx.recv() {
-                // Isolate a panicking render (e.g. a malformed file tripping
-                // a decoder) so one bad file never kills the worker and
-                // wedges every future preview at "(loading…)".
                 let kind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     render(&path, max_bytes)
                 }))
@@ -183,6 +185,7 @@ impl PreviewCache {
             map: HashMap::new(),
             in_flight: HashSet::new(),
             order: std::collections::VecDeque::new(),
+            cap,
             req_tx,
             res_rx,
         }
@@ -224,7 +227,7 @@ impl PreviewCache {
             if self.map.insert(key.clone(), kind).is_none() {
                 // New key: track for FIFO eviction and trim if over cap.
                 self.order.push_back(key);
-                while self.order.len() > CACHE_CAP {
+                while self.order.len() > self.cap {
                     if let Some(old) = self.order.pop_front() {
                         self.map.remove(&old);
                     }
@@ -282,13 +285,21 @@ mod tests {
 
     #[test]
     fn heavy_types_get_longer_settle_than_cheap() {
-        // Cheap previews settle fast; heavy (subprocess/parse) types wait
-        // longer so scrolling past them doesn't trigger the blocking work.
-        let cheap = settle_ms(Path::new("notes.txt"));
-        assert_eq!(cheap, settle_ms(Path::new("photo.png")));
-        for heavy in ["doc.pdf", "bundle.zip", "sheet.xlsx", "clip.mp4", "img.avif"] {
-            assert!(settle_ms(Path::new(heavy)) > cheap, "{heavy} should be heavy");
+        let cheap = settle_ms(Path::new("notes.txt"), 150, 400);
+        assert_eq!(cheap, 150);
+        assert_eq!(cheap, settle_ms(Path::new("photo.png"), 150, 400));
+        for heavy in ["doc.pdf", "clip.mp4", "book.avif", "sheet.xlsx", "bundle.tar.gz"] {
+            assert!(settle_ms(Path::new(heavy), 150, 400) > cheap, "{heavy} should be heavy");
         }
+        // custom values are honored
+        assert_eq!(settle_ms(Path::new("notes.txt"), 50, 900), 50);
+        assert_eq!(settle_ms(Path::new("doc.pdf"), 50, 900), 900);
+    }
+
+    #[test]
+    fn cache_respects_configured_cap() {
+        let c = PreviewCache::with_cap(2);
+        assert_eq!(c.cap, 2);
     }
 
     #[test]
