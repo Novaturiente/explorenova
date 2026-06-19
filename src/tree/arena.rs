@@ -189,9 +189,21 @@ impl Arena {
         }
     }
 
-    /// Find the node id whose path equals `dir`, if loaded into the arena.
+    /// Resolve `dir` to its node id, considering only nodes reachable
+    /// from the root via `children`. This skips orphaned slots (left by
+    /// `reload_dir` when an entry is removed) so a recreated dir of the
+    /// same path never resolves to a dead node.
     fn id_for_path(&self, dir: &Path) -> Option<NodeId> {
-        self.nodes.iter().position(|n| n.path == dir)
+        let mut stack = vec![self.root];
+        while let Some(id) = stack.pop() {
+            if self.nodes[id].path == dir {
+                return Some(id);
+            }
+            if let Some(ch) = &self.nodes[id].children {
+                stack.extend(ch.iter().copied());
+            }
+        }
+        None
     }
 
     /// Re-read `dir`'s children from disk in place. Surviving paths keep
@@ -519,5 +531,34 @@ mod tests {
             .unwrap();
         assert!(run.exec);
         assert!(!plain.exec);
+    }
+
+    #[test]
+    fn reload_dir_ignores_orphaned_same_path_node() {
+        let d = tempdir().unwrap();
+        let subp = d.path().join("sub");
+        fs::create_dir(&subp).unwrap();
+        let mut a = Arena::new(d.path()).unwrap();
+        // expand sub so it becomes a loaded (children=Some) node
+        let sub = a.nodes[a.root].children.as_ref().unwrap().iter().copied()
+            .find(|&c| a.nodes[c].path == subp).unwrap();
+        a.expand(sub).unwrap();
+        // delete sub on disk, reload root → old sub node orphaned
+        std::fs::remove_dir_all(&subp).unwrap();
+        assert!(a.reload_dir(d.path()));
+        // recreate sub, reload root → fresh sub node at a higher index
+        fs::create_dir(&subp).unwrap();
+        assert!(a.reload_dir(d.path()));
+        let live = a.nodes[a.root].children.as_ref().unwrap().iter().copied()
+            .find(|&c| a.nodes[c].path == subp).unwrap();
+        a.expand(live).unwrap(); // load the live node's children
+        // id_for_path must resolve to the LIVE node, not the orphan
+        assert_eq!(a.id_for_path(&subp), Some(live));
+        // and reload_dir on it picks up a new file
+        fs::write(subp.join("new.txt"), "1").unwrap();
+        assert!(a.reload_dir(&subp));
+        let has_new = a.nodes[live].children.as_ref().unwrap().iter()
+            .any(|&c| a.nodes[c].path.ends_with("new.txt"));
+        assert!(has_new, "live recreated dir must refresh, not the orphan");
     }
 }
