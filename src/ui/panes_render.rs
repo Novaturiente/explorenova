@@ -202,13 +202,15 @@ pub fn render_pane_preview(
         return;
     };
 
-    const PREVIEW_DEBOUNCE_MS: u128 = 150;
     let path = app.arena.nodes[id].path.clone();
 
-    // Settle gate: only do the (potentially expensive) get_or_render
-    // call once the cursor has been on this row for >= 150ms. Cached
-    // entries short-circuit so revisited paths are instant.
-    let elapsed = app.cursor_moved_at.elapsed().as_millis() >= PREVIEW_DEBOUNCE_MS;
+    // Settle gate: only do the (potentially expensive) get_or_render call
+    // once the cursor has rested on this row for the type's settle delay.
+    // Heavy types (archive/pdf/video/xlsx/avif) wait longer so scrolling
+    // past them never triggers their blocking generation. Cached entries
+    // short-circuit so revisited paths are instant.
+    let debounce_ms = crate::preview::settle_ms(&path) as u128;
+    let elapsed = app.cursor_moved_at.elapsed().as_millis() >= debounce_ms;
     let cached = cache.contains(&path);
     if !(elapsed || cached) {
         f.render_widget(Paragraph::new("(loading…)"), inner);

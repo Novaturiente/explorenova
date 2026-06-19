@@ -27,6 +27,29 @@ fn ext_lower(p: &Path) -> String {
 const IMAGE_EXTS: &[&str] =
     &["png", "jpg", "jpeg", "gif", "webp", "bmp", "ico", "tiff", "tif"];
 
+/// Settle delay (ms) before generating a preview for `path`, used by the
+/// UI debounce gate. Cheap previews (text, dir, plain image) are ready
+/// fast, so a short delay keeps browsing responsive. Heavy previews that
+/// spawn a subprocess or parse a container (pdf, avif, video, spreadsheet,
+/// archive) block the UI thread while they run, so they get a longer
+/// settle — scrolling past them never triggers the expensive work; only
+/// resting on one does.
+pub fn settle_ms(path: &Path) -> u64 {
+    const CHEAP_MS: u64 = 150;
+    const HEAVY_MS: u64 = 400;
+    let ext = ext_lower(path);
+    let heavy = ext == "pdf"
+        || ext == "avif"
+        || media::is_video(&ext)
+        || xlsx::is_spreadsheet(&ext)
+        || archive::is_archive(&ext);
+    if heavy {
+        HEAVY_MS
+    } else {
+        CHEAP_MS
+    }
+}
+
 /// Replace tabs with four spaces and strip every other ASCII control
 /// char (NUL, BS, ESC, BEL, …). Without this, raw control bytes in
 /// archive filenames or xlsx cells leak to the terminal as cursor
@@ -188,6 +211,17 @@ mod tests {
         let f = d.path().join("big.txt");
         fs::write(&f, vec![b'x'; 2048]).unwrap();
         assert!(matches!(render(&f, 100), PreviewKind::Meta(_)));
+    }
+
+    #[test]
+    fn heavy_types_get_longer_settle_than_cheap() {
+        // Cheap previews settle fast; heavy (subprocess/parse) types wait
+        // longer so scrolling past them doesn't trigger the blocking work.
+        let cheap = settle_ms(Path::new("notes.txt"));
+        assert_eq!(cheap, settle_ms(Path::new("photo.png")));
+        for heavy in ["doc.pdf", "bundle.zip", "sheet.xlsx", "clip.mp4", "img.avif"] {
+            assert!(settle_ms(Path::new(heavy)) > cheap, "{heavy} should be heavy");
+        }
     }
 
     #[test]

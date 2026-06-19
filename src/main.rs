@@ -256,10 +256,17 @@ fn main() -> Result<()> {
             ui::render_frame(f, &mut app, &mut preview_cache, &mut picker, &mut img_cache, &keymap)
         })?;
 
-        const PREVIEW_DEBOUNCE_MS: u64 = 150;
+        // Wake the loop exactly when the current row's preview settle
+        // expires, so the (debounced) preview renders without an extra
+        // keypress. Per-type so heavy previews wait their longer settle.
+        let preview_debounce_ms = app
+            .visible
+            .get(app.selected)
+            .map(|&id| explorenova::preview::settle_ms(&app.arena.nodes[id].path))
+            .unwrap_or(150);
         let poll_ms = {
             let elapsed = app.cursor_moved_at.elapsed().as_millis() as u64;
-            let remaining = PREVIEW_DEBOUNCE_MS.saturating_sub(elapsed);
+            let remaining = preview_debounce_ms.saturating_sub(elapsed);
             // 200ms is the existing default; never wait longer than that
             // (so fs/git channels still get drained promptly).
             // When debounce is already past, remaining == 0 and we use 200.
