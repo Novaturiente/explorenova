@@ -252,6 +252,15 @@ fn main() -> Result<()> {
         }
 
         app.refresh_disk_free();
+        // Lazily probe empty-dir markers only for the on-screen window,
+        // so the marker survives without an O(tree) read_dir storm.
+        if let Ok(sz) = term.size() {
+            let win = sz.height as usize;
+            let start = app.selected.saturating_sub(win);
+            let end = (app.selected + win).min(app.visible.len());
+            let ids: Vec<usize> = app.visible[start..end].to_vec();
+            app.arena.probe_empty(&ids);
+        }
         term.draw(|f| {
             ui::render_frame(f, &mut app, &mut preview_cache, &mut picker, &mut img_cache, &keymap)
         })?;

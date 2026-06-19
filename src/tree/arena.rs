@@ -119,7 +119,6 @@ impl Arena {
                         .unwrap_or(false)
             })
             .collect();
-        let show_hidden = self.show_hidden;
         let mut child_ids = Vec::with_capacity(entries.len());
         for p in entries {
             let (kind, exec, size, mtime, mode) = Self::classify(&p);
@@ -128,9 +127,6 @@ impl Arena {
             node.size = size;
             node.mtime = mtime;
             node.mode = mode;
-            if matches!(kind, NodeKind::Dir) {
-                node.empty = Some(dir_is_empty(&p, show_hidden));
-            }
             self.nodes.push(node);
             child_ids.push(self.nodes.len() - 1);
         }
@@ -158,6 +154,20 @@ impl Arena {
             self.expand(id)?;
         }
         Ok(())
+    }
+
+    /// Lazily fill the empty-dir marker for the given node ids. Only dirs
+    /// with an unknown (`None`) marker are probed; idempotent and cheap.
+    /// Callers pass the on-screen window so cost is O(viewport), not O(tree).
+    pub fn probe_empty(&mut self, ids: &[NodeId]) {
+        let show_hidden = self.show_hidden;
+        for &id in ids {
+            let n = &self.nodes[id];
+            if n.is_dir() && n.empty.is_none() {
+                let empty = dir_is_empty(&n.path, show_hidden);
+                self.nodes[id].empty = Some(empty);
+            }
+        }
     }
 
     /// DFS over expanded nodes -> visible NodeId list (root first).
@@ -295,8 +305,9 @@ mod tests {
         fs::create_dir(d.path().join("hollow")).unwrap();
         fs::create_dir(d.path().join("solid")).unwrap();
         fs::write(d.path().join("solid/x"), "x").unwrap();
-        let a = Arena::new(d.path()).unwrap();
-        let kids = a.nodes[a.root].children.as_ref().unwrap();
+        let mut a = Arena::new(d.path()).unwrap();
+        let kids = a.nodes[a.root].children.as_ref().unwrap().clone();
+        a.probe_empty(&kids);
         let hollow = kids
             .iter()
             .map(|&i| &a.nodes[i])
@@ -317,7 +328,9 @@ mod tests {
         let sub = d.path().join("dotonly");
         fs::create_dir(&sub).unwrap();
         fs::write(sub.join(".hidden"), "x").unwrap();
-        let a = Arena::new(d.path()).unwrap();
+        let mut a = Arena::new(d.path()).unwrap();
+        let kids = a.nodes[a.root].children.as_ref().unwrap().clone();
+        a.probe_empty(&kids);
         let n = a.nodes[a.root]
             .children
             .as_ref()
@@ -339,6 +352,25 @@ mod tests {
         let kids = a.nodes[a.root].children.as_ref().unwrap();
         let node = kids.iter().map(|&i| &a.nodes[i]).find(|n| n.path.ends_with("m.txt")).unwrap();
         assert_ne!(node.mode, 0, "mode bits should be captured at load");
+    }
+
+    #[test]
+    fn empty_not_probed_at_load() {
+        let d = fixture(); // has "sub" (non-empty) + files
+        let a = Arena::new(d.path()).unwrap();
+        let sub = a.nodes[a.root].children.as_ref().unwrap()
+            .iter().copied().find(|&c| a.nodes[c].path.ends_with("sub")).unwrap();
+        assert_eq!(a.nodes[sub].empty, None, "load must not eagerly probe emptiness");
+    }
+
+    #[test]
+    fn probe_empty_fills_marker() {
+        let d = fixture();
+        let mut a = Arena::new(d.path()).unwrap();
+        let sub = a.nodes[a.root].children.as_ref().unwrap()
+            .iter().copied().find(|&c| a.nodes[c].path.ends_with("sub")).unwrap();
+        a.probe_empty(&[sub]);
+        assert_eq!(a.nodes[sub].empty, Some(false), "sub has inner.txt → not empty");
     }
 
     #[cfg(unix)]
