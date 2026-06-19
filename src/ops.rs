@@ -115,12 +115,13 @@ pub fn spawn_paste(srcs: Vec<PathBuf>, dst_dir: PathBuf, mode: PasteMode) -> OpS
         let _ = tx.send(OpMsg::Progress(0, total));
         let mut done = 0u64;
         let mut failed: Vec<String> = Vec::new();
+        let mut claimed: std::collections::HashSet<std::path::PathBuf> = std::collections::HashSet::new();
         for src in &srcs_for_worker {
             let Some(fname) = src.file_name() else {
                 failed.push(src.display().to_string());
                 continue;
             };
-            let dst = unique_dest(&dst_for_worker, fname);
+            let dst = crate::fs_ops::claim_dest(&dst_for_worker, fname, &mut claimed);
             let src_size = size_of(src);
             let base_done = done;
             let result: Result<(), String> = match mode {

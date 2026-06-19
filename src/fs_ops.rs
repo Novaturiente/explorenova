@@ -56,6 +56,35 @@ pub fn unique_dest(dir: &Path, file_name: &std::ffi::OsStr) -> PathBuf {
     unreachable!()
 }
 
+/// Like [`unique_dest`] but also avoids any path already in `claimed`,
+/// so a batch of pastes sharing a stem don't resolve to the same name.
+/// Inserts the chosen path into `claimed` before returning.
+pub fn claim_dest(
+    dir: &Path,
+    file_name: &std::ffi::OsStr,
+    claimed: &mut std::collections::HashSet<PathBuf>,
+) -> PathBuf {
+    let taken = |p: &Path| p.exists() || claimed.contains(p);
+    let direct = dir.join(file_name);
+    let chosen = if !taken(&direct) {
+        direct
+    } else {
+        let name = Path::new(file_name);
+        let stem = name.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+        let ext = name.extension().map(|e| format!(".{}", e.to_string_lossy())).unwrap_or_default();
+        let mut i = 1u64;
+        loop {
+            let cand = dir.join(format!("{stem} ({i}){ext}"));
+            if !taken(&cand) {
+                break cand;
+            }
+            i += 1;
+        }
+    };
+    claimed.insert(chosen.clone());
+    chosen
+}
+
 /// True when `dst_dir` is `src` itself or a descendant of it — pasting
 /// there would move/copy a directory into itself. `starts_with` on a
 /// component basis already covers the equality case.
@@ -301,6 +330,20 @@ mod tests {
         let p = Path::new("/tmp/bar.zip");
         let d = extract_dest_for(p);
         assert_eq!(d, PathBuf::from("/tmp/bar"));
+    }
+
+    #[test]
+    fn claim_dest_avoids_already_claimed() {
+        use std::collections::HashSet;
+        use std::ffi::OsStr;
+        let d = tempdir().unwrap();
+        let mut claimed: HashSet<std::path::PathBuf> = HashSet::new();
+        // Nothing on disk; two claims of the same name must differ.
+        let a = claim_dest(d.path(), OsStr::new("f.txt"), &mut claimed);
+        let b = claim_dest(d.path(), OsStr::new("f.txt"), &mut claimed);
+        assert_ne!(a, b, "second claim must not collide with the first");
+        assert_eq!(a.file_name().unwrap(), "f.txt");
+        assert_eq!(b.file_name().unwrap(), "f (1).txt");
     }
 
     #[test]
