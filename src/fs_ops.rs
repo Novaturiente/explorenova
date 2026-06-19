@@ -64,8 +64,25 @@ pub fn paste_would_recurse(src: &Path, dst_dir: &Path) -> bool {
 }
 
 pub fn rename(path: &Path, new_name: &str) -> io::Result<PathBuf> {
+    if new_name.is_empty()
+        || new_name == "."
+        || new_name == ".."
+        || new_name.contains('/')
+        || new_name.contains(std::path::MAIN_SEPARATOR)
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "name must be a single path component",
+        ));
+    }
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let np = parent.join(new_name);
+    if np.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            "a file with that name already exists",
+        ));
+    }
     fs::rename(path, &np)?;
     Ok(np)
 }

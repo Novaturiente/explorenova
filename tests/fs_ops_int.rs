@@ -78,3 +78,25 @@ fn rename_changes_name() {
     assert!(np.exists());
     assert!(!p.exists());
 }
+
+#[test]
+fn rename_refuses_existing_target() {
+    let d = tempdir().unwrap();
+    let a = d.path().join("a.txt");
+    let b = d.path().join("b.txt");
+    fs::write(&a, "1").unwrap();
+    fs::write(&b, "2").unwrap();
+    let r = rename(&a, "b.txt");
+    assert!(r.is_err(), "renaming onto an existing name must error");
+    assert_eq!(fs::read_to_string(&b).unwrap(), "2", "target must be untouched");
+}
+
+#[test]
+fn rename_refuses_path_separator() {
+    let d = tempdir().unwrap();
+    let p = d.path().join("a.txt");
+    fs::write(&p, "1").unwrap();
+    assert!(rename(&p, "sub/a.txt").is_err());
+    assert!(rename(&p, "").is_err());
+    assert!(rename(&p, "..").is_err());
+}
