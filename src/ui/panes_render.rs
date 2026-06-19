@@ -88,7 +88,7 @@ pub fn render_pane_tree(
                 theme,
                 app.config.icons,
                 marks_ref.contains(path),
-                cut_paths.map_or(false, |ps| ps.iter().any(|p| p == path)),
+                cut_paths.is_some_and(|ps| ps.iter().any(|p| p == path)),
                 inner_w,
             ))
         })

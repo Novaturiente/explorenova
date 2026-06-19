@@ -6,6 +6,7 @@ use ratatui::text::{Line, Span};
 /// Build a styled line for one visible tree row. `width` is the inner
 /// width of the tree pane (i.e. `area.width - 2`); the git glyph is
 /// padded out to that width so it lands at the right edge of the row.
+#[allow(clippy::too_many_arguments)]
 pub fn tree_row<'a>(
     arena: &'a Arena,
     id: NodeId,
