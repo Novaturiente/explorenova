@@ -1043,6 +1043,13 @@ fn paste(app: &mut App, cwd: &Path) {
             }
         })
         .unwrap_or_else(|| cwd.to_path_buf());
+    if let Some(bad) = srcs.iter().find(|s| crate::fs_ops::paste_would_recurse(s, &dst_dir)) {
+        app.set_status(format!(
+            "can't paste {} into itself",
+            bad.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+        ));
+        return;
+    }
     let mode = if is_cut {
         crate::fs_ops::PasteMode::Move
     } else {

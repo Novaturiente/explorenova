@@ -56,6 +56,13 @@ pub fn unique_dest(dir: &Path, file_name: &std::ffi::OsStr) -> PathBuf {
     unreachable!()
 }
 
+/// True when `dst_dir` is `src` itself or a descendant of it — pasting
+/// there would move/copy a directory into itself. `starts_with` on a
+/// component basis already covers the equality case.
+pub fn paste_would_recurse(src: &Path, dst_dir: &Path) -> bool {
+    dst_dir.starts_with(src)
+}
+
 pub fn rename(path: &Path, new_name: &str) -> io::Result<PathBuf> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let np = parent.join(new_name);
@@ -277,5 +284,17 @@ mod tests {
         let p = Path::new("/tmp/bar.zip");
         let d = extract_dest_for(p);
         assert_eq!(d, PathBuf::from("/tmp/bar"));
+    }
+
+    #[test]
+    fn paste_recurse_detection() {
+        use std::path::Path;
+        // dst inside src → recursion
+        assert!(paste_would_recurse(Path::new("/a/foo"), Path::new("/a/foo")));
+        assert!(paste_would_recurse(Path::new("/a/foo"), Path::new("/a/foo/bar")));
+        // dst is the source's own parent (paste back into same dir) → OK
+        assert!(!paste_would_recurse(Path::new("/a/foo"), Path::new("/a")));
+        // unrelated → OK
+        assert!(!paste_would_recurse(Path::new("/a/foo"), Path::new("/b")));
     }
 }
