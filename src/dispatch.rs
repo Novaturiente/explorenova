@@ -948,7 +948,7 @@ fn trash_targets(app: &mut App, git_tx: &mpsc::Sender<()>) {
     for p in &targets {
         match crate::fs_ops::trash_path(p) {
             Ok(_) => ok += 1,
-            Err(_) => failed.push(p.display().to_string()),
+            Err(e) => failed.push(format!("{}: {e}", p.display())),
         }
     }
     let msg = if failed.is_empty() {
