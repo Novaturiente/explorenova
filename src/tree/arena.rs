@@ -238,6 +238,7 @@ impl Arena {
                 n.size = size;
                 n.mtime = mtime;
                 n.mode = mode;
+                n.empty = None;
                 new_children.push(cid);
             } else {
                 let (kind, exec, size, mtime, mode) = Self::classify(&p);

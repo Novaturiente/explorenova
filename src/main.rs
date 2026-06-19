@@ -259,7 +259,11 @@ fn main() -> Result<()> {
                 let state = app.op.take().unwrap();
                 let reveal = state.reveal_hint.clone();
                 let res = state.finished.unwrap();
-                app.mark_self_write([app.arena.nodes[app.arena.root].path.clone()]);
+                let mut dirs = vec![app.arena.nodes[app.arena.root].path.clone()];
+                if let Some(dst) = reveal.as_ref().and_then(|p| p.parent()) {
+                    dirs.push(dst.to_path_buf());
+                }
+                app.mark_self_write(dirs);
                 refresh_in_place(&mut app, &git_tx);
                 if let Some(target) = reveal {
                     app.navigate_to(&target);
