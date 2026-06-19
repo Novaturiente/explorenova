@@ -77,6 +77,9 @@ pub struct Config {
     pub preview: PreviewConfig,
     /// Debounce (ms) for coalescing filesystem-watch events before refresh.
     pub fs_refresh_debounce_ms: u64,
+    /// Raw `[theme]` table: field-name -> color string (or `preset`).
+    /// Parsed tolerantly into a `Theme` at startup; bad values warn, not fail.
+    pub theme: BTreeMap<String, String>,
 }
 
 impl Config {
@@ -197,5 +200,17 @@ mod tests {
         // absurd debounce is capped
         let (c, _) = Config::load_str("fs_refresh_debounce_ms = 999999\n");
         assert_eq!(c.fs_refresh_debounce_ms, 5000);
+    }
+
+    #[test]
+    fn theme_table_parses_into_map() {
+        let src = "[theme]\npreset = \"terminal\"\ndir = \"#102030\"\n";
+        let (c, err) = Config::load_str(src);
+        assert!(err.is_none());
+        assert_eq!(c.theme.get("preset").map(String::as_str), Some("terminal"));
+        assert_eq!(c.theme.get("dir").map(String::as_str), Some("#102030"));
+        // missing [theme] -> empty map, no error
+        let (c2, _) = Config::load_str("icons = true\n");
+        assert!(c2.theme.is_empty());
     }
 }
