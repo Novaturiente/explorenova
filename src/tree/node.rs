@@ -67,6 +67,8 @@ pub struct Node {
     pub empty: Option<bool>,
     pub size: u64,
     pub mtime: SystemTime,
+    /// Unix mode bits captured at load (0 on non-unix or unreadable).
+    pub mode: u32,
 }
 
 impl Node {
@@ -83,6 +85,7 @@ impl Node {
             empty: None,
             size: 0,
             mtime: SystemTime::UNIX_EPOCH,
+            mode: 0,
         }
     }
 

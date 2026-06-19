@@ -80,18 +80,11 @@ fn cursor_meta(app: &App) -> (String, String, String, String) {
 
 #[cfg(unix)]
 fn format_perms(n: &crate::tree::node::Node) -> String {
-    use std::os::unix::fs::MetadataExt;
-    let m = match std::fs::symlink_metadata(&n.path) {
-        Ok(m) => m,
-        Err(_) => return "?".into(),
-    };
-    let mode = m.mode();
-    let kind = if n.is_dir() {
-        'd'
-    } else if m.file_type().is_symlink() {
-        'l'
-    } else {
-        '-'
+    let mode = n.mode;
+    let kind = match n.kind {
+        crate::tree::node::NodeKind::Dir => 'd',
+        crate::tree::node::NodeKind::Symlink => 'l',
+        _ => '-',
     };
     let bits = |s: u32| {
         let r = if (mode >> s) & 0o4 != 0 { 'r' } else { '-' };

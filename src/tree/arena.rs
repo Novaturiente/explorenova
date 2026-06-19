@@ -64,28 +64,39 @@ impl Arena {
         }
     }
 
-    fn classify(p: &Path) -> (NodeKind, bool, u64, SystemTime) {
+    fn classify(p: &Path) -> (NodeKind, bool, u64, SystemTime, u32) {
+        #[cfg(unix)]
+        use std::os::unix::fs::PermissionsExt;
         match fs::symlink_metadata(p) {
             Ok(m) if m.file_type().is_symlink() => {
                 let mt = m.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-                (NodeKind::Symlink, false, m.len(), mt)
+                #[cfg(unix)]
+                let mode = m.permissions().mode();
+                #[cfg(not(unix))]
+                let mode = 0;
+                (NodeKind::Symlink, false, m.len(), mt, mode)
             }
             Ok(m) if m.is_dir() => {
                 let mt = m.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-                (NodeKind::Dir, false, 0, mt)
+                #[cfg(unix)]
+                let mode = m.permissions().mode();
+                #[cfg(not(unix))]
+                let mode = 0;
+                (NodeKind::Dir, false, 0, mt, mode)
             }
             Ok(m) => {
                 #[cfg(unix)]
-                let ex = {
-                    use std::os::unix::fs::PermissionsExt;
-                    m.permissions().mode() & 0o111 != 0
-                };
+                let ex = m.permissions().mode() & 0o111 != 0;
                 #[cfg(not(unix))]
                 let ex = false;
+                #[cfg(unix)]
+                let mode = m.permissions().mode();
+                #[cfg(not(unix))]
+                let mode = 0;
                 let mt = m.modified().unwrap_or(SystemTime::UNIX_EPOCH);
-                (NodeKind::File, ex, m.len(), mt)
+                (NodeKind::File, ex, m.len(), mt, mode)
             }
-            Err(_) => (NodeKind::File, false, 0, SystemTime::UNIX_EPOCH),
+            Err(_) => (NodeKind::File, false, 0, SystemTime::UNIX_EPOCH, 0),
         }
     }
 
@@ -111,11 +122,12 @@ impl Arena {
         let show_hidden = self.show_hidden;
         let mut child_ids = Vec::with_capacity(entries.len());
         for p in entries {
-            let (kind, exec, size, mtime) = Self::classify(&p);
+            let (kind, exec, size, mtime, mode) = Self::classify(&p);
             let mut node = Node::new(p.clone(), kind, depth, Some(id));
             node.exec = exec;
             node.size = size;
             node.mtime = mtime;
+            node.mode = mode;
             if matches!(kind, NodeKind::Dir) {
                 node.empty = Some(dir_is_empty(&p, show_hidden));
             }
@@ -315,6 +327,18 @@ mod tests {
             .find(|n| n.path.ends_with("dotonly"))
             .unwrap();
         assert_eq!(n.empty, Some(true), "hidden-only dir reads as empty when show_hidden=false");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn mode_populated_on_load() {
+        let d = tempdir().unwrap();
+        let f = d.path().join("m.txt");
+        fs::write(&f, "x").unwrap();
+        let a = Arena::new(d.path()).unwrap();
+        let kids = a.nodes[a.root].children.as_ref().unwrap();
+        let node = kids.iter().map(|&i| &a.nodes[i]).find(|n| n.path.ends_with("m.txt")).unwrap();
+        assert_ne!(node.mode, 0, "mode bits should be captured at load");
     }
 
     #[cfg(unix)]
