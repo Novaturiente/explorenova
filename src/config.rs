@@ -50,6 +50,10 @@ pub struct Config {
     /// Show Nerd Font filetype icons in the tree.
     #[serde(default = "default_true")]
     pub icons: bool,
+    /// Prompt y/N before moving to trash (`x`/Del). Permanent delete (`X`)
+    /// always confirms regardless. Default off — trash is recoverable, so
+    /// the fast path is the sensible default; set true for a safety gate.
+    pub confirm_trash: bool,
 }
 
 impl Config {
@@ -119,5 +123,12 @@ mod tests {
         assert!(c.icons, "missing icons key must default true");
         let (c2, _) = Config::load_str("icons = false\n");
         assert!(!c2.icons);
+    }
+
+    #[test]
+    fn confirm_trash_defaults_false_and_parses() {
+        assert!(!Config::with_defaults().confirm_trash, "fast trash by default");
+        let (c, _) = Config::load_str("confirm_trash = true\n");
+        assert!(c.confirm_trash, "opt-in safety gate parses");
     }
 }

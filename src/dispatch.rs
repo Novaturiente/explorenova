@@ -829,7 +829,13 @@ pub fn handle(
             reroot(app, &trash, git_tx);
         }
         Action::SysClipCopy => sysclip_copy(app),
-        Action::Trash => trash_targets(app, git_tx),
+        Action::Trash => {
+            if app.config.confirm_trash {
+                prompt_trash(app);
+            } else {
+                trash_targets(app, git_tx);
+            }
+        }
         Action::ToggleHidden => toggle_hidden(app, cwd),
         Action::Search => {
             app.begin_search();
@@ -1062,6 +1068,28 @@ fn toggle_hidden(app: &mut App, _cwd: &Path) {
     }
 }
 
+fn prompt_trash(app: &mut App) {
+    let n = app.targets().len();
+    if n == 0 {
+        app.set_status("nothing to trash");
+        return;
+    }
+    app.pending = Some(Action::Trash);
+    app.mode = Mode::Confirm;
+    let msg = if n == 1 {
+        let name = app
+            .targets()
+            .into_iter()
+            .next()
+            .and_then(|p| p.file_name().map(|s| s.to_string_lossy().to_string()))
+            .unwrap_or_default();
+        format!("move {name} to trash? y/N")
+    } else {
+        format!("move {n} to trash? y/N")
+    };
+    app.set_status(msg);
+}
+
 fn prompt_permanent_delete(app: &mut App) {
     let n = app.targets().len();
     if n == 0 {
@@ -1270,6 +1298,22 @@ mod tests {
         reroot(&mut app, &sub, &tx);
         assert_eq!(app.arena.nodes[app.arena.root].path, sub);
         assert!(names(&app).contains(&"inner.txt".to_string()));
+    }
+
+    #[test]
+    fn confirm_trash_routes_to_confirm_mode() {
+        let d = tempdir().unwrap();
+        std::fs::write(d.path().join("t.txt"), "1").unwrap();
+        let (mut app, _tx, _rx) = app_at(d.path());
+        app.selected = app
+            .visible
+            .iter()
+            .position(|&id| app.arena.nodes[id].path.ends_with("t.txt"))
+            .unwrap();
+        prompt_trash(&mut app);
+        assert_eq!(app.mode, crate::keymap::Mode::Confirm);
+        assert!(matches!(app.pending, Some(Action::Trash)));
+        assert!(app.status.contains("trash"));
     }
 
     #[test]

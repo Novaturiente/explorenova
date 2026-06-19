@@ -713,6 +713,32 @@ impl App {
             self.set_status(msg);
             self.marks.clear();
         }
+        if let Some(Action::Trash) = self.pending {
+            let targets = self.targets();
+            let n = targets.len();
+            let mut ok = 0usize;
+            let mut failed: Vec<String> = Vec::new();
+            for p in &targets {
+                match crate::fs_ops::trash_path(p) {
+                    Ok(_) => ok += 1,
+                    Err(e) => failed.push(format!("{}: {e}", p.display())),
+                }
+            }
+            let msg = if failed.is_empty() {
+                if n == 1 {
+                    format!("trashed {}", targets[0].display())
+                } else {
+                    format!("trashed {n}")
+                }
+            } else {
+                let preview =
+                    failed.iter().take(2).cloned().collect::<Vec<_>>().join(", ");
+                let tail = if failed.len() > 2 { ", …" } else { "" };
+                format!("trashed {ok}/{n} ({} failed: {preview}{tail})", failed.len())
+            };
+            self.set_status(msg);
+            self.marks.clear();
+        }
         self.pending = None;
         self.mode = Mode::Normal;
     }

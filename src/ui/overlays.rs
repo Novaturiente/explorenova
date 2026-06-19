@@ -459,15 +459,23 @@ fn render_confirm(f: &mut Frame, body: Rect, app: &App, theme: &Theme) {
             .map(|s| s.to_string_lossy().to_string())
             .unwrap_or_default()
     };
+    // The same confirm modal serves permanent-delete and (optional)
+    // trash; the header reflects which one is pending.
+    let trashing = matches!(app.pending, Some(crate::keymap::Action::Trash));
+    let (title, header) = if trashing {
+        ("Confirm trash", "Move to trash:")
+    } else {
+        ("Confirm delete", "Permanently delete:")
+    };
     // 5 content rows (header, blank, name, blank, buttons) + 2 border + 1 slack
     let r = modal::adaptive_rect(56, 8, body);
     f.render_widget(Clear, r);
-    let block = modal::modal_block("Confirm delete", theme);
+    let block = modal::modal_block(title, theme);
     let inner = modal::pad_inner(block.inner(r));
     f.render_widget(block, r);
     let lines = vec![
         Line::from(Span::styled(
-            "Permanently delete:",
+            header,
             Style::default()
                 .fg(theme.git_conflict)
                 .add_modifier(Modifier::BOLD),
