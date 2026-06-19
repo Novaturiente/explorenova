@@ -1182,3 +1182,104 @@ fn toggle_action(app: &mut App, git_tx: &mpsc::Sender<std::path::PathBuf>) {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::App;
+    use crate::config::Config;
+    use crate::state::State;
+    use crate::tree::Arena;
+    use std::path::PathBuf;
+    use tempfile::tempdir;
+
+    fn app_at(root: &Path) -> (App, mpsc::Sender<PathBuf>, mpsc::Receiver<PathBuf>) {
+        let arena = Arena::new(root).unwrap();
+        let app = App::new(arena, Config::with_defaults(), State::default());
+        let (tx, rx) = mpsc::channel();
+        (app, tx, rx)
+    }
+
+    fn names(app: &App) -> Vec<String> {
+        app.visible
+            .iter()
+            .map(|&id| {
+                app.arena.nodes[id]
+                    .path
+                    .file_name()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn refresh_in_place_picks_up_external_file() {
+        let d = tempdir().unwrap();
+        std::fs::write(d.path().join("a.txt"), "1").unwrap();
+        let (mut app, tx, _rx) = app_at(d.path());
+        assert!(!names(&app).contains(&"b.txt".to_string()));
+        std::fs::write(d.path().join("b.txt"), "2").unwrap();
+        refresh_in_place(&mut app, &tx);
+        assert!(names(&app).contains(&"b.txt".to_string()), "R must show new files");
+    }
+
+    #[test]
+    fn refresh_in_place_drops_deleted_file() {
+        let d = tempdir().unwrap();
+        std::fs::write(d.path().join("gone.txt"), "1").unwrap();
+        let (mut app, tx, _rx) = app_at(d.path());
+        std::fs::remove_file(d.path().join("gone.txt")).unwrap();
+        refresh_in_place(&mut app, &tx);
+        assert!(!names(&app).contains(&"gone.txt".to_string()));
+    }
+
+    #[test]
+    fn refresh_dirs_reloads_named_dir() {
+        let d = tempdir().unwrap();
+        std::fs::write(d.path().join("a.txt"), "1").unwrap();
+        let (mut app, tx, _rx) = app_at(d.path());
+        std::fs::write(d.path().join("c.txt"), "3").unwrap();
+        refresh_dirs(&mut app, &[d.path().to_path_buf()], &tx);
+        assert!(names(&app).contains(&"c.txt".to_string()));
+    }
+
+    #[test]
+    fn ascend_moves_root_to_parent() {
+        let d = tempdir().unwrap();
+        let sub = d.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("inner.txt"), "1").unwrap();
+        let (mut app, _tx, _rx) = app_at(&sub);
+        let root_before = app.arena.nodes[app.arena.root].path.clone();
+        ascend(&mut app);
+        let root_after = app.arena.nodes[app.arena.root].path.clone();
+        assert_eq!(root_after, root_before.parent().unwrap());
+        assert!(names(&app).contains(&"sub".to_string()));
+    }
+
+    #[test]
+    fn reroot_changes_root_to_target() {
+        let d = tempdir().unwrap();
+        let sub = d.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("inner.txt"), "1").unwrap();
+        let (mut app, tx, _rx) = app_at(d.path());
+        reroot(&mut app, &sub, &tx);
+        assert_eq!(app.arena.nodes[app.arena.root].path, sub);
+        assert!(names(&app).contains(&"inner.txt".to_string()));
+    }
+
+    #[test]
+    fn toggle_hidden_reveals_and_hides_dotfiles() {
+        let d = tempdir().unwrap();
+        std::fs::write(d.path().join("visible.txt"), "1").unwrap();
+        std::fs::write(d.path().join(".secret"), "2").unwrap();
+        let (mut app, _tx, _rx) = app_at(d.path());
+        assert!(!names(&app).contains(&".secret".to_string()), "hidden by default");
+        toggle_hidden(&mut app, d.path());
+        assert!(names(&app).contains(&".secret".to_string()), "shown after toggle");
+        toggle_hidden(&mut app, d.path());
+        assert!(!names(&app).contains(&".secret".to_string()), "hidden again");
+    }
+}
