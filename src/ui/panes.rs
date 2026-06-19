@@ -1,6 +1,6 @@
 use crate::tree::{Arena, NodeId};
 use crate::ui::theme::Theme;
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 
 /// Build a styled line for one visible tree row. `width` is the inner
@@ -13,6 +13,7 @@ pub fn tree_row<'a>(
     theme: &Theme,
     icons: bool,
     marked: bool,
+    cut: bool,
     width: u16,
 ) -> Line<'a> {
     let n = &arena.nodes[id];
@@ -84,7 +85,12 @@ pub fn tree_row<'a>(
         used += 2;
     }
     let name_chars = name.chars().count();
-    spans.push(Span::styled(name.clone(), Style::default().fg(type_color)));
+    let name_style = if cut {
+        Style::default().fg(type_color).add_modifier(Modifier::DIM)
+    } else {
+        Style::default().fg(type_color)
+    };
+    spans.push(Span::styled(name.clone(), name_style));
     used += name_chars;
 
     // Pad to right-align git glyph (1 cell + 1 trailing space = 2 cells).
@@ -116,8 +122,25 @@ mod tests {
         std::fs::write(d.path().join("z.txt"), "x").unwrap();
         let a = Arena::new(d.path()).unwrap();
         let child = a.nodes[a.root].children.as_ref().unwrap()[0];
-        let line = tree_row(&a, child, true, &Theme::default(), true, false, 80);
+        let line = tree_row(&a, child, true, &Theme::default(), true, false, false, 80);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("z.txt"));
+    }
+
+    #[test]
+    fn cut_row_is_dimmed() {
+        use ratatui::style::Modifier;
+        let d = tempdir().unwrap();
+        std::fs::write(d.path().join("z.txt"), "x").unwrap();
+        let a = Arena::new(d.path()).unwrap();
+        let child = a.nodes[a.root].children.as_ref().unwrap()[0];
+        let line = tree_row(&a, child, false, &Theme::default(), true, false, true, 80);
+        // The name span carries the DIM modifier when cut.
+        let name_span = line
+            .spans
+            .iter()
+            .find(|s| s.content.contains("z.txt"))
+            .expect("name span present");
+        assert!(name_span.style.add_modifier.contains(Modifier::DIM));
     }
 }

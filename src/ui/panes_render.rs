@@ -70,17 +70,25 @@ pub fn render_pane_tree(
         let Some(snap) = app.tabs.first() else { return };
         (&snap.arena, &snap.visible, snap.selected, &snap.marks)
     };
+    // Cut items (dd) render dimmed. Clipboard is shared across tabs, so
+    // read app.clipboard regardless of which slot we're drawing.
+    let cut_paths: Option<&[std::path::PathBuf]> = match &app.clipboard {
+        Some((paths, true)) => Some(paths),
+        _ => None,
+    };
     let items: Vec<ListItem> = visible_ref
         .iter()
         .enumerate()
         .map(|(idx, &id)| {
+            let path = &arena_ref.nodes[id].path;
             ListItem::new(crate::ui::panes::tree_row(
                 arena_ref,
                 id,
                 idx == selected_ref,
                 theme,
                 app.config.icons,
-                marks_ref.contains(&arena_ref.nodes[id].path),
+                marks_ref.contains(path),
+                cut_paths.map_or(false, |ps| ps.iter().any(|p| p == path)),
                 inner_w,
             ))
         })
