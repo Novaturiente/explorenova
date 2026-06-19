@@ -130,6 +130,18 @@ mod tests {
         let label = short_bookmark_label(std::path::Path::new("/"));
         assert_eq!(label, "/");
     }
+
+    #[test]
+    fn viewport_start_centers_and_clamps() {
+        // fits on screen → start 0
+        assert_eq!(viewport_start(5, 3, 10), 0);
+        // sel near top → start 0
+        assert_eq!(viewport_start(100, 1, 10), 0);
+        // sel in middle → centered (sel - visible/2)
+        assert_eq!(viewport_start(100, 50, 10), 45);
+        // sel near bottom → clamped so window ends at len
+        assert_eq!(viewport_start(100, 99, 10), 90);
+    }
 }
 
 use crate::app::App;
@@ -188,6 +200,17 @@ pub fn render_image(
 }
 
 
+/// First visible row index for a window of `visible` rows centered on
+/// `sel` within `len` items. Matches `viewport_around`'s slice start.
+pub(crate) fn viewport_start(len: usize, sel: usize, visible: usize) -> usize {
+    if visible == 0 || len <= visible {
+        return 0;
+    }
+    let half = visible / 2;
+    let max_start = len - visible;
+    sel.saturating_sub(half).min(max_start)
+}
+
 /// Slice `lines` to a viewport of `visible` rows that keeps `sel` in
 /// view. Anchors selection roughly in the middle when scrolling.
 pub(crate) fn viewport_around<T: Clone>(lines: &[T], sel: usize, visible: usize) -> Vec<T> {
@@ -197,9 +220,7 @@ pub(crate) fn viewport_around<T: Clone>(lines: &[T], sel: usize, visible: usize)
     if lines.len() <= visible {
         return lines.to_vec();
     }
-    let half = visible / 2;
-    let max_start = lines.len() - visible;
-    let start = sel.saturating_sub(half).min(max_start);
+    let start = viewport_start(lines.len(), sel, visible);
     lines[start..start + visible].to_vec()
 }
 

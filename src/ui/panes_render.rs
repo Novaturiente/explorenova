@@ -76,15 +76,18 @@ pub fn render_pane_tree(
         Some((paths, true)) => Some(paths),
         _ => None,
     };
-    let items: Vec<ListItem> = visible_ref
+    let win_h = area.height.saturating_sub(2) as usize;
+    let start = crate::ui::viewport_start(visible_ref.len(), selected_ref, win_h);
+    let end = (start + win_h).min(visible_ref.len());
+    let items: Vec<ListItem> = visible_ref[start..end]
         .iter()
         .enumerate()
-        .map(|(idx, &id)| {
+        .map(|(off, &id)| {
             let path = &arena_ref.nodes[id].path;
             ListItem::new(crate::ui::panes::tree_row(
                 arena_ref,
                 id,
-                idx == selected_ref,
+                start + off == selected_ref,
                 theme,
                 app.config.icons,
                 marks_ref.contains(path),
@@ -121,7 +124,7 @@ pub fn render_pane_tree(
                 .add_modifier(Modifier::BOLD),
         );
     let mut st = ListState::default();
-    st.select(Some(selected_ref));
+    st.select(Some(selected_ref - start));
     f.render_stateful_widget(list, area, &mut st);
 }
 
