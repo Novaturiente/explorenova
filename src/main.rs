@@ -168,6 +168,21 @@ fn main() -> Result<()> {
         });
     }
     let keymap = Keymap::build(&app.config.keys);
+    // Validate [commands] against the FINAL keymap (after user [keys] overrides),
+    // then store the filtered map. Dropped-key warnings join the startup status so
+    // they aren't silently lost.
+    let (commands, cmd_warnings) =
+        explorenova::command::validate_commands(&app.config.commands, &keymap);
+    app.commands = commands;
+    if !cmd_warnings.is_empty() {
+        let msg = format!("config: {}", cmd_warnings.join("; "));
+        if app.status.is_empty() {
+            app.set_status(msg);
+        } else {
+            let prev = app.status.clone();
+            app.set_status(format!("{prev}; {msg}"));
+        }
+    }
     let mut preview_cache = PreviewCache::with_cap(app.config.preview.cache_cap);
 
     let (git_tx, git_rx) = mpsc::channel::<PathBuf>();

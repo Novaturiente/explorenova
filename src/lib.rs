@@ -2,6 +2,7 @@ pub mod app;
 pub mod apps;
 pub mod cli;
 pub mod clipboard;
+pub mod command;
 pub mod config;
 pub mod devices;
 pub mod dispatch;

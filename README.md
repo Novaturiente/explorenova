@@ -23,9 +23,9 @@ The binary is `target/release/explorenova`.
 
 `$XDG_CONFIG_HOME/explorenova/config.toml` (default
 `~/.config/explorenova/config.toml`) — pane order/visibility/width,
-`[keys]`, preview size limits, `icons` (bool), and `confirm_trash`
-(bool, default `false`: prompt y/N before trashing). Written with
-defaults on first run.
+`[keys]`, `[commands]`, preview size limits, `icons` (bool), and
+`confirm_trash` (bool, default `false`: prompt y/N before trashing).
+Written with defaults on first run.
 
 Runtime state (bookmarks, last cwd, and the runtime pane
 layout — visibility, width/weight, order):
@@ -63,6 +63,38 @@ status bar and keeps the default — it never discards the rest of your config.
 
     fs_refresh_debounce_ms = 150   # filesystem-watch refresh debounce
 
+### Scripts and commands
+
+Run shell commands and your own scripts against the selected files (marked
+files, or the file under the cursor if none are marked). Three ways:
+
+**Ad-hoc** — press `!`, type any command. These placeholders expand, each
+path shell-quoted:
+
+| Token | Expands to |
+|---|---|
+| `{paths}` | every selected path, space-joined |
+| `{file}` | the first selected path |
+| `{dir}` | its directory |
+| `{name}` | its file name |
+| `{ext}` | its extension |
+
+e.g. `!tar czf out.tgz {paths}` or `!~/script.sh {paths}`. A command with no
+placeholder (`!mkdir foo`) still runs as a plain shell escape.
+
+**Bound keys** — map a single key to a command template:
+
+    [commands]
+    c = "tar czf archive.tgz {paths}"
+    e = "$EDITOR {file}"
+
+The key is one char or one `ctrl`/`alt` combo. A key that clashes with a
+builtin binding is ignored with a startup warning (builtin wins).
+
+**Scripts dir** — drop executables in
+`$XDG_CONFIG_HOME/explorenova/scripts/`; press `\` to pick one from a list.
+The chosen script receives the selected paths as arguments.
+
 The first run writes a fully commented `config.toml` documenting every option.
 
 ## Keys
@@ -82,7 +114,8 @@ The first run writes a fully commented `config.toml` documenting every option.
 | Toggle bookmark | `m` |
 | Fuzzy search | `/`, `n` / `N`, `Esc` clear |
 | Path navigation | `:` (Tab completion) |
-| Shell | `!` one-shot in cwd, `S` drop to `$SHELL` |
+| Shell | `!` one-shot (with `{paths}`/`{file}`/… expansion), `S` drop to `$SHELL` |
+| Scripts | `\` pick a script from the scripts dir; `[commands]` keys run templates |
 | Toggle hidden / refresh / quit | `.` / `R` / `q` |
 | Help overlay | `?` (any key dismisses) |
 | Sort menu | `s` → `1`/`n` name, `2`/`s` size, `3`/`m` mtime, `4`/`e` ext, `r` reverse, `d` dir-first, `esc` close |

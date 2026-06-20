@@ -130,6 +130,9 @@ pub fn render_overlay(
         (_, Dialog::AppPick { items, sel, filter }) => {
             render_appick(f, body, theme, items, *sel, filter);
         }
+        (_, Dialog::ScriptPick { items, sel, filter }) => {
+            render_scriptpick(f, body, theme, items, *sel, filter);
+        }
         (_, Dialog::Devices { items, sel }) => {
             render_devices(f, body, theme, items, *sel);
         }
@@ -255,6 +258,89 @@ fn render_appick(
         Line::from(""),
         Line::from(Span::styled(
             " enter open · ↑↓ pick · ⌫ del · esc close",
+            modal::dim_style(theme),
+        )),
+    ];
+    f.render_widget(Paragraph::new(hints), footer_rect);
+}
+
+fn render_scriptpick(
+    f: &mut Frame,
+    body: Rect,
+    theme: &Theme,
+    items: &[std::path::PathBuf],
+    sel: usize,
+    filter: &str,
+) {
+    let filtered = crate::dispatch::filter_script_indices(items, filter);
+    let list_len = filtered.len();
+    let names: Vec<String> = items
+        .iter()
+        .map(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default())
+        .collect();
+    let max_name = names.iter().map(|s| s.len()).max().unwrap_or(20);
+    let desired_w = (max_name as u16 + 10).clamp(40, 64);
+    let visible_list = list_len.clamp(1, 12) as u16;
+    let desired_h = 1 /* filter */ + 1 /* sep */ + visible_list + 2 /* footer */ + 2 /* border */;
+    let r = modal::adaptive_rect(desired_w, desired_h, body);
+    f.render_widget(Clear, r);
+    let block = modal::modal_block("Run script", theme);
+    let inner = modal::pad_inner(block.inner(r));
+    f.render_widget(block, r);
+
+    // Header: filter line + separator.
+    let header_rect = Rect { height: 2, ..inner };
+    let filter_line = if filter.is_empty() {
+        Line::from(vec![
+            Span::styled("/ ", Style::default().fg(theme.match_hl)),
+            Span::styled("type to filter…", modal::dim_style(theme)),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled(
+                "/ ",
+                Style::default().fg(theme.match_hl).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(filter.to_string()),
+            Span::styled("▏", Style::default().fg(theme.match_hl)),
+        ])
+    };
+    let sep_line = Line::from(Span::styled(
+        "─".repeat(inner.width as usize),
+        modal::dim_style(theme),
+    ));
+    f.render_widget(Paragraph::new(vec![filter_line, sep_line]), header_rect);
+
+    // List body.
+    let footer_rows: u16 = 2;
+    let list_h = inner.height.saturating_sub(2 + footer_rows).max(1);
+    let list_rect = Rect { y: inner.y + 2, height: list_h, ..inner };
+    let mut lines: Vec<Line> = Vec::with_capacity(list_len);
+    for (i, &orig) in filtered.iter().enumerate() {
+        let style = if i == sel {
+            modal::selection_style(theme)
+        } else {
+            Style::default()
+        };
+        let marker = if i == sel { "▸ " } else { "  " };
+        lines.push(Line::from(Span::styled(format!("{marker}{}", names[orig]), style)));
+    }
+    if lines.is_empty() {
+        lines.push(Line::from(Span::styled("  (no match)", modal::dim_style(theme))));
+    }
+    let view = viewport_around(&lines, sel, list_rect.height as usize);
+    f.render_widget(Paragraph::new(view), list_rect);
+
+    // Footer hints.
+    let footer_rect = Rect {
+        y: inner.y + inner.height.saturating_sub(footer_rows),
+        height: footer_rows,
+        ..inner
+    };
+    let hints = vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            " enter run · ↑↓ pick · ⌫ del · esc close",
             modal::dim_style(theme),
         )),
     ];

@@ -242,6 +242,14 @@ pub fn handle_key(
             if let Some(action) = keymap.resolve(Mode::Normal, chord) {
                 chord.clear();
                 handle(app, action, start, git_tx)?;
+            } else if let Some(template) = app.commands.get(chord.as_str()).cloned() {
+                // [commands] key. Checked BEFORE is_prefix so a single-token
+                // command (e.g. `c`) fires immediately — a real `ctrl-d` arrives
+                // as one atomic token and resolve() above claims it first, so no
+                // command can stall waiting on a modifier chord. Collision
+                // validation guarantees this token doesn't shadow a builtin.
+                chord.clear();
+                app.run_command(&template);
             } else if keymap.is_prefix(chord) {
                 // wait for more keys
             } else {
@@ -268,6 +276,11 @@ pub fn handle_key(
             if matches!(app.dialog, Dialog::AppPick { .. }) =>
         {
             handle_appick_key(app, k);
+        }
+        Mode::Search | Mode::Input
+            if matches!(app.dialog, Dialog::ScriptPick { .. }) =>
+        {
+            handle_scriptpick_key(app, k);
         }
         Mode::Search | Mode::Input => handle_text_input_key(app, k, start, git_tx),
         Mode::Confirm => handle_confirm_key(app, k, git_tx),
@@ -549,6 +562,75 @@ fn appick_enter(app: &mut App, sel: usize, len: usize, filtered_idx: &[usize]) {
     app.dialog = Dialog::None;
 }
 
+/// Filtered indices into a scripts list, by case-insensitive file-name substring.
+pub fn filter_script_indices(items: &[std::path::PathBuf], filter: &str) -> Vec<usize> {
+    let needle = filter.to_lowercase();
+    let toks: Vec<&str> = needle.split_whitespace().collect();
+    items
+        .iter()
+        .enumerate()
+        .filter(|(_, p)| {
+            if toks.is_empty() {
+                return true;
+            }
+            let h = p
+                .file_name()
+                .map(|n| n.to_string_lossy().to_lowercase())
+                .unwrap_or_default();
+            toks.iter().all(|t| h.contains(t))
+        })
+        .map(|(i, _)| i)
+        .collect()
+}
+
+fn handle_scriptpick_key(app: &mut App, k: &KeyEvent) {
+    let (len, sel, filtered) = match &app.dialog {
+        Dialog::ScriptPick { items, sel, filter } => {
+            let fi = filter_script_indices(items, filter);
+            (fi.len(), *sel, fi)
+        }
+        _ => (0, 0, Vec::new()),
+    };
+    match k.code {
+        KeyCode::Esc => {
+            app.mode = Mode::Normal;
+            app.pending = None;
+            app.dialog = Dialog::None;
+        }
+        KeyCode::Up => app.dialog.nav(len, false),
+        KeyCode::Down => app.dialog.nav(len, true),
+        KeyCode::Backspace => {
+            if let Dialog::ScriptPick { sel, filter, .. } = &mut app.dialog {
+                filter.pop();
+                *sel = 0;
+            }
+        }
+        KeyCode::Char(c) => {
+            if let Dialog::ScriptPick { sel, filter, .. } = &mut app.dialog {
+                filter.push(c);
+                *sel = 0;
+            }
+        }
+        KeyCode::Enter => {
+            let script = if let Dialog::ScriptPick { items, .. } = &app.dialog {
+                filtered.get(sel).and_then(|&i| items.get(i).cloned())
+            } else {
+                None
+            };
+            app.mode = Mode::Normal;
+            app.pending = None;
+            app.dialog = Dialog::None;
+            if let Some(script) = script {
+                // Build "<quoted-script> {paths}" and run through the shared
+                // engine so the script gets the selected paths as arguments.
+                let template = format!("{} {{paths}}", crate::command::shell_quote(&script.to_string_lossy()));
+                app.run_command(&template);
+            }
+        }
+        _ => {}
+    }
+}
+
 fn handle_text_input_key(
     app: &mut App,
     k: &KeyEvent,
@@ -659,11 +741,11 @@ fn text_input_enter(app: &mut App, _start: &Path, git_tx: &mpsc::Sender<std::pat
             }
             Some(Action::ShellOnce) => {
                 let cmd = app.input.value();
-                let root = app.arena.nodes[app.arena.root].path.clone();
                 app.mode = Mode::Normal;
-                if let Err(e) = crate::shell::run_once(&root, &cmd) {
-                    app.set_status(format!("shell failed: {e}"));
-                }
+                // Expand {paths}/{file}/{dir}/{name}/{ext} against the selection,
+                // then run. Placeholder-free commands are unchanged (regression
+                // test in command.rs guards the prior literal behavior).
+                app.run_command(&cmd);
             }
             Some(Action::AddSmb) => {
                 let raw = app.input.value();
@@ -895,6 +977,26 @@ pub fn handle(
         Action::ShellOnce => {
             app.pending = Some(Action::ShellOnce);
             app.enter_mode(Mode::Input, "");
+        }
+        Action::ScriptPick => {
+            let items = crate::command::scan_scripts_dir(&crate::config::scripts_dir());
+            if items.is_empty() {
+                app.set_status(format!(
+                    "no executable scripts in {}",
+                    crate::config::scripts_dir().display()
+                ));
+            } else {
+                // Mirror AppPick: dialog variant + Input mode (routing is by
+                // dialog, not a dedicated Mode).
+                app.mode = Mode::Input;
+                app.pending = Some(Action::ScriptPick);
+                app.status.clear();
+                app.dialog = Dialog::ScriptPick {
+                    items,
+                    sel: 0,
+                    filter: String::new(),
+                };
+            }
         }
         Action::Toggle => toggle_action(app, git_tx),
         Action::Parent => ascend(app),

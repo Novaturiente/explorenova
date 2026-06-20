@@ -45,6 +45,22 @@ pub const SAMPLE_CONFIG: &str = r##"# explorenova configuration
 # [keys]
 # quit = ["q"]
 
+# --- Commands ----------------------------------------------------------
+# Bind a single key (one char or one ctrl/alt combo) to a shell command run
+# against the current selection (marked files, else the cursor). Placeholders:
+#   {paths}  all selected paths, each shell-quoted, space-joined
+#   {file}   first selected path        {dir}  its directory
+#   {name}   its file name              {ext}  its extension
+# Keys that clash with a builtin binding are ignored with a startup warning.
+# [commands]
+# c = "tar czf archive.tgz {paths}"
+# e = "$EDITOR {file}"
+#
+# Scripts dir: drop executables in <this config dir>/scripts/ and press \ to
+# pick one (it receives the selected paths as arguments). Rebind that picker
+# via [keys] with the action name `script_pick`. The same {paths}/{file}/...
+# placeholders also work in the `!` one-shot shell prompt.
+
 # --- Theme -------------------------------------------------------------
 # preset: omit (tuned RGB default) or "terminal" (follow your terminal palette).
 # Override any field with an ANSI name ("blue", "light_cyan") or hex ("#50C8FA").
@@ -132,6 +148,11 @@ pub struct Config {
     pub panes: PanesConfig,
     /// action name -> list of key chords
     pub keys: BTreeMap<String, Vec<String>>,
+    /// Single-token key chord -> shell command template. The token gets
+    /// `{paths}`/`{file}`/`{dir}`/`{name}`/`{ext}` expanded against the
+    /// selection, then run. Keys that collide with a builtin binding are
+    /// dropped with a warning at startup (builtin wins).
+    pub commands: BTreeMap<String, String>,
     pub preview_max_bytes: u64,
     /// Show Nerd Font filetype icons in the tree.
     #[serde(default = "default_true")]
@@ -147,6 +168,17 @@ pub struct Config {
     /// Raw `[theme]` table: field-name -> color string (or `preset`).
     /// Parsed tolerantly into a `Theme` at startup; bad values warn, not fail.
     pub theme: BTreeMap<String, String>,
+}
+
+/// `$XDG_CONFIG_HOME/explorenova/scripts` (or `~/.config/...`). Home of the
+/// executables listed by the scripts-dir picker.
+pub fn scripts_dir() -> std::path::PathBuf {
+    let base = std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".config")
+        });
+    base.join("explorenova").join("scripts")
 }
 
 impl Config {

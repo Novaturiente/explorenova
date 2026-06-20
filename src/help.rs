@@ -58,7 +58,8 @@ const ACTION_META: &[(Action, &str, &str)] = &[
     (Action::SearchPrev, "Search / Bookmarks", "Prev match"),
     (Action::ToggleBookmark, "Search / Bookmarks", "Toggle bookmark"),
     // Shell / Misc
-    (Action::ShellOnce, "Shell / Misc", "Shell one-shot"),
+    (Action::ShellOnce, "Shell / Misc", "Shell one-shot ({paths}/{file}/{dir})"),
+    (Action::ScriptPick, "Shell / Misc", "Run script from scripts dir"),
     (Action::ShellDrop, "Shell / Misc", "Drop to shell"),
     (Action::ShowDevices, "Shell / Misc", "Devices modal"),
     (Action::ToggleHidden, "Shell / Misc", "Toggle hidden"),

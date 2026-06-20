@@ -49,6 +49,7 @@ pub enum Action {
     PathInput,
     ShellOnce,
     ShellDrop,
+    ScriptPick,
     ToggleHidden,
     Refresh,
     ShowDevices,
@@ -91,6 +92,7 @@ impl Action {
             "search" => Search, "search_next" => SearchNext, "search_prev" => SearchPrev,
             "path_input" => PathInput,
             "shell_once" => ShellOnce, "shell_drop" => ShellDrop,
+            "script_pick" => ScriptPick,
             "toggle_hidden" => ToggleHidden, "refresh" => Refresh,
             "show_devices" => ShowDevices,
             "jump_home" => JumpHome,
@@ -167,6 +169,7 @@ impl Keymap {
             (Search, vec!["/"]), (SearchNext, vec!["n"]), (SearchPrev, vec!["N"]),
             (PathInput, vec![":"]),
             (ShellOnce, vec!["!"]), (ShellDrop, vec!["S"]),
+            (ScriptPick, vec!["\\"]),
             (ToggleHidden, vec!["."]), (Refresh, vec!["R"]),
             (ShowDevices, vec!["M"]),
             (JumpHome, vec!["H"]),
@@ -206,6 +209,21 @@ impl Keymap {
     /// Could `buffer` still grow into a binding (e.g. "g" -> "gg")?
     pub fn is_prefix(&self, buffer: &str) -> bool {
         self.normal.keys().any(|k| k.len() > buffer.len() && k.starts_with(buffer))
+    }
+
+    /// Would a single-token `[commands]` key shadow a builtin binding?
+    /// True if `token` is itself a bound chord, or is the first key of a
+    /// modifier-free multi-key builtin chord (e.g. `g` begins `gg`) — pressing
+    /// the command on `g` would prevent `gg` from ever resolving.
+    ///
+    /// ponytail: modifier tokens (`ctrl-d`, `alt-x`) arrive whole and are never
+    /// grown key-by-key, so a command `c` is NOT a real prefix of `ctrl-d`. The
+    /// `!k.contains('-')` guard excludes those atomic chords from the prefix test.
+    pub fn would_shadow(&self, token: &str) -> bool {
+        self.normal.contains_key(token)
+            || self.normal.keys().any(|k| {
+                k.len() > token.len() && k.starts_with(token) && !k.contains('-')
+            })
     }
 
     /// Reverse-lookup: all chords currently bound to `action`, sorted.

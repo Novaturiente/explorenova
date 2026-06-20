@@ -15,6 +15,7 @@ pub enum Dialog {
     Confirm,
     AppPick { items: Vec<AppEntry>, sel: usize, filter: String },
     Devices { items: Vec<crate::devices::Device>, sel: usize },
+    ScriptPick { items: Vec<PathBuf>, sel: usize, filter: String },
 }
 
 impl Dialog {
@@ -25,6 +26,7 @@ impl Dialog {
         let sel = match self {
             Dialog::Devices { sel, .. } => sel,
             Dialog::AppPick { sel, .. } => sel,
+            Dialog::ScriptPick { sel, .. } => sel,
             _ => return,
         };
         *sel = crate::ui::modal::wrap_nav(*sel, len, forward);
@@ -67,6 +69,9 @@ pub struct App {
     /// move fails so the user can retry without re-selecting the sources.
     pub cut_restore: Option<(Vec<PathBuf>, bool)>,
     pub marks: BTreeSet<PathBuf>,
+    /// Validated `[commands]` bindings: single-token chord -> shell template.
+    /// Filtered against the keymap at startup (see `command::validate_commands`).
+    pub commands: std::collections::HashMap<String, String>,
     pub status: String,
     pub should_quit: bool,
     pub input: TextInput,
@@ -152,6 +157,7 @@ impl App {
             clipboard: None,
             cut_restore: None,
             marks: BTreeSet::new(),
+            commands: std::collections::HashMap::new(),
             status,
             should_quit: false,
             input: TextInput::new(),
@@ -664,6 +670,26 @@ impl App {
             if let Some(&id) = self.visible.get(i) {
                 self.marks.insert(self.arena.nodes[id].path.clone());
             }
+        }
+    }
+
+    /// Shared chokepoint for every script trigger: expand a command template
+    /// against the current selection and run it (suspending the TUI). No-op
+    /// with a status message when nothing is selected. Used by the `!` ad-hoc
+    /// prompt, `[commands]` keys, and the scripts-dir picker.
+    pub fn run_command(&mut self, template: &str) {
+        let targets = self.targets();
+        // Block only when the template needs the selection but none exists, so a
+        // fileless command (mkdir foo) still works the way bare `!` always did.
+        if targets.is_empty() && crate::command::references_selection(template) {
+            self.set_status("no selection");
+            return;
+        }
+        let root = self.arena.nodes[self.arena.root].path.clone();
+        let dir = self.sel_dir().unwrap_or_else(|| root.clone());
+        let cmd = crate::command::expand(template, &crate::command::Subst { targets, dir });
+        if let Err(e) = crate::shell::run_once(&root, &cmd) {
+            self.set_status(format!("shell failed: {e}"));
         }
     }
 
