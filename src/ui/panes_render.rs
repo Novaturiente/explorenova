@@ -5,9 +5,9 @@
 //! independently. The split-mode shenanigans (active slot, tab swap)
 //! stay in [`render_pane_tree`] because they are tree-pane specific.
 
-use ratatui::layout::Rect;
+use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Modifier, Style};
-use ratatui::text::Span;
+use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, BorderType, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 use ratatui_image::picker::Picker;
@@ -16,6 +16,26 @@ use crate::app::App;
 use crate::preview::{PreviewCache, PreviewKind};
 use crate::ui::theme::Theme;
 use crate::ui::{render_image, short_bookmark_label, ImageCache};
+
+/// Render dim, centered placeholder text inside `area` — used for the
+/// empty states of the tree and bookmarks panes (e.g. an empty directory
+/// or no saved bookmarks) so they never show a blank void.
+fn render_centered_hint(f: &mut Frame, area: Rect, theme: &Theme, lines: &[&str]) {
+    if area.height == 0 {
+        return;
+    }
+    let h = (lines.len() as u16).min(area.height);
+    let y = area.y + area.height.saturating_sub(h) / 2;
+    let rect = Rect { y, height: h, ..area };
+    let para = Paragraph::new(
+        lines
+            .iter()
+            .map(|l| Line::from(Span::styled(*l, Style::default().fg(theme.dim))))
+            .collect::<Vec<_>>(),
+    )
+    .alignment(Alignment::Center);
+    f.render_widget(para, rect);
+}
 
 /// Render the top header bar showing the current arena root path.
 /// Left-truncates with an ellipsis when the path exceeds the area width.
@@ -110,14 +130,21 @@ pub fn render_pane_tree(
     } else {
         Style::default().fg(theme.dim)
     };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(border_style)
+        .title(Span::styled(title_text, title_style));
+    // Empty directory: render the framed pane + a centered hint instead of
+    // a blank box (an underflowing `selected - start` would also panic here).
+    if visible_ref.is_empty() {
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        render_centered_hint(f, inner, theme, &["(empty)"]);
+        return;
+    }
     let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(border_style)
-                .title(Span::styled(title_text, title_style)),
-        )
+        .block(block)
         .highlight_style(
             Style::default()
                 .bg(theme.selected_bg)
@@ -155,21 +182,28 @@ pub fn render_pane_bookmarks(f: &mut Frame, area: Rect, app: &App, theme: &Theme
     } else {
         Style::default().fg(theme.dim)
     };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(border_style)
+        .title(Span::styled(title_text, title_style));
+    // No bookmarks yet: frame the pane + a discoverability hint instead of
+    // an empty box.
+    if app.state.bookmarks.is_empty() {
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        render_centered_hint(f, inner, theme, &["no bookmarks", "press m to add"]);
+        return;
+    }
     let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_type(BorderType::Rounded)
-                .border_style(border_style)
-                .title(Span::styled(title_text, title_style)),
-        )
+        .block(block)
         .highlight_style(
             Style::default()
                 .bg(theme.selected_bg)
                 .add_modifier(Modifier::BOLD),
         );
     let mut st = ListState::default();
-    if focused && !app.state.bookmarks.is_empty() {
+    if focused {
         let i = app.bookmark_sel.min(app.state.bookmarks.len() - 1);
         st.select(Some(i));
     }

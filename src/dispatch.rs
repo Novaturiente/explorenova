@@ -76,7 +76,7 @@ pub fn reroot(app: &mut App, path: &Path, git_tx: &mpsc::Sender<std::path::PathB
             let _ = git_tx.send(app.arena.nodes[app.arena.root].path.clone());
         }
         Err(e) => {
-            app.set_status(format!("cannot open {}: {e}", path.display()));
+            app.set_err(format!("cannot open {}: {e}", path.display()));
         }
     }
 }
@@ -216,7 +216,7 @@ pub fn ascend(app: &mut App) {
             app.navigate_to(&root_path);
         }
         Err(_) => {
-            app.set_status(format!("cannot open {}", parent.display()));
+            app.set_err(format!("cannot open {}", parent.display()));
         }
     }
 }
@@ -385,7 +385,7 @@ fn devices_delete_selected(app: &mut App) {
     };
     let Some(d) = dev else { return };
     let crate::devices::DeviceKind::Smb { url } = &d.kind else {
-        app.set_status("not a saved share");
+        app.set_err("not a saved share");
         return;
     };
     let url = url.clone();
@@ -397,7 +397,7 @@ fn devices_delete_selected(app: &mut App) {
     app.shares.retain(|s| s.url != url);
     if let Err(e) = crate::smb::save(&app.shares_path, &app.shares) {
         app.shares = backup; // roll back: disk still has the share
-        app.set_status(format!("save failed: {e}"));
+        app.set_err(format!("save failed: {e}"));
     } else {
         app.set_status(format!("removed {}", d.device));
     }
@@ -422,7 +422,7 @@ fn devices_unmount_selected(app: &mut App) {
     };
     let Some(d) = dev else { return };
     if !d.is_mounted() {
-        app.set_status("not mounted");
+        app.set_err("not mounted");
         return;
     }
     let res = match &d.kind {
@@ -435,7 +435,7 @@ fn devices_unmount_selected(app: &mut App) {
     };
     match res {
         Ok(_) => app.set_status(format!("unmounted {}", d.device)),
-        Err(e) => app.set_status(format!("umount failed: {e}")),
+        Err(e) => app.set_err(format!("umount failed: {e}")),
     }
     refresh_devices(app);
 }
@@ -469,7 +469,7 @@ fn devices_enter_selected(app: &mut App) {
                     true
                 }
                 Err(e) => {
-                    app.set_status(format!("cannot open {}: {e}", mp.display()));
+                    app.set_err(format!("cannot open {}: {e}", mp.display()));
                     false
                 }
             }
@@ -496,7 +496,7 @@ fn devices_enter_selected(app: &mut App) {
         app.force_redraw = true;
         match res {
             Ok(_) => app.set_status(format!("mounted {}", d.device)),
-            Err(e) => app.set_status(format!("mount failed: {e}")),
+            Err(e) => app.set_err(format!("mount failed: {e}")),
         }
         refresh_devices(app);
     }
@@ -556,7 +556,7 @@ fn appick_enter(app: &mut App, sel: usize, len: usize, filtered_idx: &[usize]) {
     if let (Some(entry), Some(&id)) = (entry, app.visible.get(app.selected)) {
         let path = app.arena.nodes[id].path.clone();
         if let Err(e) = crate::apps::spawn(&entry, &path) {
-            app.set_status(format!("open failed: {e}"));
+            app.set_err(format!("open failed: {e}"));
         }
     }
     app.mode = Mode::Normal;
@@ -714,7 +714,7 @@ fn text_input_enter(app: &mut App, _start: &Path, git_tx: &mpsc::Sender<std::pat
             Some(Action::PathInput) => {
                 let target = crate::nav::expand(&app.input.value());
                 if !app.navigate_to(Path::new(&target)) {
-                    app.set_status("path not found");
+                    app.set_err("path not found");
                 }
                 app.mode = Mode::Normal;
             }
@@ -733,7 +733,7 @@ fn text_input_enter(app: &mut App, _start: &Path, git_tx: &mpsc::Sender<std::pat
                             .arg(&p)
                             .spawn()
                         {
-                            app.set_status(format!("open failed: {e}"));
+                            app.set_err(format!("open failed: {e}"));
                         }
                     } else {
                         app.set_status("no command");
@@ -861,7 +861,7 @@ pub fn handle(
             // keep the app alive.
             let root = app.arena.nodes[app.arena.root].path.clone();
             if let Err(e) = crate::shell::drop_to_shell(&root) {
-                app.set_status(format!("shell: {e}"));
+                app.set_err(format!("shell: {e}"));
             }
             app.force_redraw = true;
         }
@@ -878,7 +878,7 @@ pub fn handle(
         Action::JumpHome => {
             let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from)
             else {
-                app.set_status("$HOME not set");
+                app.set_err("$HOME not set");
                 return Ok(());
             };
             reroot(app, &home, git_tx);
@@ -894,12 +894,12 @@ pub fn handle(
                         .map(|h| std::path::PathBuf::from(h).join(".local/share"))
                 });
             let Some(base) = base else {
-                app.set_status("neither $XDG_DATA_HOME nor $HOME is set");
+                app.set_err("neither $XDG_DATA_HOME nor $HOME is set");
                 return Ok(());
             };
             let trash = base.join("Trash/files");
             if !trash.exists() {
-                app.set_status(format!("trash dir not found: {}", trash.display()));
+                app.set_err(format!("trash dir not found: {}", trash.display()));
                 return Ok(());
             }
             reroot(app, &trash, git_tx);
@@ -1023,7 +1023,7 @@ pub fn handle(
                     // New active arena needs a fresh git scan.
                     let _ = git_tx.send(app.arena.nodes[app.arena.root].path.clone());
                 }
-                Err(e) => app.set_status(format!("open tab failed: {e}")),
+                Err(e) => app.set_err(format!("open tab failed: {e}")),
             }
         }
         Action::CloseTab => {
@@ -1303,7 +1303,7 @@ fn toggle_action(app: &mut App, git_tx: &mpsc::Sender<std::path::PathBuf>) {
                     app.set_status("starting…");
                 }
             } else if let Err(e) = open::that_detached(&p) {
-                app.set_status(format!("open failed: {e}"));
+                app.set_err(format!("open failed: {e}"));
             }
         }
     }

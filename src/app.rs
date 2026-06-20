@@ -77,6 +77,9 @@ pub struct App {
     /// screen a child clobbered. The loop clears the terminal and resets this.
     pub force_redraw: bool,
     pub status: String,
+    /// True when the current `status` text is an error, so the status bar
+    /// paints it red instead of the default fg. Reset by every `set_status`.
+    pub status_err: bool,
     pub should_quit: bool,
     pub input: TextInput,
     pub search_results: Vec<(PathBuf, Vec<u32>)>,
@@ -164,6 +167,7 @@ impl App {
             commands: std::collections::HashMap::new(),
             force_redraw: false,
             status,
+            status_err: false,
             should_quit: false,
             input: TextInput::new(),
             search_results: Vec::new(),
@@ -203,6 +207,15 @@ impl App {
     /// can fade it after 3 seconds.
     pub fn set_status<S: Into<String>>(&mut self, s: S) {
         self.status = s.into();
+        self.status_err = false;
+        self.status_set_at = std::time::Instant::now();
+    }
+
+    /// Like [`set_status`] but flags the text as an error so the status bar
+    /// renders it red. Use for any "… failed" / rejected-action message.
+    pub fn set_err<S: Into<String>>(&mut self, s: S) {
+        self.status = s.into();
+        self.status_err = true;
         self.status_set_at = std::time::Instant::now();
     }
 
@@ -230,6 +243,19 @@ impl App {
     /// both are small in practice.
     pub fn marks_bytes(&self) -> u64 {
         self.marks
+            .iter()
+            .filter_map(|p| {
+                self.arena.nodes.iter()
+                    .find(|n| n.path == *p && !n.is_dir())
+                    .map(|n| n.size)
+            })
+            .sum()
+    }
+
+    /// Total byte weight of the current delete/op targets (marks, else the
+    /// cursor file). Dirs contribute 0 — we don't recurse for a confirm line.
+    pub fn targets_bytes(&self) -> u64 {
+        self.targets()
             .iter()
             .filter_map(|p| {
                 self.arena.nodes.iter()
@@ -556,6 +582,12 @@ impl App {
             .map(|(p, _, idx)| (p, idx))
             .collect();
         self.search_idx = 0;
+        let n = self.search_results.len();
+        if n == 0 {
+            self.set_status("no matches");
+        } else {
+            self.set_status(format!("1/{n} matches"));
+        }
         self.jump_to_search();
     }
 
@@ -581,6 +613,7 @@ impl App {
         } else {
             (self.search_idx + n - 1) % n
         };
+        self.set_status(format!("{}/{n} matches", self.search_idx + 1));
         self.jump_to_search();
     }
 
@@ -602,7 +635,7 @@ impl App {
                 Some(target)
             }
             Err(e) => {
-                self.set_status(format!("create failed: {e}"));
+                self.set_err(format!("create failed: {e}"));
                 None
             }
         };
@@ -621,7 +654,7 @@ impl App {
                     self.set_status(format!("renamed -> {}", np.display()));
                     out = Some(np);
                 }
-                Err(e) => self.set_status(format!("rename failed: {e}")),
+                Err(e) => self.set_err(format!("rename failed: {e}")),
             }
         }
         self.mode = Mode::Normal;
@@ -694,7 +727,7 @@ impl App {
         let dir = self.sel_dir().unwrap_or_else(|| root.clone());
         let cmd = crate::command::expand(template, &crate::command::Subst { targets, dir });
         if let Err(e) = crate::shell::run_once(&root, &cmd) {
-            self.set_status(format!("shell failed: {e}"));
+            self.set_err(format!("shell failed: {e}"));
         }
         // The child clobbered the alt screen; force a full repaint next frame.
         self.force_redraw = true;
@@ -891,6 +924,16 @@ mod tests {
         a.apply(Action::Down);
         a.apply(Action::Up);
         assert_eq!(a.selected, 0);
+    }
+
+    #[test]
+    fn set_err_flags_status_and_set_status_clears_it() {
+        let mut a = app();
+        a.set_err("boom");
+        assert!(a.status_err, "set_err must mark the status as an error");
+        assert_eq!(a.status, "boom");
+        a.set_status("ok");
+        assert!(!a.status_err, "set_status must reset the error flag");
     }
 
     #[test]

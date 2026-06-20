@@ -154,9 +154,9 @@ pub fn render(area: Rect, frame: &mut Frame, app: &App) {
                 .add_modifier(Modifier::BOLD),
         ));
     }
-    let body = if !app.status.is_empty()
-        && app.status_set_at.elapsed() < Duration::from_secs(3)
-    {
+    let showing_status = !app.status.is_empty()
+        && app.status_set_at.elapsed() < Duration::from_secs(3);
+    let body = if showing_status {
         app.status.clone()
     } else {
         let (p, perms, size, mt) = cursor_meta(app);
@@ -168,7 +168,17 @@ pub fn render(area: Rect, frame: &mut Frame, app: &App) {
             .max(8);
         format!("{}  {}  {}  {}", truncate_left(&p, path_max), perms, size, mt)
     };
-    left_spans.push(Span::raw(body));
+    // Error status text paints red + bold; everything else uses default fg.
+    if showing_status && app.status_err {
+        left_spans.push(Span::styled(
+            body,
+            Style::default()
+                .fg(app.theme.git_conflict)
+                .add_modifier(Modifier::BOLD),
+        ));
+    } else {
+        left_spans.push(Span::raw(body));
+    }
     frame.render_widget(Paragraph::new(Line::from(left_spans)), segs[0]);
 
     // Center: marks summary (or blank)

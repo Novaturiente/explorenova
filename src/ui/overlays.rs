@@ -546,28 +546,35 @@ fn render_confirm(f: &mut Frame, body: Rect, app: &App, theme: &Theme) {
             .unwrap_or_default()
     };
     // The same confirm modal serves permanent-delete and (optional)
-    // trash; the header reflects which one is pending.
+    // trash; the header (and border accent) reflect which one is pending.
     let trashing = matches!(app.pending, Some(crate::keymap::Action::Trash));
-    let (title, header) = if trashing {
-        ("Confirm trash", "Move to trash:")
+    let (title, header, accent) = if trashing {
+        ("Confirm trash", "Move to trash:", theme.mark)
     } else {
-        ("Confirm delete", "Permanently delete:")
+        ("Confirm delete", "Permanently delete:", theme.git_conflict)
     };
-    // 5 content rows (header, blank, name, blank, buttons) + 2 border + 1 slack
-    let r = modal::adaptive_rect(56, 8, body);
+    // 6 content rows (header, blank, name, size, blank, buttons) + 2 border + 1 slack
+    let r = modal::adaptive_rect(56, 9, body);
     f.render_widget(Clear, r);
-    let block = modal::modal_block(title, theme);
+    let block = modal::modal_block_colored(title, accent);
     let inner = modal::pad_inner(block.inner(r));
     f.render_widget(block, r);
+    // Dim subline: count + total byte weight of what's about to go.
+    let bytes = crate::status::human_bytes(app.targets_bytes());
+    let n = app.targets().len();
+    let summary = if n > 1 {
+        format!("  {n} items • {bytes}")
+    } else {
+        format!("  {bytes}")
+    };
     let lines = vec![
         Line::from(Span::styled(
             header,
-            Style::default()
-                .fg(theme.git_conflict)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(accent).add_modifier(Modifier::BOLD),
         )),
         Line::from(""),
         Line::from(format!("  {name}")),
+        Line::from(Span::styled(summary, modal::dim_style(theme))),
         Line::from(""),
         Line::from(vec![
             Span::styled(

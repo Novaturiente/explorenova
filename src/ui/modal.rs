@@ -42,19 +42,23 @@ pub fn pad_inner(inner: Rect) -> Rect {
     }
 }
 
-/// Consistent modal Block: rounded border, title padded with spaces
-/// and styled in the theme header color.
+/// Consistent modal Block: rounded border + title, both in the theme
+/// header accent so popups stand out from the dimmed tree behind them.
 pub fn modal_block(title: &str, theme: &Theme) -> Block<'static> {
+    modal_block_colored(title, theme.header)
+}
+
+/// Like [`modal_block`] but with an explicit border/title accent — used
+/// by the confirm dialog to signal danger (red delete, peach trash).
+pub fn modal_block_colored(title: &str, accent: Color) -> Block<'static> {
     let title_span = Span::styled(
         format!(" {title} "),
-        Style::default()
-            .fg(theme.header)
-            .add_modifier(Modifier::BOLD),
+        Style::default().fg(accent).add_modifier(Modifier::BOLD),
     );
     Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.dim))
+        .border_style(Style::default().fg(accent))
         .title(title_span)
 }
 

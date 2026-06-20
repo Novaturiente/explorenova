@@ -147,7 +147,7 @@ fn main() -> Result<()> {
     let arena = Arena::new(&start)?;
     let mut app = App::new(arena, config, state.clone());
     if let Some(e) = config_err {
-        app.set_status(format!("config error: {e} (using defaults)"));
+        app.set_err(format!("config error: {e} (using defaults)"));
     }
     let sharesp = shares_path();
     app.shares = explorenova::smb::load(&sharesp);
@@ -289,10 +289,10 @@ fn main() -> Result<()> {
                 if let Some(target) = reveal {
                     app.navigate_to(&target);
                 }
-                let msg = match res {
+                match res {
                     Ok(s) => {
                         app.cut_restore = None; // move succeeded; drop the stash
-                        s
+                        app.set_status(s);
                     }
                     Err(e) => {
                         // Move failed — sources still exist; restore the cut
@@ -300,10 +300,9 @@ fn main() -> Result<()> {
                         if let Some(c) = app.cut_restore.take() {
                             app.clipboard = Some(c);
                         }
-                        format!("op failed: {e}")
+                        app.set_err(format!("op failed: {e}"));
                     }
                 };
-                app.set_status(msg);
             }
         }
 
