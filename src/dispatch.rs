@@ -850,7 +850,7 @@ pub fn handle(
             if let Some(&id) = app.visible.get(app.selected) {
                 let p = app.arena.nodes[id].path.clone();
                 if !app.arena.nodes[id].is_dir() {
-                    let _ = open::that_detached(&p);
+                    app.open_path(&p);
                 }
             }
         }
@@ -1309,8 +1309,8 @@ fn toggle_action(app: &mut App, git_tx: &mpsc::Sender<std::path::PathBuf>) {
                     app.op = Some(state);
                     app.set_status("starting…");
                 }
-            } else if let Err(e) = open::that_detached(&p) {
-                app.set_err(format!("open failed: {e}"));
+            } else {
+                app.open_path(&p);
             }
         }
     }

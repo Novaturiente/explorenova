@@ -738,6 +738,33 @@ impl App {
         self.force_redraw = true;
     }
 
+    /// The opener template for `path`'s extension, if any. Pure lookup.
+    pub fn opener_for(&self, path: &std::path::Path) -> Option<String> {
+        let ext = path.extension().and_then(|e| e.to_str())?.to_lowercase();
+        self.config.openers.get(&ext).cloned()
+    }
+
+    /// Open `path`: run its extension opener (against just this path), or
+    /// fall back to the OS default app. Used by `o` and Enter-on-file.
+    /// ponytail: openers run suspended via `run_once` (like `!` and `[commands]`) —
+    /// correct for terminal editors; a GUI app briefly suspends the TUI until it's closed.
+    /// Add a non-blocking flag later if that feels laggy.
+    pub fn open_path(&mut self, path: &std::path::Path) {
+        if let Some(template) = self.opener_for(path) {
+            let dir = path.parent().map(|p| p.to_path_buf())
+                .unwrap_or_else(|| self.arena.nodes[self.arena.root].path.clone());
+            let subst = crate::command::Subst { targets: vec![path.to_path_buf()], dir };
+            let cmd = crate::command::expand(&template, &subst);
+            if let Err(e) = crate::shell::run_once(
+                &self.arena.nodes[self.arena.root].path.clone(), &cmd) {
+                self.set_err(format!("opener failed: {e}"));
+            }
+            self.force_redraw = true;
+        } else if let Err(e) = open::that_detached(path) {
+            self.set_err(format!("open failed: {e}"));
+        }
+    }
+
     /// Single chokepoint for the "selection-if-any-else-cursor" rule.
     pub fn targets(&self) -> Vec<PathBuf> {
         if !self.marks.is_empty() {
@@ -899,6 +926,15 @@ mod tests {
             config.theme.insert((*k).to_string(), (*v).to_string());
         }
         App::new(arena, config, State::default())
+    }
+
+    #[test]
+    fn opener_for_matches_extension() {
+        let mut a = app();
+        a.config.openers.insert("md".into(), "glow {file}".into());
+        assert_eq!(a.opener_for(std::path::Path::new("/x/readme.md")).as_deref(), Some("glow {file}"));
+        assert!(a.opener_for(std::path::Path::new("/x/photo.png")).is_none());
+        assert!(a.opener_for(std::path::Path::new("/x/Makefile")).is_none());
     }
 
     #[test]

@@ -61,6 +61,15 @@ pub const SAMPLE_CONFIG: &str = r##"# explorenova configuration
 # via [keys] with the action name `script_pick`. The same {paths}/{file}/...
 # placeholders also work in the `!` one-shot shell prompt.
 
+# --- Openers -----------------------------------------------------------
+# Per-extension open commands (lowercase ext, no dot). Opening a file of a
+# listed type (o / Enter) runs the command instead of the OS default app;
+# any other type still uses the default. Same placeholders as [commands].
+# [openers]
+# md = "glow {file}"
+# html = "firefox {file}"
+# mp4 = "mpv {file}"
+
 # --- Theme -------------------------------------------------------------
 # preset: omit (tuned RGB default) or "terminal" (follow your terminal palette).
 # Override any field with an ANSI name ("blue", "light_cyan") or hex ("#50C8FA").
@@ -168,6 +177,10 @@ pub struct Config {
     /// Raw `[theme]` table: field-name -> color string (or `preset`).
     /// Parsed tolerantly into a `Theme` at startup; bad values warn, not fail.
     pub theme: BTreeMap<String, String>,
+    /// Extension (lowercased, no dot) -> shell command template, run when
+    /// opening a file of that type (o / Enter). Same `{file}`/`{paths}`/…
+    /// placeholders as `[commands]`. No rule -> the OS default app.
+    pub openers: BTreeMap<String, String>,
 }
 
 /// `$XDG_CONFIG_HOME/explorenova/scripts` (or `~/.config/...`). Home of the
@@ -311,6 +324,16 @@ mod tests {
         // missing [theme] -> empty map, no error
         let (c2, _) = Config::load_str("icons = true\n");
         assert!(c2.theme.is_empty());
+    }
+
+    #[test]
+    fn openers_table_parses() {
+        let (c, err) = Config::load_str("[openers]\nmd = \"glow {file}\"\n");
+        assert!(err.is_none());
+        assert_eq!(c.openers.get("md").map(String::as_str), Some("glow {file}"));
+        // missing table -> empty
+        let (c2, _) = Config::load_str("icons = true\n");
+        assert!(c2.openers.is_empty());
     }
 
     #[test]
