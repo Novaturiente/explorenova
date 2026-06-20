@@ -23,25 +23,26 @@ pub struct Theme {
 
 impl Default for Theme {
     fn default() -> Self {
-        // Palette tuned for contrast on a dark background. Saturated
-        // primaries; mark and git_modified use distinct hues so they
-        // don't visually collide on a row that is both marked and dirty.
+        // Catppuccin Mocha. Roles mapped to distinct accents so colours that
+        // can share a row (mark vs git_modified) and fg vs bg (file vs
+        // selected_bg, file vs dim) never collide. Hex from the official
+        // Catppuccin Mocha palette.
         Self {
-            dir: Color::Rgb(80, 200, 250),         // bright sky
-            file: Color::Rgb(225, 225, 230),       // near-white
-            selected_bg: Color::Rgb(60, 80, 130),  // higher contrast
-            git_modified: Color::Rgb(255, 195, 60), // amber
-            git_added: Color::Rgb(80, 220, 110),   // vivid green
-            git_untracked: Color::Rgb(130, 175, 255), // sky blue
-            git_conflict: Color::Rgb(255, 90, 90), // bright red
-            match_hl: Color::Rgb(230, 130, 230),   // pink
-            mark: Color::Rgb(255, 230, 100),       // saturated yellow
-            executable: Color::Rgb(130, 240, 130), // mint green
-            symlink: Color::Rgb(140, 240, 255),    // cyan-bright
-            media: Color::Rgb(230, 130, 230),      // pink
-            archive: Color::Rgb(255, 140, 80),     // orange
-            header: Color::Rgb(140, 180, 255),
-            dim: Color::Rgb(120, 120, 140),
+            dir: Color::Rgb(137, 180, 250),         // Blue   #89b4fa
+            file: Color::Rgb(205, 214, 244),        // Text   #cdd6f4
+            selected_bg: Color::Rgb(69, 71, 90),    // Surface1 #45475a
+            git_modified: Color::Rgb(249, 226, 175), // Yellow #f9e2af
+            git_added: Color::Rgb(166, 227, 161),   // Green  #a6e3a1
+            git_untracked: Color::Rgb(137, 220, 235), // Sky    #89dceb
+            git_conflict: Color::Rgb(243, 139, 168), // Red    #f38ba8
+            match_hl: Color::Rgb(245, 194, 231),    // Pink   #f5c2e7
+            mark: Color::Rgb(250, 179, 135),        // Peach  #fab387
+            executable: Color::Rgb(148, 226, 213),  // Teal   #94e2d5
+            symlink: Color::Rgb(116, 199, 236),     // Sapphire #74c7ec
+            media: Color::Rgb(203, 166, 247),       // Mauve  #cba6f7
+            archive: Color::Rgb(235, 160, 172),     // Maroon #eba0ac
+            header: Color::Rgb(180, 190, 254),      // Lavender #b4befe
+            dim: Color::Rgb(108, 112, 134),         // Overlay0 #6c7086
         }
     }
 }

@@ -36,8 +36,8 @@ changes persist across restarts, except under `--tree-only`
 
 ### Theme
 
-Colors default to a tuned RGB palette (looks the same in every terminal).
-To follow your terminal's color scheme instead, opt in:
+Colors default to the Catppuccin Mocha palette (truecolor, looks the same in
+every terminal). To follow your terminal's color scheme instead, opt in:
 
     [theme]
     preset = "terminal"
