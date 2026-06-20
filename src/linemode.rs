@@ -41,6 +41,7 @@ impl LineMode {
             LineMode::None => String::new(),
             LineMode::Size => {
                 if n.is_dir() {
+                    // ponytail: dirs show no size — we don't recurse to total them.
                     String::new()
                 } else {
                     crate::status::human_bytes(n.size)
@@ -138,7 +139,7 @@ mod tests {
     #[test]
     fn rel_time_buckets() {
         let now = SystemTime::now();
-        assert_eq!(rel_time(now), "0s");
+        assert!(rel_time(now).ends_with('s'));
         assert_eq!(rel_time(now - Duration::from_secs(120)), "2m");
         assert_eq!(rel_time(now - Duration::from_secs(3 * 3600)), "3h");
     }

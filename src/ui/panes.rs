@@ -103,11 +103,12 @@ pub fn tree_row<'a>(
     if used + git_cells + lm_cells < total {
         let pad = total - used - git_cells - lm_cells;
         spans.push(Span::raw(" ".repeat(pad)));
+        if !lm.is_empty() {
+            spans.push(Span::styled(format!("{lm} "), Style::default().fg(theme.dim)));
+        }
     } else {
+        // No room for the linemode cell — skip it; the git glyph still follows.
         spans.push(Span::raw(" "));
-    }
-    if !lm.is_empty() {
-        spans.push(Span::styled(format!("{lm} "), Style::default().fg(theme.dim)));
     }
     let git_style = if git_clean && !selected {
         Style::default().fg(theme.dim)
