@@ -105,6 +105,9 @@ pub struct App {
     /// Global sort state (mirrors `state.sort`). Pushed into every Arena
     /// via `apply_sort_to_arenas`; persisted to state.toml on change.
     pub sort: crate::sort::SortState,
+    /// Active tree linemode column (size/mtime/perms/none). Cycled with
+    /// `L`, mirrored into `state.line_mode`, persisted on quit.
+    pub line_mode: crate::linemode::LineMode,
     /// Cached free-disk for current root. Refreshed on cwd change OR
     /// every 30s.
     pub disk_free: Option<(PathBuf, u64, std::time::Instant)>,
@@ -144,6 +147,7 @@ pub struct App {
 impl App {
     pub fn new(mut arena: Arena, config: Config, state: State) -> Self {
         let sort = state.sort;
+        let line_mode = state.line_mode;
         arena.set_sort(sort);
         let visible = arena.flatten();
         let (theme, theme_warnings) = crate::ui::theme::Theme::from_config(&config.theme);
@@ -181,6 +185,7 @@ impl App {
             tabs: Vec::new(),
             active_slot: 0,
             sort,
+            line_mode,
             disk_free: None,
             status_set_at: std::time::Instant::now(),
             op: None,

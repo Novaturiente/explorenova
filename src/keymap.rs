@@ -68,6 +68,7 @@ pub enum Action {
     SortByExt,
     SortToggleReverse,
     SortToggleDirFirst,
+    CycleLinemode,
     Help,
     Quit,
     Cancel,
@@ -107,6 +108,7 @@ impl Action {
             "sort_ext" => SortByExt,
             "sort_reverse" => SortToggleReverse,
             "sort_dir_first" => SortToggleDirFirst,
+            "cycle_linemode" => CycleLinemode,
             "help" => Help,
             "parent" => Parent,
             "toggle_mark" => ToggleMark,
@@ -175,6 +177,7 @@ impl Keymap {
             (JumpHome, vec!["H"]),
             (NewTab, vec!["t"]), (CloseTab, vec!["w"]),
             (SortMenu, vec!["s"]),
+            (CycleLinemode, vec!["L"]),
             (Help, vec!["?"]),
             (Quit, vec!["q"]), (Cancel, vec!["esc"]),
         ]

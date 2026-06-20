@@ -16,6 +16,7 @@ pub fn tree_row<'a>(
     marked: bool,
     cut: bool,
     width: u16,
+    line_mode: crate::linemode::LineMode,
 ) -> Line<'a> {
     let n = &arena.nodes[id];
     let indent = "  ".repeat(n.depth);
@@ -94,14 +95,19 @@ pub fn tree_row<'a>(
     spans.push(Span::styled(name.clone(), name_style));
     used += name_chars;
 
-    // Pad to right-align git glyph (1 cell + 1 trailing space = 2 cells).
+    // Right side: optional linemode cell + 2-cell git glyph, right-aligned.
+    let lm = line_mode.cell(n);
+    let lm_cells = if lm.is_empty() { 0 } else { lm.chars().count() + 1 };
     let total = width as usize;
     let git_cells = 2usize;
-    if used + git_cells < total {
-        let pad = total - used - git_cells;
+    if used + git_cells + lm_cells < total {
+        let pad = total - used - git_cells - lm_cells;
         spans.push(Span::raw(" ".repeat(pad)));
     } else {
         spans.push(Span::raw(" "));
+    }
+    if !lm.is_empty() {
+        spans.push(Span::styled(format!("{lm} "), Style::default().fg(theme.dim)));
     }
     let git_style = if git_clean && !selected {
         Style::default().fg(theme.dim)
@@ -123,7 +129,7 @@ mod tests {
         std::fs::write(d.path().join("z.txt"), "x").unwrap();
         let a = Arena::new(d.path()).unwrap();
         let child = a.nodes[a.root].children.as_ref().unwrap()[0];
-        let line = tree_row(&a, child, true, &Theme::default(), true, false, false, 80);
+        let line = tree_row(&a, child, true, &Theme::default(), true, false, false, 80, crate::linemode::LineMode::None);
         let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
         assert!(text.contains("z.txt"));
     }
@@ -135,7 +141,7 @@ mod tests {
         std::fs::write(d.path().join("z.txt"), "x").unwrap();
         let a = Arena::new(d.path()).unwrap();
         let child = a.nodes[a.root].children.as_ref().unwrap()[0];
-        let line = tree_row(&a, child, false, &Theme::default(), true, false, true, 80);
+        let line = tree_row(&a, child, false, &Theme::default(), true, false, true, 80, crate::linemode::LineMode::None);
         // The name span carries the DIM modifier when cut.
         let name_span = line
             .spans

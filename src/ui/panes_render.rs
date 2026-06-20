@@ -113,6 +113,7 @@ pub fn render_pane_tree(
                 marks_ref.contains(path),
                 cut_paths.is_some_and(|ps| ps.iter().any(|p| p == path)),
                 inner_w,
+                app.line_mode,
             ))
         })
         .collect();

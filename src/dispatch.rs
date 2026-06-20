@@ -1071,6 +1071,11 @@ pub fn handle(
                 if app.sort.dir_first { "on" } else { "off" }
             ));
         }
+        Action::CycleLinemode => {
+            app.line_mode = app.line_mode.next();
+            app.state.line_mode = app.line_mode;
+            app.set_status(format!("linemode: {}", app.line_mode.label()));
+        }
         other => app.apply(other),
     }
     Ok(())

@@ -20,6 +20,7 @@ pub struct State {
     pub tree_pane: PaneOverride,
     pub preview_pane: PaneOverride,
     pub sort: SortState,
+    pub line_mode: crate::linemode::LineMode,
 }
 
 impl State {
@@ -126,6 +127,12 @@ mod tests {
         };
         let back = State::parse(&s.to_toml());
         assert_eq!(back.sort, s.sort);
+    }
+
+    #[test]
+    fn line_mode_persists() {
+        let s = State { line_mode: crate::linemode::LineMode::Perms, ..State::default() };
+        assert_eq!(State::parse(&s.to_toml()).line_mode, crate::linemode::LineMode::Perms);
     }
 
     #[test]
