@@ -72,6 +72,10 @@ pub struct App {
     /// Validated `[commands]` bindings: single-token chord -> shell template.
     /// Filtered against the keymap at startup (see `command::validate_commands`).
     pub commands: std::collections::HashMap<String, String>,
+    /// Set after a shell-out (editor, command, picker, drop-to-shell, SMB mount)
+    /// to force a full repaint next frame — ratatui's diff alone won't repaint a
+    /// screen a child clobbered. The loop clears the terminal and resets this.
+    pub force_redraw: bool,
     pub status: String,
     pub should_quit: bool,
     pub input: TextInput,
@@ -158,6 +162,7 @@ impl App {
             cut_restore: None,
             marks: BTreeSet::new(),
             commands: std::collections::HashMap::new(),
+            force_redraw: false,
             status,
             should_quit: false,
             input: TextInput::new(),
@@ -691,6 +696,8 @@ impl App {
         if let Err(e) = crate::shell::run_once(&root, &cmd) {
             self.set_status(format!("shell failed: {e}"));
         }
+        // The child clobbered the alt screen; force a full repaint next frame.
+        self.force_redraw = true;
     }
 
     /// Single chokepoint for the "selection-if-any-else-cursor" rule.

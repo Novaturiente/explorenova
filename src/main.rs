@@ -320,6 +320,15 @@ fn main() -> Result<()> {
             // Drives the half-page jump (Ctrl-d/u).
             app.viewport_h = win.saturating_sub(4);
         }
+        // A child program (editor via `!`, a `[commands]` key, the `\` picker,
+        // drop-to-shell, SMB mount) clobbered the alternate screen. ratatui's
+        // cached frame still matches the new one, so a plain draw would diff to
+        // nothing and leave the child's leftover content on screen. Force a full
+        // repaint once.
+        if app.force_redraw {
+            term.clear()?;
+            app.force_redraw = false;
+        }
         term.draw(|f| {
             ui::render_frame(f, &mut app, &mut preview_cache, &mut picker, &mut img_cache, &keymap)
         })?;

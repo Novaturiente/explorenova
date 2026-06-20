@@ -492,6 +492,8 @@ fn devices_enter_selected(app: &mut App) {
                 crate::devices::mount(&d.device)
             }
         };
+        // gio's interactive password prompt clobbered the alt screen.
+        app.force_redraw = true;
         match res {
             Ok(_) => app.set_status(format!("mounted {}", d.device)),
             Err(e) => app.set_status(format!("mount failed: {e}")),
@@ -790,6 +792,7 @@ fn text_input_enter(app: &mut App, _start: &Path, git_tx: &mpsc::Sender<std::pat
                         } else {
                             app.set_status(format!("added {raw}"));
                         }
+                        app.force_redraw = true;
                         // Reopen the devices modal with the new share.
                         let items = build_device_rows(app);
                         app.dialog =
@@ -860,6 +863,7 @@ pub fn handle(
             if let Err(e) = crate::shell::drop_to_shell(&root) {
                 app.set_status(format!("shell: {e}"));
             }
+            app.force_redraw = true;
         }
         Action::ShowDevices => {
             let items = build_device_rows(app);
