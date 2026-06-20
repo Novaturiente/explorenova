@@ -23,6 +23,16 @@ fn around_terminal<F: FnOnce() -> io::Result<()>>(f: F) -> io::Result<()> {
     let _ = io::stdin().read_line(&mut s);
     enable_raw_mode()?;
     execute!(io::stdout(), EnterAlternateScreen)?;
+    // Drain input that leaked while we were suspended: the dismiss Enter (which
+    // read_line doesn't always fully consume under terminal keyboard protocols
+    // a child like nvim leaves behind) and any keys typed during the child.
+    // Otherwise the event loop replays them as actions — a trailing Enter fires
+    // Toggle, re-opening the cursor file via xdg-open.
+    // ponytail: zero-timeout poll loop; may swallow a keypress the user makes in
+    // the same instant the TUI returns. Acceptable vs replaying a stale Enter.
+    while crossterm::event::poll(std::time::Duration::from_millis(0)).unwrap_or(false) {
+        let _ = crossterm::event::read();
+    }
     r
 }
 
