@@ -116,6 +116,18 @@ pub fn rename(path: &Path, new_name: &str) -> io::Result<PathBuf> {
     Ok(np)
 }
 
+/// Cross-filesystem single-file move: copy then remove the source. If the
+/// source removal fails after a successful copy, delete the freshly-written
+/// destination so a reported failure never means a silent duplicate.
+pub fn move_file_cross_fs(src: &Path, dst: &Path) -> Result<(), String> {
+    std::fs::copy(src, dst).map_err(|e| e.to_string())?;
+    if let Err(e) = std::fs::remove_file(src) {
+        let _ = std::fs::remove_file(dst);
+        return Err(format!("move failed (source kept): {e}"));
+    }
+    Ok(())
+}
+
 /// Recoverable delete via system trash.
 pub fn trash_path(path: &Path) -> anyhow::Result<()> {
     trash::delete(path)?;
@@ -356,5 +368,36 @@ mod tests {
         assert!(!paste_would_recurse(Path::new("/a/foo"), Path::new("/a")));
         // unrelated → OK
         assert!(!paste_would_recurse(Path::new("/a/foo"), Path::new("/b")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn move_file_cross_fs_cleans_dest_when_source_remove_fails() {
+        use std::os::unix::fs::PermissionsExt;
+        let d = tempdir().unwrap();
+        let srcdir = d.path().join("ro");
+        std::fs::create_dir(&srcdir).unwrap();
+        let src = srcdir.join("f.txt");
+        std::fs::write(&src, b"data").unwrap();
+        let dst = d.path().join("f.txt");
+        // Make the source's parent read-only so remove_file(src) fails
+        // AFTER copy(src,dst) has already succeeded.
+        std::fs::set_permissions(&srcdir, std::fs::Permissions::from_mode(0o555)).unwrap();
+        let r = move_file_cross_fs(&src, &dst);
+        // restore perms so tempdir cleanup works
+        std::fs::set_permissions(&srcdir, std::fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(r.is_err(), "remove failure must surface as Err");
+        assert!(!dst.exists(), "dest must be cleaned up, not left as a duplicate");
+        assert!(src.exists(), "source must remain intact");
+    }
+
+    #[test]
+    fn move_file_cross_fs_happy_path_moves() {
+        let d = tempdir().unwrap();
+        let src = d.path().join("a.txt");
+        std::fs::write(&src, b"x").unwrap();
+        let dst = d.path().join("b.txt");
+        assert!(move_file_cross_fs(&src, &dst).is_ok());
+        assert!(dst.exists() && !src.exists());
     }
 }

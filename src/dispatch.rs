@@ -906,7 +906,9 @@ pub fn handle(
         }
         Action::SysClipCopy => sysclip_copy(app),
         Action::Trash => {
-            if app.config.confirm_trash {
+            // Confirm when explicitly opted in, OR whenever more than one
+            // item is targeted (a batch fat-finger has no in-app undo).
+            if app.config.confirm_trash || app.targets().len() > 1 {
                 prompt_trash(app);
             } else {
                 trash_targets(app, git_tx);
@@ -1451,6 +1453,29 @@ mod tests {
         assert_eq!(app.mode, crate::keymap::Mode::Confirm);
         assert!(matches!(app.pending, Some(Action::Trash)));
         assert!(app.status.contains("trash"));
+    }
+
+    #[test]
+    fn batch_trash_confirms_even_when_confirm_trash_off() {
+        let d = tempdir().unwrap();
+        for f in ["a.txt", "b.txt"] {
+            std::fs::write(d.path().join(f), "x").unwrap();
+        }
+        let (mut app, tx, _rx) = app_at(d.path());
+        assert!(!app.config.confirm_trash, "default off");
+        // Mark both files.
+        for &id in &app.visible.clone() {
+            if !app.arena.nodes[id].is_dir() {
+                app.marks.insert(app.arena.nodes[id].path.clone());
+            }
+        }
+        handle(&mut app, Action::Trash, d.path(), &tx).unwrap();
+        assert_eq!(app.mode, crate::keymap::Mode::Confirm, "batch trash must confirm");
+        // Single-file path stays fast: clear marks, cursor on one file.
+        app.marks.clear();
+        app.mode = crate::keymap::Mode::Normal;
+        handle(&mut app, Action::Trash, d.path(), &tx).unwrap();
+        assert_ne!(app.mode, crate::keymap::Mode::Confirm, "single trash stays immediate");
     }
 
     #[test]

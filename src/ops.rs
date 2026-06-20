@@ -181,12 +181,9 @@ pub fn spawn_paste(srcs: Vec<PathBuf>, dst_dir: PathBuf, mode: PasteMode) -> OpS
                                     },
                                 )
                                 .map(|_| ())
-                                .map_err(|e| e.to_string())
+                                .map_err(|e| format!("dir move partial — check both locations: {e}"))
                             } else {
-                                std::fs::copy(src, &dst)
-                                    .and_then(|_| std::fs::remove_file(src))
-                                    .map(|_| ())
-                                    .map_err(|e| e.to_string())
+                                crate::fs_ops::move_file_cross_fs(src, &dst)
                             }
                         }
                     }
