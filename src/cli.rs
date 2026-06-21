@@ -9,6 +9,10 @@ pub struct Args {
     /// Launch with the tree pane only (bookmarks + preview hidden this session)
     #[arg(short = 't', long = "tree-only")]
     pub tree_only: bool,
+    /// On quit, write the final directory to this file (for a shell
+    /// wrapper that cd's there). See README "Shell integration".
+    #[arg(long = "cwd-file")]
+    pub cwd_file: Option<PathBuf>,
 }
 
 /// Resolve start dir. Precedence: explicit arg (with `~`/`$VAR` expansion),
@@ -79,5 +83,11 @@ mod tests {
     fn parses_tree_only_flag() {
         let a = Args::try_parse_from(["explorenova", "-t"]).unwrap();
         assert!(a.tree_only);
+    }
+
+    #[test]
+    fn parses_cwd_file_flag() {
+        let a = Args::try_parse_from(["explorenova", "--cwd-file", "/tmp/x"]).unwrap();
+        assert_eq!(a.cwd_file, Some(PathBuf::from("/tmp/x")));
     }
 }

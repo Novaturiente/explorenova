@@ -478,6 +478,7 @@ fn render_input(f: &mut Frame, body: Rect, app: &App, theme: &Theme) {
             Some(Action::AddSmb) => "Add SMB share (smb://user@host/share)",
             Some(Action::Filter) => "Filter",
             Some(Action::ContentSearch) => "Search contents (rg)",
+            Some(Action::ZoxideJump) => "Jump (zoxide)",
             _ => "Input",
         },
     };

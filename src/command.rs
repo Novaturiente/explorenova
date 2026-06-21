@@ -209,10 +209,10 @@ mod tests {
         raw.insert("g".to_string(), "b".to_string()); // prefix of gg
         raw.insert("ctrl-d".to_string(), "c".to_string()); // builtin HalfDown
         raw.insert("c".to_string(), "ok1".to_string()); // free (not a real prefix of ctrl-d)
-        raw.insert("z".to_string(), "ok2".to_string()); // free
+        raw.insert("i".to_string(), "ok2".to_string()); // free
         let (valid, warnings) = validate_commands(&raw, &km);
         assert_eq!(valid.get("c"), Some(&"ok1".to_string()));
-        assert_eq!(valid.get("z"), Some(&"ok2".to_string()));
+        assert_eq!(valid.get("i"), Some(&"ok2".to_string()));
         assert!(!valid.contains_key("x"));
         assert!(!valid.contains_key("g"));
         assert!(!valid.contains_key("ctrl-d"));

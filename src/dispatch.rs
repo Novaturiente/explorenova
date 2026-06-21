@@ -76,6 +76,10 @@ pub fn reroot(app: &mut App, path: &Path, git_tx: &mpsc::Sender<std::path::PathB
             }
             app.set_status(format!("rooted at {}", path.display()));
             let _ = git_tx.send(app.arena.nodes[app.arena.root].path.clone());
+            // ponytail: spawns `zoxide add` per cd (detached, errors ignored).
+            // That's how zoxide's own shell hooks work; the cost is one
+            // short-lived process per directory change.
+            crate::zoxide::add(&app.arena.nodes[app.arena.root].path.clone());
         }
         Err(e) => {
             app.set_err(format!("cannot open {}: {e}", path.display()));
@@ -872,6 +876,18 @@ fn text_input_enter(app: &mut App, _start: &Path, git_tx: &mpsc::Sender<std::pat
                     Err(e) => app.set_err(e),
                 }
             }
+            Some(Action::ZoxideJump) => {
+                let q = app.input.value();
+                app.mode = Mode::Normal;
+                if q.is_empty() {
+                    return;
+                }
+                match crate::zoxide::query(&q) {
+                    Some(dir) if dir.is_dir() => reroot(app, &dir, git_tx),
+                    Some(_) => app.set_err("zoxide: result is not a directory"),
+                    None => app.set_err("zoxide: no match (is zoxide installed?)"),
+                }
+            }
             _ => app.mode = Mode::Normal,
         },
         _ => {}
@@ -943,6 +959,10 @@ pub fn handle(
                 return Ok(());
             };
             reroot(app, &home, git_tx);
+        }
+        Action::ZoxideJump => {
+            app.pending = Some(Action::ZoxideJump);
+            app.enter_mode(Mode::Input, "");
         }
         Action::OpenTrash => {
             // XDG: $XDG_DATA_HOME/Trash/files, falling back to

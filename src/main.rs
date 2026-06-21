@@ -418,5 +418,12 @@ fn main() -> Result<()> {
         let _ = std::fs::create_dir_all(parent);
     }
     let _ = std::fs::write(&sp, app.state.to_toml());
+    // Shell-integration: drop the final directory so a wrapper can cd there.
+    if let Some(cwd_file) = args.cwd_file.as_ref() {
+        let _ = std::fs::write(
+            cwd_file,
+            app.arena.nodes[app.arena.root].path.to_string_lossy().as_bytes(),
+        );
+    }
     Ok(())
 }

@@ -60,6 +60,7 @@ pub enum Action {
     /// triggered from inside the devices modal.
     AddSmb,
     JumpHome,
+    ZoxideJump,
     OpenTrash,
     SysClipCopy,
     NewTab,
@@ -103,6 +104,7 @@ impl Action {
             "toggle_hidden" => ToggleHidden, "refresh" => Refresh,
             "show_devices" => ShowDevices,
             "jump_home" => JumpHome,
+            "zoxide_jump" => ZoxideJump,
             "open_trash" => OpenTrash,
             "sys_clip_copy" => SysClipCopy,
             "new_tab" => NewTab,
@@ -183,6 +185,7 @@ impl Keymap {
             (ToggleHidden, vec!["."]), (Refresh, vec!["R"]),
             (ShowDevices, vec!["M"]),
             (JumpHome, vec!["H"]),
+            (ZoxideJump, vec!["z"]),
             (NewTab, vec!["t"]), (CloseTab, vec!["w"]),
             (SortMenu, vec!["s"]),
             (CycleLinemode, vec!["L"]),
