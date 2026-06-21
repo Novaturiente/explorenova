@@ -871,7 +871,7 @@ fn text_input_enter(app: &mut App, _start: &Path, git_tx: &mpsc::Sender<std::pat
                             paths.into_iter().map(|p| (p, Vec::new())).collect();
                         app.search_idx = 0;
                         app.jump_to_search();
-                        app.set_status(format!("1/{n} matches (content)"));
+                        app.set_status(format!("{}/{n} matches (content)", app.search_idx + 1));
                     }
                     Err(e) => app.set_err(e),
                 }

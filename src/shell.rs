@@ -88,9 +88,13 @@ pub fn edit_lines(dir: &Path, lines: &[String]) -> io::Result<Vec<String>> {
         let (sh, args) = shell_argv(&format!("{ed} {quoted}"));
         Command::new(sh).args(args).current_dir(dir).status().map(|_| ())
     });
-    let out = std::fs::read_to_string(&tmp).unwrap_or_default();
+    let read = std::fs::read_to_string(&tmp);
     let _ = std::fs::remove_file(&tmp);
     r?;
+    // Surface a genuine read failure as the io::Error it is, instead of
+    // letting an empty string fall through to a confusing "line count
+    // mismatch" downstream.
+    let out = read?;
     Ok(out.lines().map(|s| s.to_string()).collect())
 }
 
