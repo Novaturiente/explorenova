@@ -853,6 +853,25 @@ fn text_input_enter(app: &mut App, _start: &Path, git_tx: &mpsc::Sender<std::pat
                     }
                 }
             }
+            Some(Action::ContentSearch) => {
+                let query = app.input.value();
+                app.mode = Mode::Normal;
+                if query.is_empty() {
+                    return;
+                }
+                let root = app.arena.nodes[app.arena.root].path.clone();
+                match crate::search::content_search(&root, &query) {
+                    Ok(paths) => {
+                        let n = paths.len();
+                        app.search_results =
+                            paths.into_iter().map(|p| (p, Vec::new())).collect();
+                        app.search_idx = 0;
+                        app.jump_to_search();
+                        app.set_status(format!("1/{n} matches (content)"));
+                    }
+                    Err(e) => app.set_err(e),
+                }
+            }
             _ => app.mode = Mode::Normal,
         },
         _ => {}
@@ -963,6 +982,10 @@ pub fn handle(
         }
         Action::SearchNext => app.search_cycle(true),
         Action::SearchPrev => app.search_cycle(false),
+        Action::ContentSearch => {
+            app.pending = Some(Action::ContentSearch);
+            app.enter_mode(Mode::Input, "");
+        }
         Action::Filter => {
             app.begin_filter();
             app.pending = Some(Action::Filter);

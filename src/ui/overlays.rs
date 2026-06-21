@@ -477,6 +477,7 @@ fn render_input(f: &mut Frame, body: Rect, app: &App, theme: &Theme) {
             Some(Action::ShellOnce) => "Shell",
             Some(Action::AddSmb) => "Add SMB share (smb://user@host/share)",
             Some(Action::Filter) => "Filter",
+            Some(Action::ContentSearch) => "Search contents (rg)",
             _ => "Input",
         },
     };
