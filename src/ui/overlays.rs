@@ -97,7 +97,7 @@ pub fn render_op_modal(f: &mut Frame, body: Rect, op: &OpState, theme: &Theme) {
     };
     f.render_widget(
         Paragraph::new(Span::styled(
-            " op runs in background · tree refreshes when done",
+            " esc / ctrl-c cancel · runs in background · tree refreshes when done",
             modal::dim_style(theme),
         )),
         footer_rect,

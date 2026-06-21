@@ -251,6 +251,18 @@ pub fn handle_key(
     start: &Path,
     git_tx: &mpsc::Sender<std::path::PathBuf>,
 ) -> Result<()> {
+    // While a long op runs, the only input accepted is cancel (Esc /
+    // Ctrl-c). Everything else is ignored so the user can't mutate the
+    // tree mid-op. Mirrors the op modal taking render precedence.
+    if app.op.is_some() {
+        let ctrl_c = k.code == KeyCode::Char('c')
+            && k.modifiers.contains(KeyModifiers::CONTROL);
+        if k.code == KeyCode::Esc || ctrl_c {
+            app.cancel_op();
+        }
+        return Ok(());
+    }
+
     match app.mode {
         Mode::Normal => {
             let Some(tok) = key_token(k) else { return Ok(()) };

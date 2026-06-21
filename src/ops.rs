@@ -3,7 +3,9 @@
 
 use crate::fs_ops::{is_archive, unique_dest, PasteMode};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::thread;
 use std::time::Instant;
 
@@ -48,9 +50,15 @@ pub struct OpState {
     /// Set when a terminal `OpMsg::Finished` arrives. Main loop reads
     /// this to know the op is over and update status / refresh.
     pub finished: Option<Result<String, String>>,
+    /// Set true to ask the worker to stop at the next item boundary.
+    pub cancel: Arc<AtomicBool>,
 }
 
 impl OpState {
+    pub fn request_cancel(&self) {
+        self.cancel.store(true, Ordering::Relaxed);
+    }
+
     /// Drain any pending messages from the worker. Returns true if the
     /// op transitioned to finished during this poll.
     pub fn poll(&mut self) -> bool {
@@ -113,6 +121,8 @@ pub fn spawn_paste(srcs: Vec<PathBuf>, dst_dir: PathBuf, mode: PasteMode) -> OpS
         .first()
         .and_then(|s| s.file_name().map(|fname| unique_dest(&dst_dir, fname)));
 
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel_worker = cancel.clone();
     let srcs_for_worker = srcs.clone();
     let dst_for_worker = dst_dir.clone();
     thread::spawn(move || {
@@ -124,6 +134,9 @@ pub fn spawn_paste(srcs: Vec<PathBuf>, dst_dir: PathBuf, mode: PasteMode) -> OpS
         let mut claimed: std::collections::HashSet<std::path::PathBuf> = std::collections::HashSet::new();
         let mut first = true;
         for src in &srcs_for_worker {
+            if cancel_worker.load(Ordering::Relaxed) {
+                break;
+            }
             let Some(fname) = src.file_name() else {
                 failed.push(src.display().to_string());
                 continue;
@@ -142,11 +155,15 @@ pub fn spawn_paste(srcs: Vec<PathBuf>, dst_dir: PathBuf, mode: PasteMode) -> OpS
                     if src.is_dir() {
                         let opts = fs_extra::dir::CopyOptions::new().copy_inside(true);
                         let tx2 = tx.clone();
+                        let cancel2 = cancel_worker.clone();
                         fs_extra::dir::copy_with_progress(src, &dst, &opts, |p| {
                             let _ = tx2.send(OpMsg::Progress(
                                 base_done + p.copied_bytes,
                                 total,
                             ));
+                            if cancel2.load(Ordering::Relaxed) {
+                                return fs_extra::dir::TransitProcessResult::Abort;
+                            }
                             fs_extra::dir::TransitProcessResult::ContinueOrAbort
                         })
                         .map(|_| ())
@@ -171,12 +188,16 @@ pub fn spawn_paste(srcs: Vec<PathBuf>, dst_dir: PathBuf, mode: PasteMode) -> OpS
                             if src.is_dir() {
                                 let opts = fs_extra::dir::CopyOptions::new().copy_inside(true);
                                 let tx2 = tx.clone();
+                                let cancel2 = cancel_worker.clone();
                                 fs_extra::dir::move_dir_with_progress(
                                     src, &dst, &opts, |p| {
                                         let _ = tx2.send(OpMsg::Progress(
                                             base_done + p.copied_bytes,
                                             total,
                                         ));
+                                        if cancel2.load(Ordering::Relaxed) {
+                                            return fs_extra::dir::TransitProcessResult::Abort;
+                                        }
                                         fs_extra::dir::TransitProcessResult::ContinueOrAbort
                                     },
                                 )
@@ -195,7 +216,10 @@ pub fn spawn_paste(srcs: Vec<PathBuf>, dst_dir: PathBuf, mode: PasteMode) -> OpS
             }
             let _ = tx.send(OpMsg::Progress(done, total));
         }
-        let msg = if failed.is_empty() {
+        let was_cancelled = cancel_worker.load(Ordering::Relaxed);
+        let msg = if was_cancelled {
+            Ok(format!("cancelled ({} done)", crate::status::human_bytes(done)))
+        } else if failed.is_empty() {
             Ok(format!(
                 "{} {n} -> {}",
                 match kind {
@@ -228,6 +252,7 @@ pub fn spawn_paste(srcs: Vec<PathBuf>, dst_dir: PathBuf, mode: PasteMode) -> OpS
         rx,
         reveal_hint,
         finished: None,
+        cancel,
     }
 }
 
@@ -242,6 +267,9 @@ pub fn spawn_extract(archive: PathBuf) -> Option<OpState> {
         "Extracting {}",
         archive.file_name().and_then(|s| s.to_str()).unwrap_or("?")
     );
+    // ponytail: extract is one external process; cancel is a no-op until it
+    // returns. Killing the child process is a future upgrade.
+    let cancel = Arc::new(AtomicBool::new(false));
     let reveal_archive = archive.clone();
     thread::spawn(move || {
         let result = crate::fs_ops::extract_archive(&archive)
@@ -267,6 +295,7 @@ pub fn spawn_extract(archive: PathBuf) -> Option<OpState> {
                 .unwrap_or_else(|| reveal_archive.clone()),
         ),
         finished: None,
+        cancel,
     })
 }
 
@@ -296,5 +325,20 @@ mod tests {
         std::fs::create_dir(d.path().join("sub")).unwrap();
         std::fs::write(d.path().join("sub/b"), b"abcdef").unwrap();
         assert_eq!(size_of(d.path()), 10);
+    }
+
+    #[test]
+    fn request_cancel_sets_flag() {
+        use std::sync::atomic::Ordering;
+        let d = tempfile::tempdir().unwrap();
+        std::fs::write(d.path().join("a"), b"hello").unwrap();
+        let dst = tempfile::tempdir().unwrap();
+        let op = spawn_paste(
+            vec![d.path().join("a")],
+            dst.path().to_path_buf(),
+            crate::fs_ops::PasteMode::Copy,
+        );
+        op.request_cancel();
+        assert!(op.cancel.load(Ordering::Relaxed));
     }
 }

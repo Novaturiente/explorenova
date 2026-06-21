@@ -232,6 +232,14 @@ impl App {
         self.status_set_at = std::time::Instant::now();
     }
 
+    /// Ask an in-flight op to cancel. No-op when idle.
+    pub fn cancel_op(&mut self) {
+        if let Some(op) = &self.op {
+            op.request_cancel();
+            self.set_status("cancelling…");
+        }
+    }
+
     /// Reveal `target` in the tree, reflatten, and move the cursor to
     /// the revealed row. Returns true if the path was found and selected.
     ///
