@@ -59,6 +59,8 @@ pub fn reroot(app: &mut App, path: &Path, git_tx: &mpsc::Sender<std::path::PathB
                 na.nodes[na.root].expanded = true;
             }
             app.arena = na;
+            app.filter_query.clear();
+            app.filter_cands = None;
             app.visible = app.arena.flatten();
             app.selected = 0;
             // Keep the mount boundary when rerooting deeper INTO the
@@ -88,6 +90,12 @@ pub fn reroot(app: &mut App, path: &Path, git_tx: &mpsc::Sender<std::path::PathB
 /// debounce — which can miss `trash` crate moves entirely when they go
 /// through D-Bus.
 pub fn refresh_in_place(app: &mut App, git_tx: &mpsc::Sender<std::path::PathBuf>) {
+    // ponytail: filter doesn't survive an external-change refresh; re-press f.
+    if app.filter_active() {
+        app.arena.filter = None;
+        app.filter_query.clear();
+        app.filter_cands = None;
+    }
     let cur_root = app.arena.nodes[app.arena.root].path.clone();
     let prev_hidden = app.arena.show_hidden;
     let sel_path = app
@@ -149,6 +157,12 @@ pub fn refresh_in_place(app: &mut App, git_tx: &mpsc::Sender<std::path::PathBuf>
 /// Falls back to a full `refresh_in_place` if any changed dir isn't in
 /// the arena (e.g. a change above the current root).
 pub fn refresh_dirs(app: &mut App, dirs: &[std::path::PathBuf], git_tx: &mpsc::Sender<std::path::PathBuf>) {
+    // ponytail: filter doesn't survive an external-change refresh; re-press f.
+    if app.filter_active() {
+        app.arena.filter = None;
+        app.filter_query.clear();
+        app.filter_cands = None;
+    }
     let sel_path = app
         .visible
         .get(app.selected)
@@ -211,6 +225,8 @@ pub fn ascend(app: &mut App) {
                 na.nodes[na.root].expanded = true;
             }
             app.arena = na;
+            app.filter_query.clear();
+            app.filter_cands = None;
             app.visible = app.arena.flatten();
             app.selected = 0;
             app.navigate_to(&root_path);
@@ -644,6 +660,9 @@ fn handle_text_input_key(
             if app.mode == Mode::Search {
                 app.end_search();
             }
+            if app.pending == Some(Action::Filter) {
+                app.clear_filter();
+            }
             app.mode = Mode::Normal;
             app.input.clear();
             app.pending = None;
@@ -665,6 +684,8 @@ fn handle_text_input_key(
             app.input.delete();
             if app.mode == Mode::Search {
                 app.live_search();
+            } else if app.pending == Some(Action::Filter) {
+                app.live_filter();
             }
         }
         KeyCode::Backspace
@@ -674,12 +695,16 @@ fn handle_text_input_key(
             app.input.backspace();
             if app.mode == Mode::Search {
                 app.live_search();
+            } else if app.pending == Some(Action::Filter) {
+                app.live_filter();
             }
         }
         KeyCode::Char(ch) if !ch.is_control() => {
             app.input.insert(ch);
             if app.mode == Mode::Search {
                 app.live_search();
+            } else if app.pending == Some(Action::Filter) {
+                app.live_filter();
             }
         }
         _ => {}
@@ -695,6 +720,11 @@ fn text_input_enter(app: &mut App, _start: &Path, git_tx: &mpsc::Sender<std::pat
             app.mode = Mode::Normal;
         }
         Mode::Input => match app.pending.take() {
+            Some(Action::Filter) => {
+                // Commit: filter stays applied, candidate cache freed.
+                app.filter_cands = None;
+                app.mode = Mode::Normal;
+            }
             Some(Action::Rename) => {
                 let np = app.commit_rename();
                 app.mark_self_write([app.arena.nodes[app.arena.root].path.clone()]);
@@ -921,6 +951,11 @@ pub fn handle(
         }
         Action::SearchNext => app.search_cycle(true),
         Action::SearchPrev => app.search_cycle(false),
+        Action::Filter => {
+            app.begin_filter();
+            app.pending = Some(Action::Filter);
+            app.enter_mode(Mode::Input, "");
+        }
         Action::PathInput => {
             app.pending = Some(Action::PathInput);
             app.enter_mode(Mode::Input, "");

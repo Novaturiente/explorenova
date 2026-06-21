@@ -127,6 +127,12 @@ pub struct App {
     /// when Search mode is entered (one tree-walk) so every keystroke
     /// only needs to re-rank, not re-collect. None when not in search.
     pub search_cands: Option<Vec<PathBuf>>,
+    /// Active filter query (empty = no filter). When non-empty the tree
+    /// is pruned to fuzzy matches + their ancestor dirs.
+    pub filter_query: String,
+    /// Cached candidate paths for the live filter (collected once on
+    /// begin_filter, dropped on clear).
+    pub filter_cands: Option<Vec<PathBuf>>,
     /// Saved SMB shares (loaded from shares.toml at startup, mutated on
     /// add/delete in the devices modal).
     pub shares: Vec<crate::smb::SmbShare>,
@@ -192,6 +198,8 @@ impl App {
             help_scroll: 0,
             help_filter: String::new(),
             search_cands: None,
+            filter_query: String::new(),
+            filter_cands: None,
             shares: Vec::new(),
             shares_path: PathBuf::new(),
             mount_floor: None,
@@ -620,6 +628,72 @@ impl App {
         };
         self.set_status(format!("{}/{n} matches", self.search_idx + 1));
         self.jump_to_search();
+    }
+
+    pub fn filter_active(&self) -> bool {
+        !self.filter_query.is_empty()
+    }
+
+    /// Start a filter session: cache the candidate path list once.
+    pub fn begin_filter(&mut self) {
+        let root = self.arena.nodes[self.arena.root].path.clone();
+        self.filter_cands = Some(crate::search::collect(&root, self.arena.show_hidden));
+        self.filter_query.clear();
+    }
+
+    /// Recompute the allowed set from the current input and re-prune the
+    /// tree. Empty query clears the prune (shows everything) but keeps the
+    /// session candidate cache.
+    ///
+    /// ponytail: recomputes the allowed set (reveal each match) on every
+    /// keystroke — fine for typical dirs; a 100k-node tree would lag.
+    pub fn live_filter(&mut self) {
+        self.filter_query = self.input.value();
+        let Some(cands) = self.filter_cands.clone() else { return };
+        if self.filter_query.is_empty() {
+            self.arena.filter = None;
+            self.visible = self.arena.flatten();
+            self.selected = self.selected.min(self.visible.len().saturating_sub(1));
+            self.set_status("filter: (all)");
+            return;
+        }
+        let root = self.arena.nodes[self.arena.root].path.clone();
+        let ranked = crate::search::rank(&cands, &root, &self.filter_query);
+        let mut allowed: std::collections::HashSet<usize> = std::collections::HashSet::new();
+        for (p, _, _) in &ranked {
+            if let Ok(Some(id)) = self.arena.reveal(p) {
+                let mut cur = Some(id);
+                while let Some(c) = cur {
+                    allowed.insert(c);
+                    cur = self.arena.nodes[c].parent;
+                }
+            }
+        }
+        let n = ranked.len();
+        self.arena.filter = Some(allowed);
+        self.visible = self.arena.flatten();
+        self.selected = 0;
+        if n == 0 {
+            self.set_status("filter: no matches");
+        } else {
+            self.set_status(format!("filter: {n} matches"));
+        }
+    }
+
+    /// Clear an active filter and restore the full tree.
+    pub fn clear_filter(&mut self) {
+        self.filter_query.clear();
+        self.filter_cands = None;
+        if self.arena.filter.is_some() {
+            self.arena.filter = None;
+            let sel_path = self.visible.get(self.selected)
+                .map(|&id| self.arena.nodes[id].path.clone());
+            self.visible = self.arena.flatten();
+            match sel_path {
+                Some(p) if self.navigate_to(&p) => {}
+                _ => self.selected = self.selected.min(self.visible.len().saturating_sub(1)),
+            }
+        }
     }
 
     /// Returns the created path on success so callers can refresh the
@@ -1304,5 +1378,30 @@ mod tests {
         assert!(a.clipboard.is_some(), "clipboard survives swap");
         a.close_tab();
         assert!(a.clipboard.is_some(), "clipboard survives close");
+    }
+
+    #[test]
+    fn live_filter_prunes_then_clears() {
+        let d = tempdir().unwrap();
+        std::fs::create_dir(d.path().join("sub")).unwrap();
+        std::fs::write(d.path().join("sub/inner.txt"), "1").unwrap();
+        std::fs::write(d.path().join("apple.rs"), "1").unwrap();
+        std::fs::write(d.path().join("banana.rs"), "1").unwrap();
+        let arena = Arena::new(d.path()).unwrap();
+        let mut a = App::new(arena, Config::with_defaults(), State::default());
+        a.begin_filter();
+        a.input.set("apple");
+        a.live_filter();
+        let names: Vec<String> = a.visible.iter()
+            .map(|&id| a.arena.nodes[id].path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert!(names.iter().any(|n| n == "apple.rs"));
+        assert!(!names.iter().any(|n| n == "banana.rs"), "non-match pruned");
+        a.clear_filter();
+        assert!(a.arena.filter.is_none());
+        let names2: Vec<String> = a.visible.iter()
+            .map(|&id| a.arena.nodes[id].path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert!(names2.iter().any(|n| n == "banana.rs"), "restored after clear");
     }
 }

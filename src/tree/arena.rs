@@ -29,6 +29,10 @@ pub struct Arena {
     pub root: NodeId,
     pub show_hidden: bool,
     pub sort: SortState,
+    /// When `Some`, `flatten` shows only these node ids (matches + their
+    /// ancestor dirs). Descends through ancestor dirs regardless of their
+    /// `expanded` flag. `None` = normal expansion-driven flatten.
+    pub filter: Option<std::collections::HashSet<NodeId>>,
 }
 
 impl Arena {
@@ -40,6 +44,7 @@ impl Arena {
             root: 0,
             show_hidden: false,
             sort: SortState::default(),
+            filter: None,
         };
         a.load_children(0)?;
         a.nodes[0].expanded = true;
@@ -177,10 +182,15 @@ impl Arena {
         }
     }
 
-    /// DFS over expanded nodes -> visible NodeId list (root first).
+    /// DFS over expanded nodes -> visible NodeId list (root first). When a
+    /// filter is active, shows only allowed ids and descends ancestor dirs
+    /// regardless of their expanded flag.
     pub fn flatten(&self) -> Vec<NodeId> {
         let mut out = Vec::new();
-        self.visit(self.root, &mut out);
+        match &self.filter {
+            Some(allowed) => self.visit_filtered(self.root, allowed, &mut out),
+            None => self.visit(self.root, &mut out),
+        }
         out
     }
 
@@ -192,6 +202,24 @@ impl Arena {
                 for &c in ch {
                     self.visit(c, out);
                 }
+            }
+        }
+    }
+
+    fn visit_filtered(
+        &self,
+        id: NodeId,
+        allowed: &std::collections::HashSet<NodeId>,
+        out: &mut Vec<NodeId>,
+    ) {
+        // Root is always shown; other nodes only if allowed.
+        if id != self.root && !allowed.contains(&id) {
+            return;
+        }
+        out.push(id);
+        if let Some(ch) = &self.nodes[id].children {
+            for &c in ch {
+                self.visit_filtered(c, allowed, out);
             }
         }
     }
@@ -561,6 +589,37 @@ mod tests {
             .unwrap();
         assert!(run.exec);
         assert!(!plain.exec);
+    }
+
+    #[test]
+    fn filtered_flatten_keeps_matches_and_ancestors() {
+        let d = fixture(); // root: sub/ (inner.txt), a.txt, .hidden
+        let mut a = Arena::new(d.path()).unwrap();
+        // Build the allowed set: reveal sub/inner.txt and add it + ancestors.
+        let target = d.path().join("sub/inner.txt");
+        let id = a.reveal(&target).unwrap().unwrap();
+        let mut allowed = std::collections::HashSet::new();
+        let mut cur = Some(id);
+        while let Some(c) = cur {
+            allowed.insert(c);
+            cur = a.nodes[c].parent;
+        }
+        a.filter = Some(allowed);
+        let names: Vec<String> = a.flatten().iter()
+            .map(|&i| a.nodes[i].path.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        // root's own file_name + sub + inner.txt present; a.txt pruned.
+        assert!(names.iter().any(|n| n == "sub"));
+        assert!(names.iter().any(|n| n == "inner.txt"));
+        assert!(!names.iter().any(|n| n == "a.txt"), "non-match pruned");
+    }
+
+    #[test]
+    fn flatten_without_filter_unchanged() {
+        let d = fixture();
+        let a = Arena::new(d.path()).unwrap();
+        assert!(a.filter.is_none());
+        assert!(a.flatten().len() >= 2); // root + children
     }
 
     #[test]
