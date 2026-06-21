@@ -63,6 +63,37 @@ pub fn drop_to_shell(cwd: &Path) -> io::Result<()> {
     around_terminal(|| Command::new(sh).current_dir(cwd).status().map(|_| ()))
 }
 
+/// Resolve the user's editor: `$VISUAL`, `$EDITOR`, else `vi`.
+pub fn editor() -> String {
+    std::env::var("VISUAL")
+        .or_else(|_| std::env::var("EDITOR"))
+        .unwrap_or_else(|_| "vi".into())
+}
+
+/// Write `lines` to a temp file, open it in `$EDITOR` (TUI suspended),
+/// then read the edited lines back. The temp file lives under `dir` so
+/// editors that show the path show a sensible one.
+pub fn edit_lines(dir: &Path, lines: &[String]) -> io::Result<Vec<String>> {
+    use std::io::Write as _;
+    let tmp = dir.join(".explorenova-bulk-rename.tmp");
+    {
+        let mut f = std::fs::File::create(&tmp)?;
+        for l in lines {
+            writeln!(f, "{l}")?;
+        }
+    }
+    let ed = editor();
+    let quoted = crate::command::shell_quote(&tmp.to_string_lossy());
+    let r = around_terminal(|| {
+        let (sh, args) = shell_argv(&format!("{ed} {quoted}"));
+        Command::new(sh).args(args).current_dir(dir).status().map(|_| ())
+    });
+    let out = std::fs::read_to_string(&tmp).unwrap_or_default();
+    let _ = std::fs::remove_file(&tmp);
+    r?;
+    Ok(out.lines().map(|s| s.to_string()).collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

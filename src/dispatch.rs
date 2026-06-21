@@ -991,6 +991,7 @@ pub fn handle(
             app.pending = Some(Action::Rename);
             app.enter_mode(Mode::Input, &seed);
         }
+        Action::BulkRename => bulk_rename(app, git_tx),
         Action::PermanentDelete => prompt_permanent_delete(app),
         Action::Copy => {
             let targets = app.targets();
@@ -1151,6 +1152,68 @@ fn sysclip_copy(app: &mut App) {
             app.set_status(msg);
         }
         Err(e) => app.set_status(format!("clipboard: {e}")),
+    }
+}
+
+fn bulk_rename(app: &mut App, git_tx: &mpsc::Sender<std::path::PathBuf>) {
+    let targets = app.targets();
+    if targets.is_empty() {
+        app.set_status("nothing to rename");
+        return;
+    }
+    // All targets must share a parent dir (rename is in-place).
+    let parent = match targets[0].parent() {
+        Some(p) => p.to_path_buf(),
+        None => {
+            app.set_err("cannot rename: no parent dir");
+            return;
+        }
+    };
+    if targets.iter().any(|p| p.parent() != Some(parent.as_path())) {
+        app.set_err("bulk rename needs all items in one directory");
+        return;
+    }
+    let olds: Vec<String> = targets
+        .iter()
+        .map(|p| p.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default())
+        .collect();
+    let news = match crate::shell::edit_lines(&parent, &olds) {
+        Ok(v) => v,
+        Err(e) => {
+            app.set_err(format!("editor failed: {e}"));
+            app.force_redraw = true;
+            return;
+        }
+    };
+    app.force_redraw = true;
+    let plan = match crate::fs_ops::plan_bulk_rename(&olds, &news) {
+        Ok(p) => p,
+        Err(e) => {
+            app.set_err(format!("bulk rename aborted: {e}"));
+            return;
+        }
+    };
+    if plan.is_empty() {
+        app.set_status("no names changed");
+        return;
+    }
+    let mut ok = 0usize;
+    let mut failed: Vec<String> = Vec::new();
+    for (old, new) in &plan {
+        match crate::fs_ops::rename(&parent.join(old), new) {
+            Ok(_) => ok += 1,
+            Err(e) => failed.push(format!("{old}: {e}")),
+        }
+    }
+    app.marks.clear();
+    app.mark_self_write([parent.clone()]);
+    refresh_in_place(app, git_tx);
+    if failed.is_empty() {
+        app.set_status(format!("renamed {ok}"));
+    } else {
+        let preview = failed.iter().take(2).cloned().collect::<Vec<_>>().join(", ");
+        let tail = if failed.len() > 2 { ", …" } else { "" };
+        app.set_err(format!("renamed {ok}, {} failed: {preview}{tail}", failed.len()));
     }
 }
 

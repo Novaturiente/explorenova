@@ -305,6 +305,40 @@ pub fn extract_archive(archive: &Path) -> io::Result<PathBuf> {
     }
 }
 
+/// Compute the rename plan from edited names. Validates: equal counts, no
+/// empty/`.`/`..`/separator-bearing names, no duplicate targets. Returns
+/// only the pairs whose name actually changed. Pure — no filesystem access.
+pub fn plan_bulk_rename(
+    olds: &[String],
+    news: &[String],
+) -> Result<Vec<(String, String)>, String> {
+    if olds.len() != news.len() {
+        return Err(format!(
+            "line count mismatch: {} names, {} lines",
+            olds.len(),
+            news.len()
+        ));
+    }
+    let mut seen = std::collections::HashSet::new();
+    for n in news {
+        let t = n.trim();
+        if t.is_empty() || t == "." || t == ".." || t.contains('/')
+            || t.contains(std::path::MAIN_SEPARATOR)
+        {
+            return Err(format!("invalid name: {n:?}"));
+        }
+        if !seen.insert(t.to_string()) {
+            return Err(format!("duplicate target name: {t}"));
+        }
+    }
+    Ok(olds
+        .iter()
+        .zip(news.iter())
+        .filter(|(o, n)| o.trim() != n.trim())
+        .map(|(o, n)| (o.clone(), n.trim().to_string()))
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -399,5 +433,26 @@ mod tests {
         let dst = d.path().join("b.txt");
         assert!(move_file_cross_fs(&src, &dst).is_ok());
         assert!(dst.exists() && !src.exists());
+    }
+
+    #[test]
+    fn plan_bulk_rename_validates_and_diffs() {
+        // count mismatch -> error
+        assert!(plan_bulk_rename(&["a".into(), "b".into()], &["a".into()]).is_err());
+        // only changed pairs returned
+        let got = plan_bulk_rename(
+            &["a.txt".into(), "b.txt".into()],
+            &["a.txt".into(), "c.txt".into()],
+        ).unwrap();
+        assert_eq!(got, vec![("b.txt".to_string(), "c.txt".to_string())]);
+        // duplicate new names -> error
+        assert!(plan_bulk_rename(
+            &["a".into(), "b".into()],
+            &["same".into(), "same".into()],
+        ).is_err());
+        // empty new name -> error
+        assert!(plan_bulk_rename(&["a".into()], &["".into()]).is_err());
+        // path separator in new name -> error
+        assert!(plan_bulk_rename(&["a".into()], &["x/y".into()]).is_err());
     }
 }
