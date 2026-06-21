@@ -7,6 +7,12 @@ use crate::tree::Arena;
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
+/// Max filter matches revealed per keystroke. ponytail: each match triggers
+/// a `reveal` (disk read + tree mutation) on the UI thread, so an unbounded
+/// match set on a short query would freeze; cap it. Excess matches are not
+/// shown (status notes "capped").
+const FILTER_MAX_MATCHES: usize = 500;
+
 #[derive(Debug, Default)]
 pub enum Dialog {
     #[default]
@@ -574,22 +580,19 @@ impl App {
         self.input.backspace();
     }
 
-    /// One-shot tree walk; cache the result for live re-ranking on
-    /// every keystroke during Search mode.
+    /// Enter Search mode. The directory walk is deferred to the first
+    /// non-empty keystroke (see `live_search`) so pressing `/` opens the
+    /// prompt instantly instead of freezing on a full-tree walk.
     pub fn begin_search(&mut self) {
-        let root = self.arena.nodes[self.arena.root].path.clone();
-        self.search_cands = Some(crate::search::collect(&root, self.arena.show_hidden));
+        self.search_cands = None;
         self.search_results.clear();
         self.search_idx = 0;
     }
 
-    /// Re-rank the cached candidate list against the current input,
-    /// then jump the cursor to the top match. Cheap enough to run on
-    /// every keystroke during Search mode.
+    /// Re-rank the candidate list against the current input, then jump the
+    /// cursor to the top match. The candidate list is collected lazily on
+    /// the first non-empty query (capped) and cached for later keystrokes.
     pub fn live_search(&mut self) {
-        let Some(cands) = self.search_cands.as_ref() else {
-            return;
-        };
         let root = self.arena.nodes[self.arena.root].path.clone();
         let query = self.input.value();
         if query.is_empty() {
@@ -597,6 +600,10 @@ impl App {
             self.search_idx = 0;
             return;
         }
+        if self.search_cands.is_none() {
+            self.search_cands = Some(crate::search::collect(&root, self.arena.show_hidden));
+        }
+        let cands = self.search_cands.as_ref().unwrap();
         let ranked = crate::search::rank(cands, &root, &query);
         self.search_results = ranked
             .into_iter()
@@ -642,10 +649,11 @@ impl App {
         !self.filter_query.is_empty()
     }
 
-    /// Start a filter session: cache the candidate path list once.
+    /// Enter filter mode. The directory walk is deferred to the first
+    /// non-empty keystroke (see `live_filter`) so pressing `f` opens the
+    /// prompt instantly instead of freezing on a full-tree walk.
     pub fn begin_filter(&mut self) {
-        let root = self.arena.nodes[self.arena.root].path.clone();
-        self.filter_cands = Some(crate::search::collect(&root, self.arena.show_hidden));
+        self.filter_cands = None;
         self.filter_query.clear();
     }
 
@@ -657,7 +665,6 @@ impl App {
     /// keystroke — fine for typical dirs; a 100k-node tree would lag.
     pub fn live_filter(&mut self) {
         self.filter_query = self.input.value();
-        let Some(cands) = self.filter_cands.clone() else { return };
         if self.filter_query.is_empty() {
             self.arena.filter = None;
             self.visible = self.arena.flatten();
@@ -666,9 +673,16 @@ impl App {
             return;
         }
         let root = self.arena.nodes[self.arena.root].path.clone();
+        // Collect lazily on the first non-empty query (capped) and cache.
+        if self.filter_cands.is_none() {
+            self.filter_cands = Some(crate::search::collect(&root, self.arena.show_hidden));
+        }
+        let cands = self.filter_cands.clone().unwrap();
         let ranked = crate::search::rank(&cands, &root, &self.filter_query);
         let mut allowed: std::collections::HashSet<usize> = std::collections::HashSet::new();
-        for (p, _, _) in &ranked {
+        // Cap reveals: each reveal hits disk + mutates the tree on the UI
+        // thread, so an unbounded match set on a one-char query would freeze.
+        for (p, _, _) in ranked.iter().take(FILTER_MAX_MATCHES) {
             if let Ok(Some(id)) = self.arena.reveal(p) {
                 let mut cur = Some(id);
                 while let Some(c) = cur {
@@ -683,6 +697,8 @@ impl App {
         self.selected = 0;
         if n == 0 {
             self.set_status("filter: no matches");
+        } else if n > FILTER_MAX_MATCHES {
+            self.set_status(format!("filter: {FILTER_MAX_MATCHES}/{n} (capped)"));
         } else {
             self.set_status(format!("filter: {n} matches"));
         }

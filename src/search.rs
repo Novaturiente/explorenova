@@ -3,19 +3,47 @@ use nucleo::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo::{Config, Matcher};
 use std::path::{Path, PathBuf};
 
+/// Max entries / depth a search-or-filter walk will read before stopping.
+/// ponytail: the walk runs on the UI thread, so an unbounded walk of a huge
+/// tree freezes the app. These caps keep the freeze short; matches deeper
+/// than `WALK_MAX_DEPTH` or past `WALK_MAX_ENTRIES` are missed until search
+/// moves off-thread.
+const WALK_MAX_ENTRIES: usize = 50_000;
+const WALK_MAX_DEPTH: usize = 32;
+
 /// Collect candidate paths under `root`. `include_all` => ignore .gitignore + show hidden.
+/// Capped (depth + entry count) so a giant tree can't freeze the UI thread.
 pub fn collect(root: &Path, include_all: bool) -> Vec<PathBuf> {
+    collect_capped(root, include_all, WALK_MAX_ENTRIES, WALK_MAX_DEPTH)
+}
+
+/// Like [`collect`] with explicit caps (exposed for testing). Stops after
+/// `max_entries` results and never descends past `max_depth`.
+pub fn collect_capped(
+    root: &Path,
+    include_all: bool,
+    max_entries: usize,
+    max_depth: usize,
+) -> Vec<PathBuf> {
     let mut wb = WalkBuilder::new(root);
     wb.hidden(!include_all)
         .git_ignore(!include_all)
         .git_global(!include_all)
         .git_exclude(!include_all)
-        .require_git(false);
-    wb.build()
-        .filter_map(Result::ok)
-        .map(|d| d.into_path())
-        .filter(|p| p != root)
-        .collect()
+        .require_git(false)
+        .max_depth(Some(max_depth));
+    let mut out = Vec::new();
+    for d in wb.build().filter_map(Result::ok) {
+        let p = d.into_path();
+        if p == root {
+            continue;
+        }
+        out.push(p);
+        if out.len() >= max_entries {
+            break;
+        }
+    }
+    out
 }
 
 /// Rank `candidates` against `query`. Returns (path, score) descending,
@@ -80,6 +108,11 @@ pub fn content_search(root: &Path, query: &str) -> Result<Vec<PathBuf>, String> 
     let output = Command::new("rg")
         .arg("--files-with-matches")
         .arg("--color=never")
+        // Bound the walk so a huge tree doesn't freeze the UI thread (rg
+        // runs synchronously here). ponytail: matches deeper than this are
+        // missed until content search moves off-thread.
+        .arg("--max-depth")
+        .arg(WALK_MAX_DEPTH.to_string())
         .arg("--")
         .arg(query)
         .current_dir(root)
@@ -151,6 +184,21 @@ mod tests {
             .map(|n| n.to_string_lossy().to_string())
             .collect();
         assert!(names.contains(&"ignored.txt".to_string()));
+    }
+
+    #[test]
+    fn collect_capped_respects_depth_and_entry_caps() {
+        let d = fixture(); // root has README.md, src/ (depth 1) and src/main.rs (depth 2)
+        // Depth cap 1: src/main.rs (depth 2) must be excluded; src/ (depth 1) kept.
+        let shallow = collect_capped(d.path(), true, 10_000, 1);
+        assert!(shallow.iter().any(|p| p.ends_with("src")), "depth-1 entry kept");
+        assert!(
+            !shallow.iter().any(|p| p.ends_with("main.rs")),
+            "depth-2 entry excluded by depth cap"
+        );
+        // Entry cap: never returns more than the cap.
+        let capped = collect_capped(d.path(), true, 2, 32);
+        assert!(capped.len() <= 2, "entry cap bounds the result count");
     }
 
     #[test]
