@@ -407,7 +407,9 @@ fn devices_begin_add(app: &mut App) {
     app.pending = Some(Action::AddSmb);
     app.mode = Mode::Input;
     app.dialog = Dialog::Input;
-    app.set_status("smb url (e.g. smb://user@host/share)");
+    app.set_status(
+        "url: smb://user@host/share · ftp:// · ftps:// · sftp://host/path",
+    );
 }
 
 fn devices_delete_selected(app: &mut App) {
