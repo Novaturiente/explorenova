@@ -589,7 +589,17 @@ fn appick_enter(app: &mut App, sel: usize, len: usize, filtered_idx: &[usize]) {
     };
     if let (Some(entry), Some(&id)) = (entry, app.visible.get(app.selected)) {
         let path = app.arena.nodes[id].path.clone();
-        if let Err(e) = crate::apps::spawn(&entry, &path) {
+        if entry.terminal {
+            // A terminal app (nvim, etc.) takes over the screen: suspend the
+            // TUI and run it in-place, like `o`/Enter — don't relaunch a second
+            // terminal emulator whose startup logs bleed onto our frame.
+            let argv = crate::apps::argv_bare(&entry, &path);
+            let args: Vec<&str> = argv.iter().skip(1).map(String::as_str).collect();
+            if let Err(e) = crate::shell::run_interactive(&argv[0], &args) {
+                app.set_err(format!("open failed: {e}"));
+            }
+            app.force_redraw = true;
+        } else if let Err(e) = crate::apps::spawn(&entry, &path) {
             app.set_err(format!("open failed: {e}"));
         }
     }

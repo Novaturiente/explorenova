@@ -166,7 +166,9 @@ fn terminal_cmd() -> Option<String> {
     None
 }
 
-pub fn argv(app: &AppEntry, file: &Path) -> Vec<String> {
+/// The substituted argv *without* any terminal wrapping — the bare program
+/// and its file argument. Terminal apps run this in-place (TUI suspended).
+pub fn argv_bare(app: &AppEntry, file: &Path) -> Vec<String> {
     let fpath = file.to_string_lossy().to_string();
     let mut out: Vec<String> = Vec::new();
     for tok in app.exec.split_whitespace() {
@@ -179,6 +181,11 @@ pub fn argv(app: &AppEntry, file: &Path) -> Vec<String> {
     if !app.exec.contains('%') {
         out.push(fpath.clone());
     }
+    out
+}
+
+pub fn argv(app: &AppEntry, file: &Path) -> Vec<String> {
+    let out = argv_bare(app, file);
     if app.terminal {
         if let Some(term) = terminal_cmd() {
             let mut wrapped = vec![term, "-e".to_string()];
@@ -198,7 +205,15 @@ pub fn spawn(app: &AppEntry, file: &Path) -> std::io::Result<()> {
             "empty exec",
         ));
     }
-    std::process::Command::new(&v[0]).args(&v[1..]).spawn()?;
+    // Detach stdio: a GUI app inherits the TUI's terminal otherwise, and any
+    // diagnostics it writes (e.g. a relaunched terminal emulator's startup
+    // logs) corrupt the explorenova frame.
+    std::process::Command::new(&v[0])
+        .args(&v[1..])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()?;
     Ok(())
 }
 
