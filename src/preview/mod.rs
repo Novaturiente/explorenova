@@ -81,7 +81,7 @@ pub fn settle_ms(path: &Path, cheap_ms: u64, heavy_ms: u64) -> u64 {
 /// char (NUL, BS, ESC, BEL, …). Without this, raw control bytes in
 /// archive filenames or xlsx cells leak to the terminal as cursor
 /// motion / colour changes and scatter "phantom" text across panes.
-fn sanitize_plain(s: &str) -> String {
+pub(crate) fn sanitize_plain(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for ch in s.chars() {
         match ch {

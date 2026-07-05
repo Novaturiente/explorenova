@@ -37,7 +37,12 @@ pub fn highlighted(path: &Path, max_bytes: u64) -> Option<Text<'static>> {
     let mut h = HighlightLines::new(syntax, theme);
     let mut lines: Vec<Line<'static>> = Vec::new();
     for line in content.lines().take(2000) {
-        let ranges = h.highlight_line(line, ss).ok()?;
+        // lines() only strips the \r of a trailing CRLF. A bare \r, \t,
+        // ESC, or BEL inside the line reaches the terminal raw through
+        // the Span and repaints other panes with file content (the
+        // xlsx/archive path sanitizes; this path must too).
+        let line = super::sanitize_plain(line);
+        let ranges = h.highlight_line(&line, ss).ok()?;
         let spans: Vec<Span<'static>> = ranges
             .into_iter()
             .map(|(st, s)| {
@@ -73,6 +78,26 @@ mod tests {
             .map(|s| s.content.as_ref())
             .collect();
         assert!(l0.contains("hello"));
+    }
+
+    #[test]
+    fn control_chars_never_reach_spans() {
+        // \t jumps tab stops, \r returns the cursor to col 0, \x1b starts
+        // a live ANSI escape — any of them in a Span corrupts the frame
+        // (file content painted over other panes).
+        let d = tempdir().unwrap();
+        let f = d.path().join("raw-log.tsv");
+        fs::write(&f, "a\tb\rc\x1b[31mred\x07bell\nplain").unwrap();
+        let t = highlighted(&f, 1024).unwrap();
+        for line in &t.lines {
+            for sp in &line.spans {
+                assert!(
+                    !sp.content.chars().any(|c| (c as u32) < 0x20 || c == '\u{7f}'),
+                    "control char leaked into span: {:?}",
+                    sp.content
+                );
+            }
+        }
     }
 
     #[test]
