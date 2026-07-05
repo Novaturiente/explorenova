@@ -32,6 +32,8 @@ const ACTION_META: &[(Action, &str, &str)] = &[
     (Action::FocusNext, "Panes / Tabs", "Cycle focus / swap tabs"),
     (Action::ToggleBookmarksPane, "Panes / Tabs", "Toggle bookmarks pane"),
     (Action::TogglePreviewPane, "Panes / Tabs", "Toggle preview pane"),
+    (Action::PreviewScrollDown, "Panes / Tabs", "Scroll preview down"),
+    (Action::PreviewScrollUp, "Panes / Tabs", "Scroll preview up"),
     (Action::ResizeShrink, "Panes / Tabs", "Shrink pane"),
     (Action::ResizeGrow, "Panes / Tabs", "Grow pane"),
     (Action::ReorderLeft, "Panes / Tabs", "Move pane left"),

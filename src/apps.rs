@@ -208,12 +208,17 @@ pub fn spawn(app: &AppEntry, file: &Path) -> std::io::Result<()> {
     // Detach stdio: a GUI app inherits the TUI's terminal otherwise, and any
     // diagnostics it writes (e.g. a relaunched terminal emulator's startup
     // logs) corrupt the explorenova frame.
-    std::process::Command::new(&v[0])
+    let mut child = std::process::Command::new(&v[0])
         .args(&v[1..])
         .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
         .spawn()?;
+    // Reap off-thread so the exited app doesn't linger as a zombie for
+    // the rest of the session (a dropped Child is never waited on).
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
     Ok(())
 }
 

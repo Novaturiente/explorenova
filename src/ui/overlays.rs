@@ -501,17 +501,33 @@ fn render_input(f: &mut Frame, body: Rect, app: &App, theme: &Theme) {
     };
     let val = app.input.value();
     let w = input_rect.width.max(1) as usize;
-    let nchars = val.chars().count();
     // Account for the 2-col "❯ " prefix in the rendered prompt.
     let avail = w.saturating_sub(2).max(1);
-    let (shown, cursor_col): (String, u16) = if nchars < avail {
-        (val.clone(), app.input.caret() as u16)
-    } else {
-        let caret = app.input.caret();
-        let start = caret.saturating_sub(avail - 1);
-        let s: String = val.chars().skip(start).take(avail - 1).collect();
-        (s, (caret - start) as u16)
-    };
+    // All arithmetic in display cells, not char counts — a CJK/emoji char
+    // occupies 2 cells and would otherwise misplace the cursor and
+    // overflow the prompt box.
+    use unicode_width::UnicodeWidthChar;
+    let chars: Vec<char> = val.chars().collect();
+    let caret = app.input.caret().min(chars.len());
+    let cell = |c: &char| c.width().unwrap_or(0);
+    // Scroll the window right until the caret fits inside `avail` cells.
+    let mut start = 0usize;
+    let mut caret_cells: usize = chars[..caret].iter().map(cell).sum();
+    while start < caret && caret_cells >= avail {
+        caret_cells -= cell(&chars[start]);
+        start += 1;
+    }
+    let mut shown = String::new();
+    let mut used = 0usize;
+    for &c in &chars[start..] {
+        let cw = cell(&c);
+        if used + cw > avail {
+            break;
+        }
+        shown.push(c);
+        used += cw;
+    }
+    let cursor_col = caret_cells as u16;
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(

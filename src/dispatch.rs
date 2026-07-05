@@ -63,6 +63,10 @@ pub fn reroot(app: &mut App, path: &Path, git_tx: &mpsc::Sender<std::path::PathB
             app.filter_cands = None;
             app.visible = app.arena.flatten();
             app.selected = 0;
+            // Visual mode must not survive a root change: the outer loop
+            // marks every row between the old and new cursor positions,
+            // which would mark unrelated rows in the NEW tree.
+            app.visual_mode = false;
             // Keep the mount boundary when rerooting deeper INTO the
             // mounted storage (Enter cd-in stays inside the mount); drop
             // it only when leaving the mount (Home/Trash/bookmark away).
@@ -99,7 +103,10 @@ pub fn refresh_in_place(app: &mut App, git_tx: &mpsc::Sender<std::path::PathBuf>
         app.arena.filter = None;
         app.filter_query.clear();
         app.filter_cands = None;
+        app.set_status("filter cleared (tree refreshed)");
     }
+    // Index-based visual marking can't survive a full rebuild either.
+    app.visual_mode = false;
     let cur_root = app.arena.nodes[app.arena.root].path.clone();
     let prev_hidden = app.arena.show_hidden;
     let sel_path = app
@@ -166,6 +173,7 @@ pub fn refresh_dirs(app: &mut App, dirs: &[std::path::PathBuf], git_tx: &mpsc::S
         app.arena.filter = None;
         app.filter_query.clear();
         app.filter_cands = None;
+        app.set_status("filter cleared (directory changed)");
     }
     let sel_path = app
         .visible
@@ -179,7 +187,10 @@ pub fn refresh_dirs(app: &mut App, dirs: &[std::path::PathBuf], git_tx: &mpsc::S
             break;
         }
     }
-    if !all_known {
+    if !all_known || app.arena.needs_compaction() {
+        // Unknown dir → full rebuild anyway; compaction threshold →
+        // rebuild to reclaim slots orphaned by churning watched dirs
+        // (reload_dir never reuses them).
         refresh_in_place(app, git_tx);
         return;
     }
@@ -233,6 +244,9 @@ pub fn ascend(app: &mut App) {
             app.filter_cands = None;
             app.visible = app.arena.flatten();
             app.selected = 0;
+            // Same rationale as reroot: don't let the outer visual-mode
+            // range-mark span the root change.
+            app.visual_mode = false;
             app.navigate_to(&root_path);
         }
         Err(_) => {
@@ -263,8 +277,18 @@ pub fn handle_key(
             && k.modifiers.contains(KeyModifiers::CONTROL);
         if k.code == KeyCode::Esc || ctrl_c {
             app.cancel_op();
+        } else {
+            // Don't drop keys silently — tell the user why nothing happens.
+            app.set_status("operation running — Esc cancels");
         }
         return Ok(());
+    }
+
+    // Error statuses are sticky (no timer fade); the next keypress
+    // acknowledges and clears them, vim-style.
+    if app.status_err {
+        app.status.clear();
+        app.status_err = false;
     }
 
     match app.mode {
@@ -285,7 +309,25 @@ pub fn handle_key(
             } else if keymap.is_prefix(chord) {
                 // wait for more keys
             } else {
+                // Dead prefix must not eat the key that broke it: after
+                // `y` then `x`, the `x` should still fire. Retry the
+                // offending token as a fresh chord.
+                let had_prefix = chord.len() > tok.len();
                 chord.clear();
+                if had_prefix {
+                    chord.push_str(&tok);
+                    if let Some(action) = keymap.resolve(Mode::Normal, chord) {
+                        chord.clear();
+                        handle(app, action, start, git_tx)?;
+                    } else if let Some(template) =
+                        app.commands.get(chord.as_str()).cloned()
+                    {
+                        chord.clear();
+                        app.run_command(&template);
+                    } else if !keymap.is_prefix(chord) {
+                        chord.clear();
+                    }
+                }
             }
         }
         Mode::SortMenu => {
@@ -519,6 +561,15 @@ fn devices_enter_selected(app: &mut App) {
         // unmounted → mount + refresh, stay open
         let res = match &d.kind {
             crate::devices::DeviceKind::Smb { url } => {
+                if crate::smb::wants_anonymous(url) {
+                    // No prompt needed, but gio has no connect timeout —
+                    // run as a background op (spinner, Esc cancels)
+                    // instead of freezing the loop on a dead host.
+                    app.op = Some(crate::ops::spawn_mount(url.clone(), true));
+                    app.mode = Mode::Normal;
+                    app.dialog = Dialog::None;
+                    return;
+                }
                 crate::smb::mount_interactive(url)
                     .map_err(|e| anyhow::anyhow!("{e}"))
             }
@@ -786,12 +837,23 @@ fn text_input_enter(app: &mut App, _start: &Path, git_tx: &mpsc::Sender<std::pat
                     let mut parts = input.split_whitespace();
                     if let Some(prog) = parts.next() {
                         let args: Vec<&str> = parts.collect();
-                        if let Err(e) = std::process::Command::new(prog)
+                        // Detach stdio like apps::spawn: an app writing to
+                        // stdout/stderr would corrupt the TUI frame, and a
+                        // dropped Child would linger as a zombie.
+                        match std::process::Command::new(prog)
                             .args(&args)
                             .arg(&p)
+                            .stdin(std::process::Stdio::null())
+                            .stdout(std::process::Stdio::null())
+                            .stderr(std::process::Stdio::null())
                             .spawn()
                         {
-                            app.set_err(format!("open failed: {e}"));
+                            Ok(mut child) => {
+                                std::thread::spawn(move || {
+                                    let _ = child.wait();
+                                });
+                            }
+                            Err(e) => app.set_err(format!("open failed: {e}")),
                         }
                     } else {
                         app.set_status("no command");
@@ -808,7 +870,10 @@ fn text_input_enter(app: &mut App, _start: &Path, git_tx: &mpsc::Sender<std::pat
                 app.run_command(&cmd);
             }
             Some(Action::AddSmb) => {
-                let raw = app.input.value();
+                // Never persist an inline password: strip it up front so
+                // it can't reach shares.toml, the modal, or gio's argv.
+                let (raw, had_pass) =
+                    crate::smb::strip_url_password(&app.input.value());
                 match crate::smb::parse_url(&raw) {
                     Ok(p) => {
                         if app.shares.iter().any(|s| s.url == raw) {
@@ -838,6 +903,15 @@ fn text_input_enter(app: &mut App, _start: &Path, git_tx: &mpsc::Sender<std::pat
                             app.mode = Mode::Normal;
                             return;
                         }
+                        // Anonymous URL: mount as a background op so an
+                        // unreachable host can't freeze the loop.
+                        if crate::smb::wants_anonymous(&raw) {
+                            app.op =
+                                Some(crate::ops::spawn_mount(raw.clone(), true));
+                            app.mode = Mode::Normal;
+                            app.dialog = Dialog::None;
+                            return;
+                        }
                         // Interactive mount: gio prompts for the
                         // password on the real TTY and can remember
                         // it in the keyring.
@@ -847,6 +921,10 @@ fn text_input_enter(app: &mut App, _start: &Path, git_tx: &mpsc::Sender<std::pat
                             app.set_status(
                                 format!("mount failed: {e}"),
                             );
+                        } else if had_pass {
+                            app.set_status(format!(
+                                "added {raw} — password stripped, keyring stores it"
+                            ));
                         } else {
                             app.set_status(format!("added {raw}"));
                         }
@@ -1409,6 +1487,26 @@ fn paste(app: &mut App, cwd: &Path) {
         ));
         return;
     }
+    // A cut file pasted into its own directory is a no-op, not a
+    // "name (1)" rename (claim_dest would see the source itself as a
+    // collision). Copy keeps the old behavior — duplicating in place
+    // with a fresh name is intentional there.
+    let srcs = if is_cut {
+        let (stay, go): (Vec<_>, Vec<_>) = srcs
+            .into_iter()
+            .partition(|s| s.parent() == Some(dst_dir.as_path()));
+        if go.is_empty() {
+            app.clipboard = None;
+            app.set_status("already there — nothing to move");
+            return;
+        }
+        if !stay.is_empty() {
+            app.set_status(format!("{} already in destination, skipped", stay.len()));
+        }
+        go
+    } else {
+        srcs
+    };
     let mode = if is_cut {
         crate::fs_ops::PasteMode::Move
     } else {

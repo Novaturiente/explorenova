@@ -19,15 +19,14 @@ pub fn is_archive(ext_lower: &str) -> bool {
 /// String suitable for `PreviewKind::Text` / `PreviewKind::Meta`. None
 /// if bsdtar is not installed or the archive is unreadable.
 pub fn list_entries(path: &Path) -> Option<String> {
-    let out = Command::new("bsdtar")
-        .args(["-tf"])
-        .arg(path)
-        .output()
-        .ok()?;
-    if !out.status.success() {
+    let (status, raw) = super::media::capture_with_timeout(
+        Command::new("bsdtar").args(["-tf"]).arg(path),
+        std::time::Duration::from_secs(10),
+    )?;
+    if !status.success() {
         return None;
     }
-    let stdout = String::from_utf8_lossy(&out.stdout);
+    let stdout = String::from_utf8_lossy(&raw);
     let mut lines: Vec<&str> = stdout.lines().take(200).collect();
     let truncated = stdout.lines().count() > lines.len();
     let header = format!(

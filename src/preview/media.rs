@@ -1,16 +1,60 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-/// Run `cmd` with all three streams routed to /dev/null. Lets the
-/// rasterizers stay quiet — they otherwise write progress lines to
-/// stderr which leak into the ratatui alt-screen and produce phantom
-/// text scattered across panes. Returns the exit status.
-fn run_silent(cmd: &mut Command) -> Option<std::process::ExitStatus> {
-    cmd.stdin(Stdio::null())
-        .stdout(Stdio::null())
+/// Hard ceiling on any preview subprocess. There is ONE preview worker
+/// thread — a single hung rasterizer (malformed video, dead network
+/// mount) would otherwise stall every later preview for the session.
+const SUBPROCESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Spawn `cmd` (stdin null, stderr null, stdout piped + captured) and
+/// wait at most `timeout`, killing the child on expiry. Returns the
+/// exit status and captured stdout, or None on timeout/spawn failure.
+/// stderr stays silenced — rasterizer progress lines would otherwise
+/// leak into the ratatui alt-screen as phantom text.
+pub(crate) fn capture_with_timeout(
+    cmd: &mut Command,
+    timeout: std::time::Duration,
+) -> Option<(std::process::ExitStatus, Vec<u8>)> {
+    use std::io::Read;
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
         .stderr(Stdio::null())
-        .status()
-        .ok()
+        .spawn()
+        .ok()?;
+    let mut pipe = child.stdout.take()?;
+    // Drain stdout concurrently so a chatty child can't fill the pipe
+    // and deadlock against our wait loop.
+    let reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        let _ = pipe.read_to_end(&mut buf);
+        buf
+    });
+    let t0 = std::time::Instant::now();
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let buf = reader.join().unwrap_or_default();
+                return Some((status, buf));
+            }
+            Ok(None) if t0.elapsed() >= timeout => {
+                let _ = child.kill();
+                let _ = child.wait(); // closes the pipe; reader exits
+                return None;
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(25)),
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
+
+/// Run `cmd` silenced with the standard timeout; status only.
+fn run_silent(cmd: &mut Command) -> Option<std::process::ExitStatus> {
+    capture_with_timeout(cmd, SUBPROCESS_TIMEOUT).map(|(st, _)| st)
 }
 
 pub const VIDEO_EXTS: &[&str] = &[
@@ -22,8 +66,10 @@ pub fn is_video(ext_lower: &str) -> bool {
     VIDEO_EXTS.contains(&ext_lower)
 }
 
-/// Temp-cache path for a rasterized variant of `src`. Includes the
-/// source mtime so an edited file produces a fresh thumbnail.
+/// Temp-cache path for a rasterized variant of `src`. Keyed by the FULL
+/// path (hashed) + mtime: stem+mtime alone collides for two same-named
+/// files touched in the same second (e.g. one `cp -r`), showing the
+/// wrong thumbnail. mtime still forces a fresh render after an edit.
 fn temp_png_for(prefix: &str, src: &Path) -> Option<PathBuf> {
     let mtime = std::fs::metadata(src)
         .ok()?
@@ -32,18 +78,51 @@ fn temp_png_for(prefix: &str, src: &Path) -> Option<PathBuf> {
         .duration_since(std::time::UNIX_EPOCH)
         .ok()?
         .as_secs();
-    let stem = src.file_stem()?.to_string_lossy();
     Some(std::env::temp_dir().join(format!(
-        "explorenova-{prefix}-{stem}-{mtime}.png"
+        "explorenova-{prefix}-{:016x}-{mtime}.png",
+        path_hash(src)
     )))
+}
+
+fn path_hash(p: &Path) -> u64 {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    p.hash(&mut h);
+    h.finish()
+}
+
+/// Delete rasterized temp PNGs older than a day. Run once at startup on
+/// a detached thread — long sessions otherwise leak thumbnails in /tmp
+/// for the machine's uptime.
+pub fn cleanup_stale_temps() {
+    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
+        return;
+    };
+    let cutoff =
+        std::time::SystemTime::now() - std::time::Duration::from_secs(24 * 3600);
+    for e in entries.flatten() {
+        let name = e.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with("explorenova-") || !name.ends_with(".png") {
+            continue;
+        }
+        let stale = e
+            .metadata()
+            .and_then(|m| m.modified())
+            .map(|m| m < cutoff)
+            .unwrap_or(false);
+        if stale {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
 }
 
 /// Rasterize PDF page 1 to a PNG in the temp dir via `pdftoppm`.
 /// Returns None if poppler is not installed or the call fails.
 pub fn rasterize_pdf(pdf: &Path) -> Option<PathBuf> {
-    // Key the temp name by mtime so two different PDFs sharing a filename
-    // don't read back each other's stale rasterization. (pdftoppm appends
-    // ".png" to this stem.)
+    // Key the temp name by full-path hash + mtime so two different PDFs
+    // sharing a filename don't read back each other's stale
+    // rasterization. (pdftoppm appends ".png" to this stem.)
     let mtime = std::fs::metadata(pdf)
         .ok()?
         .modified()
@@ -52,8 +131,8 @@ pub fn rasterize_pdf(pdf: &Path) -> Option<PathBuf> {
         .ok()?
         .as_secs();
     let stem = std::env::temp_dir().join(format!(
-        "explorenova-pdf-{}-{mtime}",
-        pdf.file_stem()?.to_string_lossy()
+        "explorenova-pdf-{:016x}-{mtime}",
+        path_hash(pdf)
     ));
     let status = run_silent(
         Command::new("pdftoppm")

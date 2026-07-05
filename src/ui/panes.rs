@@ -2,6 +2,7 @@ use crate::tree::{Arena, NodeId};
 use crate::ui::theme::Theme;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
+use unicode_width::UnicodeWidthStr;
 
 /// Build a styled line for one visible tree row. `width` is the inner
 /// width of the tree pane (i.e. `area.width - 2`); the git glyph is
@@ -86,18 +87,20 @@ pub fn tree_row<'a>(
         // Most Nerd Font glyphs occupy 1 cell; plus the trailing space.
         used += 2;
     }
-    let name_chars = name.chars().count();
+    // Display width, not char count: CJK/emoji names occupy 2 cells per
+    // glyph and would otherwise push the git glyph past the pane edge.
+    let name_cells = name.width();
     let name_style = if cut {
         Style::default().fg(type_color).add_modifier(Modifier::DIM)
     } else {
         Style::default().fg(type_color)
     };
     spans.push(Span::styled(name.clone(), name_style));
-    used += name_chars;
+    used += name_cells;
 
     // Right side: optional linemode cell + 2-cell git glyph, right-aligned.
     let lm = line_mode.cell(n);
-    let lm_cells = if lm.is_empty() { 0 } else { lm.chars().count() + 1 };
+    let lm_cells = if lm.is_empty() { 0 } else { lm.width() + 1 };
     let total = width as usize;
     let git_cells = 2usize;
     if used + git_cells + lm_cells < total {

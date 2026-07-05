@@ -14,8 +14,36 @@ pub enum PreviewKind {
     /// `Text<'static>` lets ratatui clip per cell so long lines never
     /// spill into adjacent panes the way raw ANSI strings used to.
     Text(ratatui::text::Text<'static>),
-    Image(PathBuf), // path to displayable image (original or rasterized)
+    /// Decoded image (original or rasterized) + its source path for
+    /// cache keying. Decoded HERE, on the worker thread — decoding on
+    /// the render thread froze the UI for seconds on large files. Arc
+    /// keeps the per-frame cache clone free.
+    Image(PathBuf, std::sync::Arc<image::DynamicImage>),
     Meta(String),
+}
+
+/// Largest file we hand to an in-process heavy decoder (image crate,
+/// calamine). Images are further bounded by `decode_image_bounded`'s
+/// pixel limits.
+const HEAVY_FILE_MAX: u64 = 64 * 1024 * 1024;
+
+/// Decode with explicit limits so a decompression-bomb PNG can't OOM
+/// the process. Returns None on unreadable/oversized images.
+fn decode_image_bounded(path: &Path) -> Option<image::DynamicImage> {
+    let mut reader = image::ImageReader::open(path).ok()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(16_384);
+    limits.max_image_height = Some(16_384);
+    limits.max_alloc = Some(256 * 1024 * 1024);
+    reader.limits(limits);
+    reader.decode().ok()
+}
+
+fn image_preview(png: PathBuf, meta: &std::fs::Metadata) -> PreviewKind {
+    match decode_image_bounded(&png) {
+        Some(img) => PreviewKind::Image(png, std::sync::Arc::new(img)),
+        None => PreviewKind::Meta(meta_string(&png, meta)),
+    }
 }
 
 fn ext_lower(p: &Path) -> String {
@@ -88,27 +116,34 @@ pub fn render(path: &Path, max_bytes: u64) -> PreviewKind {
     }
     let ext = ext_lower(path);
     if IMAGE_EXTS.contains(&ext.as_str()) {
-        return PreviewKind::Image(path.to_path_buf());
+        if meta.len() > HEAVY_FILE_MAX {
+            return PreviewKind::Meta(meta_string(path, &meta));
+        }
+        return image_preview(path.to_path_buf(), &meta);
     }
     if ext == "avif" {
         return match media::rasterize_avif(path) {
-            Some(png) => PreviewKind::Image(png),
+            Some(png) => image_preview(png, &meta),
             None => PreviewKind::Meta(meta_string(path, &meta)),
         };
     }
     if media::is_video(&ext) {
         return match media::video_thumbnail(path) {
-            Some(png) => PreviewKind::Image(png),
+            Some(png) => image_preview(png, &meta),
             None => PreviewKind::Meta(meta_string(path, &meta)),
         };
     }
     if ext == "pdf" {
         return match media::rasterize_pdf(path) {
-            Some(png) => PreviewKind::Image(png),
+            Some(png) => image_preview(png, &meta),
             None => PreviewKind::Meta(meta_string(path, &meta)),
         };
     }
     if xlsx::is_spreadsheet(&ext) {
+        // calamine parses the whole workbook in memory — bound it.
+        if meta.len() > HEAVY_FILE_MAX {
+            return PreviewKind::Meta(meta_string(path, &meta));
+        }
         return match xlsx::text_from(path) {
             Some(t) => plain_text(t),
             None => PreviewKind::Meta(meta_string(path, &meta)),
@@ -306,8 +341,16 @@ mod tests {
     fn image_ext_is_image_kind() {
         let d = tempdir().unwrap();
         let f = d.path().join("p.png");
+        image::RgbaImage::new(1, 1).save(&f).unwrap();
+        assert!(matches!(render(&f, 1024), PreviewKind::Image(..)));
+    }
+
+    #[test]
+    fn corrupt_image_falls_back_to_meta() {
+        let d = tempdir().unwrap();
+        let f = d.path().join("bad.png");
         fs::write(&f, [0u8; 8]).unwrap();
-        assert!(matches!(render(&f, 1024), PreviewKind::Image(_)));
+        assert!(matches!(render(&f, 1024), PreviewKind::Meta(_)));
     }
 
     #[test]

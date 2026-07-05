@@ -72,6 +72,29 @@ impl Theme {
         }
     }
 
+    /// Catppuccin Latte — light-background palette. Opt-in via
+    /// `[theme] preset = "light"` (alias "latte") for light terminals,
+    /// where the Mocha default's near-white text is unreadable.
+    pub fn light() -> Self {
+        Self {
+            dir: Color::Rgb(30, 102, 245),          // Blue   #1e66f5
+            file: Color::Rgb(76, 79, 105),          // Text   #4c4f69
+            selected_bg: Color::Rgb(188, 192, 204), // Surface1 #bcc0cc
+            git_modified: Color::Rgb(223, 142, 29), // Yellow #df8e1d
+            git_added: Color::Rgb(64, 160, 43),     // Green  #40a02b
+            git_untracked: Color::Rgb(4, 165, 229), // Sky    #04a5e5
+            git_conflict: Color::Rgb(210, 15, 57),  // Red    #d20f39
+            match_hl: Color::Rgb(234, 118, 203),    // Pink   #ea76cb
+            mark: Color::Rgb(254, 100, 11),         // Peach  #fe640b
+            executable: Color::Rgb(23, 146, 153),   // Teal   #179299
+            symlink: Color::Rgb(32, 159, 181),      // Sapphire #209fb5
+            media: Color::Rgb(136, 57, 239),        // Mauve  #8839ef
+            archive: Color::Rgb(230, 69, 83),       // Maroon #e64553
+            header: Color::Rgb(114, 135, 253),      // Lavender #7287fd
+            dim: Color::Rgb(156, 160, 176),         // Overlay0 #9ca0b0
+        }
+    }
+
     /// Set the field named `name` to `color`. Returns false if `name` is
     /// not a known theme field.
     pub fn set_field(&mut self, name: &str, color: Color) -> bool {
@@ -104,6 +127,7 @@ impl Theme {
         let mut theme = match raw.get("preset").map(String::as_str) {
             None | Some("default") => Theme::default(),
             Some("terminal") => Theme::terminal(),
+            Some("light") | Some("latte") => Theme::light(),
             Some(other) => {
                 warnings.push(format!("theme.preset: unknown preset '{other}', using default"));
                 Theme::default()
@@ -184,6 +208,15 @@ mod tests {
         let (t, w) = Theme::from_config(&map(&[("selected_bg", "reset")]));
         assert_eq!(t.selected_bg, Theme::default().selected_bg);
         assert_eq!(w.len(), 1);
+    }
+
+    #[test]
+    fn light_preset_and_latte_alias() {
+        let (t, w) = Theme::from_config(&map(&[("preset", "light")]));
+        assert_eq!(t.file, Color::Rgb(76, 79, 105));
+        assert!(w.is_empty());
+        let (t2, _) = Theme::from_config(&map(&[("preset", "latte")]));
+        assert_eq!(t2.file, t.file);
     }
 
     #[test]

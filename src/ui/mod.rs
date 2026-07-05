@@ -192,23 +192,25 @@ pub struct ImageCache {
     proto: Option<StatefulProtocol>,
 }
 
-/// Render an image file into `area`, caching the protocol by (path, mtime).
+/// Render an already-decoded image into `area`, caching the protocol by
+/// (path, mtime). Decoding happens on the preview worker thread — this
+/// only rebuilds the terminal-graphics protocol when the file changes.
 pub fn render_image(
     f: &mut Frame,
     area: Rect,
     picker: &mut Picker,
     cache: &mut ImageCache,
     path: &std::path::Path,
+    img: &std::sync::Arc<image::DynamicImage>,
 ) {
     let mtime = std::fs::metadata(path)
         .and_then(|m| m.modified())
         .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
     let key = (path.to_path_buf(), mtime);
     if cache.key.as_ref() != Some(&key) {
-        match image::ImageReader::open(path).map(|r| r.decode()) {
-            Ok(Ok(img)) => cache.proto = Some(picker.new_resize_protocol(img)),
-            _ => cache.proto = None,
-        }
+        // One pixel-buffer copy per image change (protocol wants
+        // ownership), never per frame.
+        cache.proto = Some(picker.new_resize_protocol((**img).clone()));
         cache.key = Some(key);
     }
     match &mut cache.proto {

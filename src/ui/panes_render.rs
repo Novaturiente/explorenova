@@ -46,10 +46,22 @@ pub fn render_header(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let root_path = crate::smb::gvfs_display_label(root)
         .unwrap_or_else(|| root.display().to_string());
     let w = area.width.max(1) as usize;
-    let chars: Vec<char> = root_path.chars().collect();
-    let shown = if chars.len() > w {
-        let start = chars.len() - (w - 1);
-        let tail: String = chars[start..].iter().collect();
+    // Truncate by display cells so wide (CJK/emoji) path components
+    // don't overflow the header line.
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    let shown = if root_path.width() > w {
+        let budget = w.saturating_sub(1); // room for the ellipsis
+        let mut tail_rev: Vec<char> = Vec::new();
+        let mut used = 0usize;
+        for c in root_path.chars().rev() {
+            let cw = c.width().unwrap_or(0);
+            if used + cw > budget {
+                break;
+            }
+            tail_rev.push(c);
+            used += cw;
+        }
+        let tail: String = tail_rev.into_iter().rev().collect();
         format!("…{tail}")
     } else {
         root_path
@@ -264,19 +276,24 @@ pub fn render_pane_preview(
         return;
     };
     match kind {
-        PreviewKind::Image(p) => {
+        PreviewKind::Image(p, img) => {
             let already_decoded = img_cache
                 .key
                 .as_ref()
                 .map(|(k, _)| k == &p)
                 .unwrap_or(false);
             if already_decoded || elapsed {
-                render_image(f, inner, picker, img_cache, &p);
+                render_image(f, inner, picker, img_cache, &p, &img);
             } else {
                 f.render_widget(Paragraph::new("(loading…)"), inner);
             }
         }
-        PreviewKind::Text(t) => f.render_widget(Paragraph::new(t), inner),
+        PreviewKind::Text(t) => {
+            // ctrl-j/ctrl-k scroll; clamp so the last line stays on screen.
+            let max = t.lines.len().saturating_sub(1);
+            let off = app.preview_scroll.min(max) as u16;
+            f.render_widget(Paragraph::new(t).scroll((off, 0)), inner)
+        }
         PreviewKind::Meta(t) => f.render_widget(Paragraph::new(t), inner),
     }
 }

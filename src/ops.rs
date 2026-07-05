@@ -14,6 +14,7 @@ pub enum OpKind {
     Copy,
     Move,
     Extract,
+    Mount,
 }
 
 impl OpKind {
@@ -22,6 +23,7 @@ impl OpKind {
             OpKind::Copy => "Copying",
             OpKind::Move => "Moving",
             OpKind::Extract => "Extracting",
+            OpKind::Mount => "Mounting",
         }
     }
 }
@@ -299,6 +301,86 @@ pub fn spawn_extract(archive: PathBuf) -> Option<OpState> {
     })
 }
 
+/// Spawn an anonymous `gio mount` off-thread. gio has no connect
+/// timeout of its own — run inline it froze the whole TUI for the OS
+/// TCP timeout (minutes) on an unreachable host. Indeterminate spinner;
+/// Esc cancels; hard 30s ceiling.
+pub fn spawn_mount(url: String, anonymous: bool) -> OpState {
+    let (tx, rx) = mpsc::channel();
+    let label = format!("Mounting {url}");
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel_worker = cancel.clone();
+    thread::spawn(move || {
+        use std::io::Read;
+        let child = std::process::Command::new("gio")
+            .args(crate::smb::mount_argv(&url, anonymous))
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::piped())
+            .spawn();
+        let result = match child {
+            Err(e) => Err(format!("gio: {e}")),
+            Ok(mut child) => {
+                let mut pipe = child.stderr.take();
+                let reader = thread::spawn(move || {
+                    let mut buf = String::new();
+                    if let Some(p) = pipe.as_mut() {
+                        let _ = p.read_to_string(&mut buf);
+                    }
+                    buf
+                });
+                let t0 = Instant::now();
+                let status = loop {
+                    match child.try_wait() {
+                        Ok(Some(st)) => break Some(st),
+                        Ok(None)
+                            if cancel_worker.load(Ordering::Relaxed)
+                                || t0.elapsed() > std::time::Duration::from_secs(30) =>
+                        {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            break None;
+                        }
+                        Ok(None) => {
+                            thread::sleep(std::time::Duration::from_millis(50))
+                        }
+                        Err(_) => {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            break None;
+                        }
+                    }
+                };
+                // Child is dead either way, so the pipe is closed and the
+                // reader has finished.
+                let stderr_txt = reader.join().unwrap_or_default();
+                match status {
+                    Some(st) if st.success() => Ok(format!("mounted {url}")),
+                    Some(_) => Err(if stderr_txt.trim().is_empty() {
+                        format!("mount failed: {url}")
+                    } else {
+                        stderr_txt.trim().to_string()
+                    }),
+                    None => Err(format!("mount cancelled / timed out: {url}")),
+                }
+            }
+        };
+        let _ = tx.send(OpMsg::Finished(result));
+    });
+    OpState {
+        kind: OpKind::Mount,
+        label,
+        done_bytes: 0,
+        total_bytes: 0,
+        indeterminate: true,
+        started_at: Instant::now(),
+        rx,
+        reveal_hint: None,
+        finished: None,
+        cancel,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -308,6 +390,7 @@ mod tests {
         assert_eq!(OpKind::Copy.verb(), "Copying");
         assert_eq!(OpKind::Move.verb(), "Moving");
         assert_eq!(OpKind::Extract.verb(), "Extracting");
+        assert_eq!(OpKind::Mount.verb(), "Mounting");
     }
 
     #[test]

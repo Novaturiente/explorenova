@@ -33,6 +33,11 @@ pub struct Arena {
     /// ancestor dirs). Descends through ancestor dirs regardless of their
     /// `expanded` flag. `None` = normal expansion-driven flatten.
     pub filter: Option<std::collections::HashSet<NodeId>>,
+    /// Nodes orphaned by `reload_dir` (removed from a children list but
+    /// still occupying arena slots). Slots are never reused, so a watched
+    /// churning dir grows the arena unboundedly — when this crosses
+    /// `needs_compaction`'s threshold the caller does a full rebuild.
+    pub orphaned: usize,
 }
 
 impl Arena {
@@ -45,6 +50,7 @@ impl Arena {
             show_hidden: false,
             sort: SortState::default(),
             filter: None,
+            orphaned: 0,
         };
         a.load_children(0)?;
         a.nodes[0].expanded = true;
@@ -300,10 +306,31 @@ impl Arena {
                 new_children.push(self.nodes.len() - 1);
             }
         }
-        // Any ids left in `by_path` were removed on disk → orphaned.
+        // Any ids left in `by_path` were removed on disk → orphaned,
+        // along with their entire loaded subtrees.
+        for (_, cid) in by_path {
+            self.orphaned += self.subtree_count(cid);
+        }
         sort_children(&mut new_children, &self.nodes, &self.sort);
         self.nodes[id].children = Some(new_children);
         true
+    }
+
+    fn subtree_count(&self, id: NodeId) -> usize {
+        let mut n = 1;
+        if let Some(ch) = &self.nodes[id].children {
+            for &c in ch {
+                n += self.subtree_count(c);
+            }
+        }
+        n
+    }
+
+    /// True when enough dead slots accumulated that a full rebuild is
+    /// worth the cost. Threshold is arbitrary but conservative: a few
+    /// thousand orphans is ~hundreds of KB and slows every resort_all.
+    pub fn needs_compaction(&self) -> bool {
+        self.orphaned >= 4096
     }
 
     /// Expand every ancestor of `target` path so it becomes visible. Returns its id.
@@ -528,6 +555,22 @@ mod tests {
             .collect();
         assert!(names.contains(&"b.txt".to_string()), "new file picked up");
         assert!(!names.contains(&"a.txt".to_string()), "removed file dropped");
+    }
+
+    #[test]
+    fn reload_dir_counts_orphans_including_subtrees() {
+        let d = tempdir().unwrap();
+        fs::create_dir(d.path().join("sub")).unwrap();
+        fs::write(d.path().join("sub/inner.txt"), "x").unwrap();
+        let mut a = Arena::new(d.path()).unwrap();
+        let sub = a.nodes[a.root].children.as_ref().unwrap()
+            .iter().copied().find(|&c| a.nodes[c].path.ends_with("sub")).unwrap();
+        a.expand(sub).unwrap(); // load inner.txt so the subtree has 2 nodes
+        assert_eq!(a.orphaned, 0);
+        fs::remove_dir_all(d.path().join("sub")).unwrap();
+        assert!(a.reload_dir(d.path()));
+        assert_eq!(a.orphaned, 2, "dir + its loaded child both orphan");
+        assert!(!a.needs_compaction(), "threshold far above 2");
     }
 
     #[test]

@@ -79,7 +79,21 @@ fn watch_targets(app: &App) -> HashSet<PathBuf> {
             out.insert(n.path.clone());
         }
     }
+    // Watch the enclosing repo's .git dir so external `git commit/add/
+    // checkout` refresh the status glyphs without a manual R. HEAD and
+    // index both live directly in .git (NonRecursive is enough).
+    if let Some(gd) = git_dir_for(&app.arena.nodes[app.arena.root].path) {
+        out.insert(gd);
+    }
     out
+}
+
+/// Nearest `.git` directory at or above `root`, if any. A handful of
+/// stats per call — cheap enough to run per keypress from watch_targets.
+fn git_dir_for(root: &Path) -> Option<PathBuf> {
+    root.ancestors()
+        .map(|a| a.join(".git"))
+        .find(|g| g.is_dir())
 }
 
 /// Reconcile installed watches against `desired`. Adds new ones,
@@ -184,6 +198,8 @@ fn main() -> Result<()> {
         }
     }
     let mut preview_cache = PreviewCache::with_cap(app.config.preview.cache_cap);
+    // Sweep day-old rasterized thumbnails from /tmp off-thread.
+    std::thread::spawn(explorenova::preview::media::cleanup_stale_temps);
 
     let (git_tx, git_rx) = mpsc::channel::<PathBuf>();
     let (git_res_tx, git_res_rx) = mpsc::channel();
@@ -224,6 +240,7 @@ fn main() -> Result<()> {
     let mut img_cache = ui::ImageCache::default();
     let mut fs_dirty_since: Option<Instant> = None;
     let mut pending_dirs: HashSet<PathBuf> = HashSet::new();
+    let mut git_dirty = false;
 
     loop {
         // Pull in any preview that finished rendering off-thread; a fresh
@@ -231,15 +248,25 @@ fn main() -> Result<()> {
         let preview_ready = preview_cache.drain();
 
         while let Ok(map) = git_res_rx.try_recv() {
+            // Absent-from-map means clean: resetting is what clears a
+            // stale Modified/Added glyph after an external commit/stage.
             for n in app.arena.nodes.iter_mut() {
-                if let Some(s) = map.get(&n.path) {
-                    n.git = *s;
-                }
+                n.git = map
+                    .get(&n.path)
+                    .copied()
+                    .unwrap_or(explorenova::tree::GitStatus::Clean);
             }
         }
 
         while let Ok(paths) = fs_rx.try_recv() {
             for p in paths {
+                // Events inside .git are git-metadata churn (commit,
+                // stage, checkout) — they re-trigger the status scan,
+                // not a tree refresh.
+                if p.components().any(|c| c.as_os_str() == ".git") {
+                    git_dirty = true;
+                    continue;
+                }
                 let dir = if watched.contains(&p) {
                     p.clone()
                 } else {
@@ -258,7 +285,7 @@ fn main() -> Result<()> {
                 app.self_write_dirs.clear();
             }
         }
-        if !pending_dirs.is_empty() && fs_dirty_since.is_none() {
+        if (!pending_dirs.is_empty() || git_dirty) && fs_dirty_since.is_none() {
             fs_dirty_since = Some(Instant::now());
         }
         if let Some(t0) = fs_dirty_since {
@@ -266,7 +293,12 @@ fn main() -> Result<()> {
                 let dirs: Vec<PathBuf> = pending_dirs.drain().collect();
                 if !dirs.is_empty() {
                     refresh_dirs(&mut app, &dirs, &git_tx);
+                } else if git_dirty {
+                    // Pure .git churn: rescan status only (refresh_dirs
+                    // already re-triggers the scan when it runs).
+                    let _ = git_tx.send(app.arena.nodes[app.arena.root].path.clone());
                 }
+                git_dirty = false;
                 fs_dirty_since = None;
             }
         }
@@ -366,8 +398,12 @@ fn main() -> Result<()> {
             // building only — the Search/Input/Confirm/AppPick arms consume
             // `k.code` directly and must see every key (esp. Backspace).
             handle_key(&mut app, &k, &keymap, &mut chord, &start, &git_tx)?;
+            // Mirror the chord buffer so the status bar can render a
+            // pending multi-key sequence (vim showcmd).
+            app.pending_chord = chord.clone();
             if app.selected != prev_selected_outer {
                 app.cursor_moved_at = std::time::Instant::now();
+                app.preview_scroll = 0;
                 if app.visual_mode {
                     // Mark every row crossed during the jump (gg, G,
                     // Ctrl-d, Ctrl-u all skip multiple rows). Single-
@@ -391,6 +427,9 @@ fn main() -> Result<()> {
                 }
                 explorenova::app::Dialog::Devices { items, sel } => {
                     explorenova::app::Dialog::Devices { items, sel }
+                }
+                explorenova::app::Dialog::ScriptPick { items, sel, filter } => {
+                    explorenova::app::Dialog::ScriptPick { items, sel, filter }
                 }
                 _ => explorenova::app::Dialog::Input,
             },
@@ -417,7 +456,7 @@ fn main() -> Result<()> {
     if let Some(parent) = sp.parent() {
         let _ = std::fs::create_dir_all(parent);
     }
-    let _ = std::fs::write(&sp, app.state.to_toml());
+    let _ = explorenova::fs_ops::write_atomic(&sp, &app.state.to_toml());
     // Shell-integration: drop the final directory so a wrapper can cd there.
     if let Some(cwd_file) = args.cwd_file.as_ref() {
         let _ = std::fs::write(

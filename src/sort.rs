@@ -52,20 +52,67 @@ fn ext_key(n: &Node) -> String {
         .unwrap_or_else(|| "~".into())
 }
 
+/// Natural order: digit runs compare numerically, so `file2` < `file10`.
+/// Numerically-equal runs ("07" vs "7") fall through to the next segment;
+/// the raw-name tiebreak in `cmp_names` keeps the total order deterministic.
+fn natural_cmp(a: &str, b: &str) -> Ordering {
+    let mut ac = a.chars().peekable();
+    let mut bc = b.chars().peekable();
+    loop {
+        match (ac.peek().copied(), bc.peek().copied()) {
+            (None, None) => return Ordering::Equal,
+            (None, Some(_)) => return Ordering::Less,
+            (Some(_), None) => return Ordering::Greater,
+            (Some(x), Some(y)) if x.is_ascii_digit() && y.is_ascii_digit() => {
+                let mut na = String::new();
+                while let Some(&c) = ac.peek() {
+                    if !c.is_ascii_digit() {
+                        break;
+                    }
+                    na.push(c);
+                    ac.next();
+                }
+                let mut nb = String::new();
+                while let Some(&c) = bc.peek() {
+                    if !c.is_ascii_digit() {
+                        break;
+                    }
+                    nb.push(c);
+                    bc.next();
+                }
+                let ta = na.trim_start_matches('0');
+                let tb = nb.trim_start_matches('0');
+                let ord = ta.len().cmp(&tb.len()).then_with(|| ta.cmp(tb));
+                if ord != Ordering::Equal {
+                    return ord;
+                }
+            }
+            (Some(x), Some(y)) => {
+                let ord = x.cmp(&y);
+                if ord != Ordering::Equal {
+                    return ord;
+                }
+                ac.next();
+                bc.next();
+            }
+        }
+    }
+}
+
+/// Case-insensitive natural name compare with a deterministic raw-name
+/// tiebreak — without it, `A` vs `a` order would follow arbitrary
+/// `read_dir` order and could flip between reloads.
+fn cmp_names(a: &Node, b: &Node) -> Ordering {
+    natural_cmp(&name_key(a), &name_key(b))
+        .then_with(|| a.path.file_name().cmp(&b.path.file_name()))
+}
+
 fn cmp_by(a: &Node, b: &Node, mode: SortMode) -> Ordering {
     match mode {
-        SortMode::Name => name_key(a).cmp(&name_key(b)),
-        SortMode::Size => a
-            .size
-            .cmp(&b.size)
-            .then_with(|| name_key(a).cmp(&name_key(b))),
-        SortMode::Mtime => a
-            .mtime
-            .cmp(&b.mtime)
-            .then_with(|| name_key(a).cmp(&name_key(b))),
-        SortMode::Ext => ext_key(a)
-            .cmp(&ext_key(b))
-            .then_with(|| name_key(a).cmp(&name_key(b))),
+        SortMode::Name => cmp_names(a, b),
+        SortMode::Size => a.size.cmp(&b.size).then_with(|| cmp_names(a, b)),
+        SortMode::Mtime => a.mtime.cmp(&b.mtime).then_with(|| cmp_names(a, b)),
+        SortMode::Ext => ext_key(a).cmp(&ext_key(b)).then_with(|| cmp_names(a, b)),
     }
 }
 
@@ -256,6 +303,45 @@ mod tests {
         };
         sort_children(&mut idx, &nodes, &s);
         assert_eq!(idx, vec![1, 0, 2]);
+    }
+
+    #[test]
+    fn natural_sort_orders_digit_runs_numerically() {
+        let nodes = vec![
+            mk("file10.txt", NodeKind::File, 0, 0),
+            mk("file2.txt", NodeKind::File, 0, 0),
+            mk("file1.txt", NodeKind::File, 0, 0),
+        ];
+        let mut idx = vec![0, 1, 2];
+        let s = SortState { mode: SortMode::Name, reverse: false, dir_first: false };
+        sort_children(&mut idx, &nodes, &s);
+        assert_eq!(idx, vec![2, 1, 0]); // file1, file2, file10
+    }
+
+    #[test]
+    fn case_ties_are_deterministic() {
+        let nodes = vec![
+            mk("a.txt", NodeKind::File, 0, 0),
+            mk("A.txt", NodeKind::File, 0, 0),
+        ];
+        let mut idx = vec![0, 1];
+        let s = SortState { mode: SortMode::Name, reverse: false, dir_first: false };
+        sort_children(&mut idx, &nodes, &s);
+        let first = idx.clone();
+        let mut idx2 = vec![1, 0]; // opposite starting order
+        sort_children(&mut idx2, &nodes, &s);
+        assert_eq!(first, idx2); // same order regardless of read_dir order
+    }
+
+    #[test]
+    fn natural_cmp_edges() {
+        use super::natural_cmp;
+        use std::cmp::Ordering::*;
+        assert_eq!(natural_cmp("file2", "file10"), Less);
+        assert_eq!(natural_cmp("file07", "file7"), Equal); // raw tiebreak decides
+        assert_eq!(natural_cmp("a2b3", "a2b10"), Less);
+        assert_eq!(natural_cmp("abc", "abd"), Less);
+        assert_eq!(natural_cmp("", "a"), Less);
     }
 
     #[test]

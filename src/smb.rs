@@ -34,9 +34,9 @@ pub fn save(path: &Path, shares: &[SmbShare]) -> anyhow::Result<()> {
     }
     let f = SharesFile { shares: shares.to_vec() };
     let body = toml::to_string_pretty(&f)?;
-    std::fs::write(
+    crate::fs_ops::write_atomic(
         path,
-        format!("# explorenova network shares (smb/ftp/ftps/sftp)\n{body}"),
+        &format!("# explorenova network shares (smb/ftp/ftps/sftp)\n{body}"),
     )?;
     Ok(())
 }
@@ -111,6 +111,28 @@ pub struct Parsed {
     /// name); empty for ftp/sftp when the URL is host-only.
     pub share: String,
     pub user: Option<String>,
+}
+
+/// Remove an inline `:password` from `scheme://user:pass@host/...`.
+/// Returns `(sanitized, true)` when a password was present. Passwords
+/// belong in the keyring (gio prompts on mount) — an inline one would
+/// otherwise end up cleartext in shares.toml, the devices modal, and
+/// `ps` output.
+pub fn strip_url_password(raw: &str) -> (String, bool) {
+    let Some((scheme, rest)) = raw.split_once("://") else {
+        return (raw.to_string(), false);
+    };
+    let Some((auth, host)) = rest.split_once('@') else {
+        return (raw.to_string(), false);
+    };
+    // A '/' before the '@' means the '@' is in the path, not the authority.
+    if auth.contains('/') {
+        return (raw.to_string(), false);
+    }
+    match auth.split_once(':') {
+        Some((user, _pass)) => (format!("{scheme}://{user}@{host}"), true),
+        None => (raw.to_string(), false),
+    }
 }
 
 /// Validate and decompose a `scheme://[user@]host[/share[/...]]` URL where
@@ -264,11 +286,11 @@ pub fn gvfs_display_label(path: &Path) -> Option<String> {
 /// A URL with no `user@` means "connect anonymously". gio's interactive
 /// prompt can't send a null/guest session — it always authenticates as the
 /// default user — so anonymous shares need the explicit `-a` flag.
-fn wants_anonymous(url: &str) -> bool {
+pub fn wants_anonymous(url: &str) -> bool {
     parse_url(url).map(|p| p.user.is_none()).unwrap_or(false)
 }
 
-fn mount_argv(url: &str, anon: bool) -> Vec<String> {
+pub(crate) fn mount_argv(url: &str, anon: bool) -> Vec<String> {
     let mut a = vec!["mount".to_string()];
     if anon {
         a.push("-a".into());
@@ -391,6 +413,28 @@ mod tests {
         assert_eq!(p.host, "nas.local");
         assert_eq!(p.share, "media");
         assert_eq!(p.user.as_deref(), Some("alice"));
+    }
+
+    #[test]
+    fn strip_url_password_removes_inline_password() {
+        let (url, had) = strip_url_password("smb://alice:s3cret@nas/media");
+        assert_eq!(url, "smb://alice@nas/media");
+        assert!(had);
+    }
+
+    #[test]
+    fn strip_url_password_leaves_clean_urls_alone() {
+        for u in [
+            "smb://alice@nas/media",
+            "smb://nas/media",
+            "ftp://host",
+            "not-a-url",
+            "smb://nas/we@ird", // '@' in path, not authority
+        ] {
+            let (url, had) = strip_url_password(u);
+            assert_eq!(url, u);
+            assert!(!had);
+        }
     }
 
     #[test]

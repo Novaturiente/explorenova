@@ -119,6 +119,13 @@ pub struct App {
     pub disk_free: Option<(PathBuf, u64, std::time::Instant)>,
     /// Timestamp of last `set_status` call. Status text fades after 3s.
     pub status_set_at: std::time::Instant,
+    /// Chord buffer awaiting more keys (vim `showcmd`-style). Mirrored
+    /// from the event loop's local buffer after each key so the status
+    /// bar can show a pending `y`/`g` instead of appearing dead.
+    pub pending_chord: String,
+    /// Scroll offset (lines) for text/meta previews (ctrl-j / ctrl-k).
+    /// Reset whenever the tree cursor moves. Images ignore it.
+    pub preview_scroll: usize,
     /// In-flight long-running op (copy/move/extract). `None` when idle.
     /// While `Some`, the modal overlay renders a progress bar / spinner
     /// and conflicting dispatch arms are no-ops.
@@ -200,6 +207,8 @@ impl App {
             line_mode,
             disk_free: None,
             status_set_at: std::time::Instant::now(),
+            pending_chord: String::new(),
+            preview_scroll: 0,
             op: None,
             help_scroll: 0,
             help_filter: String::new(),
@@ -551,8 +560,20 @@ impl App {
             Action::Quit => self.should_quit = true,
             Action::Cancel => {
                 self.mode = Mode::Normal;
+                let n = self.marks.len();
                 self.marks.clear();
                 self.visual_mode = false;
+                if n > 0 {
+                    // Esc silently nuking a large selection reads as data
+                    // loss; say what happened.
+                    self.set_status(format!("cleared {n} mark{}", if n == 1 { "" } else { "s" }));
+                }
+            }
+            Action::PreviewScrollDown => {
+                self.preview_scroll = self.preview_scroll.saturating_add(5);
+            }
+            Action::PreviewScrollUp => {
+                self.preview_scroll = self.preview_scroll.saturating_sub(5);
             }
             Action::ResizeShrink => self.resize_focus(-1),
             Action::ResizeGrow => self.resize_focus(1),
@@ -604,6 +625,9 @@ impl App {
             self.search_cands = Some(crate::search::collect(&root, self.arena.show_hidden));
         }
         let cands = self.search_cands.as_ref().unwrap();
+        // At the walk cap the index is incomplete — matches beyond it are
+        // silently absent, so say so instead of implying a full search.
+        let capped = cands.len() >= crate::search::WALK_MAX_ENTRIES;
         let ranked = crate::search::rank(cands, &root, &query);
         self.search_results = ranked
             .into_iter()
@@ -611,10 +635,11 @@ impl App {
             .collect();
         self.search_idx = 0;
         let n = self.search_results.len();
+        let cap_note = if capped { " — index capped, deep matches missed" } else { "" };
         if n == 0 {
-            self.set_status("no matches");
+            self.set_status(format!("no matches{cap_note}"));
         } else {
-            self.set_status(format!("1/{n} matches"));
+            self.set_status(format!("1/{n} matches{cap_note}"));
         }
         self.jump_to_search();
     }
@@ -677,8 +702,9 @@ impl App {
         if self.filter_cands.is_none() {
             self.filter_cands = Some(crate::search::collect(&root, self.arena.show_hidden));
         }
-        let cands = self.filter_cands.clone().unwrap();
-        let ranked = crate::search::rank(&cands, &root, &self.filter_query);
+        let cands = self.filter_cands.as_ref().unwrap();
+        let capped = cands.len() >= crate::search::WALK_MAX_ENTRIES;
+        let ranked = crate::search::rank(cands, &root, &self.filter_query);
         let mut allowed: std::collections::HashSet<usize> = std::collections::HashSet::new();
         // Cap reveals: each reveal hits disk + mutates the tree on the UI
         // thread, so an unbounded match set on a one-char query would freeze.
@@ -695,12 +721,13 @@ impl App {
         self.arena.filter = Some(allowed);
         self.visible = self.arena.flatten();
         self.selected = 0;
+        let cap_note = if capped { " — index capped" } else { "" };
         if n == 0 {
-            self.set_status("filter: no matches");
+            self.set_status(format!("filter: no matches{cap_note}"));
         } else if n > FILTER_MAX_MATCHES {
-            self.set_status(format!("filter: {FILTER_MAX_MATCHES}/{n} (capped)"));
+            self.set_status(format!("filter: {FILTER_MAX_MATCHES}/{n} (capped){cap_note}"));
         } else {
-            self.set_status(format!("filter: {n} matches"));
+            self.set_status(format!("filter: {n} matches{cap_note}"));
         }
     }
 

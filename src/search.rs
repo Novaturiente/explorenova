@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 /// tree freezes the app. These caps keep the freeze short; matches deeper
 /// than `WALK_MAX_DEPTH` or past `WALK_MAX_ENTRIES` are missed until search
 /// moves off-thread.
-const WALK_MAX_ENTRIES: usize = 50_000;
+pub const WALK_MAX_ENTRIES: usize = 50_000;
 const WALK_MAX_DEPTH: usize = 32;
 
 /// Collect candidate paths under `root`. `include_all` => ignore .gitignore + show hidden.
@@ -108,6 +108,9 @@ pub fn content_search(root: &Path, query: &str) -> Result<Vec<PathBuf>, String> 
     let output = Command::new("rg")
         .arg("--files-with-matches")
         .arg("--color=never")
+        // Literal match: users type text, not regex. `a.b` must not match
+        // `axb`, and an unbalanced `(` must not error out.
+        .arg("--fixed-strings")
         // Bound the walk so a huge tree doesn't freeze the UI thread (rg
         // runs synchronously here). ponytail: matches deeper than this are
         // missed until content search moves off-thread.

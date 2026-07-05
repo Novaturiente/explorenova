@@ -71,7 +71,8 @@ pub const SAMPLE_CONFIG: &str = r##"# explorenova configuration
 # mp4 = "mpv {file}"
 
 # --- Theme -------------------------------------------------------------
-# preset: omit (tuned RGB default) or "terminal" (follow your terminal palette).
+# preset: omit (tuned RGB default), "terminal" (follow your terminal
+# palette), or "light"/"latte" (light-background palette).
 # Override any field with an ANSI name ("blue", "light_cyan") or hex ("#50C8FA").
 # A bad value warns in the status bar and keeps the default.
 # [theme]

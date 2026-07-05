@@ -8,6 +8,17 @@ pub enum PasteMode {
     Move,
 }
 
+/// Write via temp-file + rename so a crash mid-write can never leave a
+/// truncated file. Used for state.toml/shares.toml — a truncated file
+/// there parses as "empty" and silently loses bookmarks/shares.
+pub fn write_atomic(path: &Path, contents: &str) -> io::Result<()> {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let tmp = PathBuf::from(tmp);
+    fs::write(&tmp, contents)?;
+    fs::rename(&tmp, path)
+}
+
 /// Decide directory vs file from `path`:
 /// - trailing `/` → directory (explicit, always wins)
 /// - no extension (e.g. `notes`, `Makefile`) → directory
@@ -204,6 +215,49 @@ fn extract_dest_for(archive: &Path) -> PathBuf {
     unique_dest(parent, std::ffi::OsStr::new(&stem))
 }
 
+/// True if any listed entry would escape the extraction dir (zip-slip):
+/// an absolute path or a `..` component. tar and unzip sanitize these
+/// themselves; 7z and unrar are only as safe as the archive, so their
+/// branches list entries first and refuse.
+fn entries_escape(listing: &str) -> bool {
+    listing.lines().any(|l| {
+        let p = Path::new(l.trim());
+        p.is_absolute()
+            || p.components()
+                .any(|c| matches!(c, std::path::Component::ParentDir))
+    })
+}
+
+fn list_7z(archive: &Path) -> Option<String> {
+    let out = std::process::Command::new("7z")
+        .args(["l", "-ba", "-slt"])
+        .arg(archive)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout);
+    Some(
+        s.lines()
+            .filter_map(|l| l.strip_prefix("Path = "))
+            .collect::<Vec<_>>()
+            .join("\n"),
+    )
+}
+
+fn list_unrar(archive: &Path) -> Option<String> {
+    let out = std::process::Command::new("unrar")
+        .args(["lb", "-y"])
+        .arg(archive)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
 /// Extract `archive` into a sibling directory (`unique_dest` rules).
 /// Returns the destination path on success. Shells out to system tools
 /// (unzip / tar / 7z / unrar / gunzip / bunzip2 / xz / zstd) per
@@ -248,6 +302,11 @@ pub fn extract_archive(archive: &Path) -> io::Result<PathBuf> {
             .arg(&dest)
             .status()
     } else if ext == "7z" {
+        if list_7z(archive).map(|l| entries_escape(&l)).unwrap_or(false) {
+            return Err(io::Error::other(
+                "archive refused: entries with ../ or absolute paths",
+            ));
+        }
         Command::new("7z")
             .arg("x")
             .arg("-y")
@@ -255,6 +314,11 @@ pub fn extract_archive(archive: &Path) -> io::Result<PathBuf> {
             .arg(archive)
             .status()
     } else if ext == "rar" {
+        if list_unrar(archive).map(|l| entries_escape(&l)).unwrap_or(false) {
+            return Err(io::Error::other(
+                "archive refused: entries with ../ or absolute paths",
+            ));
+        }
         Command::new("unrar")
             .arg("x")
             .arg("-y")
@@ -263,7 +327,9 @@ pub fn extract_archive(archive: &Path) -> io::Result<PathBuf> {
             .status()
     } else if matches!(ext.as_str(), "gz" | "bz2" | "xz" | "zst") {
         // Single-file compressors: write decompressed bytes to dest/<stem>.
-        let stem = Path::new(&name)
+        // Stem from the real filename, not the lowercased `name`, so
+        // README.GZ decompresses to README, not readme.
+        let stem = archive
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("out")
@@ -343,6 +409,15 @@ pub fn plan_bulk_rename(
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn entries_escape_flags_traversal_and_absolute() {
+        assert!(entries_escape("ok.txt\n../evil.sh"));
+        assert!(entries_escape("/etc/passwd"));
+        assert!(entries_escape("a/b/../../../evil"));
+        assert!(!entries_escape("a.txt\nsub/dir/b.txt\nweird..name"));
+        assert!(!entries_escape(""));
+    }
 
     #[test]
     fn unique_dest_increments() {

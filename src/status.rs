@@ -154,8 +154,10 @@ pub fn render(area: Rect, frame: &mut Frame, app: &App) {
                 .add_modifier(Modifier::BOLD),
         ));
     }
+    // Errors don't fade on the timer — they stay until the next keypress
+    // (handle_key clears them), so a failure can't vanish unread.
     let showing_status = !app.status.is_empty()
-        && app.status_set_at.elapsed() < Duration::from_secs(3);
+        && (app.status_err || app.status_set_at.elapsed() < Duration::from_secs(3));
     let body = if showing_status {
         app.status.clone()
     } else {
@@ -195,15 +197,24 @@ pub fn render(area: Rect, frame: &mut Frame, app: &App) {
         segs[1],
     );
 
-    // Right: items • free
+    // Right: pending chord (showcmd) + items • free
     let items = app.visible.len();
     let free = app
         .disk_free
         .as_ref()
         .map(|(_, b, _)| human_bytes(*b))
         .unwrap_or_else(|| "?".into());
-    let right = format!("{} items • {} free", items, free);
-    frame.render_widget(Paragraph::new(right), segs[2]);
+    let mut right_spans: Vec<Span> = Vec::new();
+    if !app.pending_chord.is_empty() {
+        right_spans.push(Span::styled(
+            format!("{}  ", app.pending_chord),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    right_spans.push(Span::raw(format!("{} items • {} free", items, free)));
+    frame.render_widget(Paragraph::new(Line::from(right_spans)), segs[2]);
 }
 
 #[cfg(test)]
