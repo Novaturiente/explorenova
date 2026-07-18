@@ -115,13 +115,24 @@ fn commit_path_input(app: &mut App, git_tx: &mpsc::Sender<std::path::PathBuf>) {
     app.mode = Mode::Normal;
 }
 
-/// Rebuild the arena at the current root, preserving the show_hidden
-/// toggle, ALL previously-expanded directories, and the cursor path.
+/// Rebuild the arena at the current root, ALL previously-expanded
+/// directories, and the cursor path. `hidden_override` picks the new
+/// `show_hidden` value; `None` preserves whatever it currently is (the
+/// plain refresh path), `Some` forces it (the `.` toggle) — that flag is
+/// the *only* difference between a plain refresh and a hidden-files
+/// toggle, so both share this one replay path instead of the toggle
+/// growing its own (previously expansion-dropping) copy.
+///
 /// Used after destructive batch ops (trash, permanent delete, cut-paste)
 /// to drop stale entries immediately instead of waiting on the fs-watch
 /// debounce — which can miss `trash` crate moves entirely when they go
-/// through D-Bus.
-pub fn refresh_in_place(app: &mut App, git_tx: &mpsc::Sender<std::path::PathBuf>) {
+/// through D-Bus — and after `.` so the expanded layout survives the
+/// hidden-files flip.
+fn rebuild(
+    app: &mut App,
+    git_tx: &mpsc::Sender<std::path::PathBuf>,
+    hidden_override: Option<bool>,
+) {
     // ponytail: filter doesn't survive an external-change refresh; re-press f.
     if app.filter_active() {
         app.arena.filter = None;
@@ -132,7 +143,7 @@ pub fn refresh_in_place(app: &mut App, git_tx: &mpsc::Sender<std::path::PathBuf>
     // Index-based visual marking can't survive a full rebuild either.
     app.visual_mode = false;
     let cur_root = app.arena.nodes[app.arena.root].path.clone();
-    let prev_hidden = app.arena.show_hidden;
+    let show_hidden = hidden_override.unwrap_or(app.arena.show_hidden);
     let sel_path = app
         .visible
         .get(app.selected)
@@ -151,7 +162,7 @@ pub fn refresh_in_place(app: &mut App, git_tx: &mpsc::Sender<std::path::PathBuf>
         .filter(|p| p.exists())
         .collect();
     if let Ok(mut na) = Arena::new(&cur_root) {
-        if prev_hidden {
+        if show_hidden {
             na.show_hidden = true;
             na.nodes[na.root].children = None;
             let _ = na.load_children(na.root);
@@ -184,6 +195,12 @@ pub fn refresh_in_place(app: &mut App, git_tx: &mpsc::Sender<std::path::PathBuf>
         }
     }
     let _ = git_tx.send(app.arena.nodes[app.arena.root].path.clone());
+}
+
+/// Re-read the tree from disk in place, preserving the show_hidden
+/// toggle. See [`rebuild`].
+pub fn refresh_in_place(app: &mut App, git_tx: &mpsc::Sender<std::path::PathBuf>) {
+    rebuild(app, git_tx, None)
 }
 
 /// Incrementally refresh only the directories whose contents changed.
@@ -1105,7 +1122,7 @@ pub fn handle(
                 trash_targets(app, git_tx);
             }
         }
-        Action::ToggleHidden => toggle_hidden(app, cwd),
+        Action::ToggleHidden => toggle_hidden(app, git_tx),
         Action::Search => {
             app.begin_search();
             app.enter_mode(Mode::Search, "");
@@ -1409,29 +1426,12 @@ fn trash_targets(app: &mut App, git_tx: &mpsc::Sender<std::path::PathBuf>) {
     refresh_in_place(app, git_tx);
 }
 
-fn toggle_hidden(app: &mut App, _cwd: &Path) {
-    // Arena::load_children caches children, so flipping arena.show_hidden
-    // alone won't re-scan. Rebuild the arena rooted at the CURRENT root
-    // path (NOT the startup `cwd` arg — the user may have re-rooted via
-    // H/T/devices/ascend) and re-reveal whichever path was under the
-    // cursor.
-    let cur_root = app.arena.nodes[app.arena.root].path.clone();
-    let sel_path = app
-        .visible
-        .get(app.selected)
-        .map(|&id| app.arena.nodes[id].path.clone());
+/// Flip `show_hidden` and rebuild via [`rebuild`], which replays every
+/// expanded directory — so pressing `.` no longer collapses the tree
+/// back to a flat single-level view the way the old ad hoc rebuild did.
+fn toggle_hidden(app: &mut App, git_tx: &mpsc::Sender<std::path::PathBuf>) {
     let new_hidden = !app.arena.show_hidden;
-    if let Ok(mut na) = Arena::new(&cur_root) {
-        na.show_hidden = new_hidden;
-        na.nodes[na.root].children = None;
-        let _ = na.load_children(na.root);
-        na.nodes[na.root].expanded = true;
-        app.arena = na;
-        app.visible = app.arena.flatten();
-        if let Some(p) = sel_path {
-            app.navigate_to(&p);
-        }
-    }
+    rebuild(app, git_tx, Some(new_hidden));
 }
 
 fn prompt_trash(app: &mut App) {
@@ -1806,11 +1806,35 @@ mod tests {
         let d = tempdir().unwrap();
         std::fs::write(d.path().join("visible.txt"), "1").unwrap();
         std::fs::write(d.path().join(".secret"), "2").unwrap();
-        let (mut app, _tx, _rx) = app_at(d.path());
+        let (mut app, tx, _rx) = app_at(d.path());
         assert!(!names(&app).contains(&".secret".to_string()), "hidden by default");
-        toggle_hidden(&mut app, d.path());
+        toggle_hidden(&mut app, &tx);
         assert!(names(&app).contains(&".secret".to_string()), "shown after toggle");
-        toggle_hidden(&mut app, d.path());
+        toggle_hidden(&mut app, &tx);
         assert!(!names(&app).contains(&".secret".to_string()), "hidden again");
+    }
+
+    #[test]
+    fn toggle_hidden_preserves_expanded_dirs() {
+        let d = tempdir().unwrap();
+        std::fs::create_dir_all(d.path().join("x/deep")).unwrap();
+        std::fs::create_dir(d.path().join("y")).unwrap();
+        let (mut app, tx, _rx) = app_at(d.path());
+        let x = app
+            .arena
+            .reveal(&d.path().join("x"))
+            .unwrap()
+            .unwrap();
+        app.arena.expand(x).unwrap();
+        app.visible = app.arena.flatten();
+        toggle_hidden(&mut app, &tx);
+        let x2 = app
+            .arena
+            .flatten()
+            .iter()
+            .copied()
+            .find(|&id| app.arena.nodes[id].path.ends_with("x"))
+            .unwrap();
+        assert!(app.arena.nodes[x2].expanded, "expansion must survive '.'");
     }
 }
