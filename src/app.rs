@@ -321,11 +321,22 @@ impl App {
 
     /// Push current sort to active arena AND each tab snapshot; re-flatten
     /// all visible lists and reclamp the cursor.
+    ///
+    /// The cursor follows the previously-selected *file* (via `navigate_to`),
+    /// not its old row index — a resort reorders rows, so keeping the index
+    /// would land the cursor on a different file.
     pub fn apply_sort(&mut self) {
+        let sel_path = self.visible.get(self.selected)
+            .map(|&id| self.arena.nodes[id].path.clone());
         self.arena.set_sort(self.sort);
-        self.visible = self.arena.flatten();
-        let cap = self.visible.len().saturating_sub(1);
-        self.selected = self.selected.min(cap);
+        match sel_path {
+            Some(p) if self.navigate_to(&p) => {}
+            _ => {
+                self.visible = self.arena.flatten();
+                let cap = self.visible.len().saturating_sub(1);
+                self.selected = self.selected.min(cap);
+            }
+        }
         for tab in self.tabs.iter_mut() {
             tab.arena.set_sort(self.sort);
             tab.visible = tab.arena.flatten();
@@ -1459,6 +1470,23 @@ mod tests {
         assert!(a.clipboard.is_some(), "clipboard survives swap");
         a.close_tab();
         assert!(a.clipboard.is_some(), "clipboard survives close");
+    }
+
+    #[test]
+    fn apply_sort_follows_selected_path() {
+        let d = tempdir().unwrap();
+        std::fs::write(d.path().join("aaa"), vec![0u8; 10]).unwrap();
+        std::fs::write(d.path().join("zzz"), vec![0u8; 99999]).unwrap();
+        let mut app = test_app(d.path());
+        // select "zzz" (last by name)
+        app.selected = app.visible.len() - 1;
+        let sel = app.visible[app.selected];
+        let sel_path = app.arena.nodes[sel].path.clone();
+        app.sort.mode = crate::sort::SortMode::Size; // zzz becomes... position changes
+        app.sort.reverse = true;
+        app.apply_sort();
+        let now = app.arena.nodes[app.visible[app.selected]].path.clone();
+        assert_eq!(now, sel_path, "cursor must follow the file, not the row index");
     }
 
     #[test]
