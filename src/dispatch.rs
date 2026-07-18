@@ -91,6 +91,30 @@ pub fn reroot(app: &mut App, path: &Path, git_tx: &mpsc::Sender<std::path::PathB
     }
 }
 
+/// Commit the `:` path-input prompt. A path inside the current tree is
+/// just a reveal via `navigate_to`; a path outside it (or a bare
+/// absolute/relative path typed when nothing under the current root
+/// matches) re-roots the tree there — mirroring the bookmarks-Enter
+/// fallback (`toggle_action`) so `:` behaves like a real "go to path"
+/// instead of silently failing whenever the target isn't already
+/// mounted under the current root.
+fn commit_path_input(app: &mut App, git_tx: &mpsc::Sender<std::path::PathBuf>) {
+    let target = crate::nav::expand(&app.input.value());
+    let p = std::path::PathBuf::from(&target);
+    if !app.navigate_to(&p) {
+        if p.is_dir() {
+            reroot(app, &p, git_tx);
+        } else if p.is_file() {
+            let parent = p.parent().map(|x| x.to_path_buf()).unwrap_or_else(|| p.clone());
+            reroot(app, &parent, git_tx);
+            app.navigate_to(&p);
+        } else {
+            app.set_err("path not found");
+        }
+    }
+    app.mode = Mode::Normal;
+}
+
 /// Rebuild the arena at the current root, preserving the show_hidden
 /// toggle, ALL previously-expanded directories, and the cursor path.
 /// Used after destructive batch ops (trash, permanent delete, cut-paste)
@@ -821,11 +845,7 @@ fn text_input_enter(app: &mut App, _start: &Path, git_tx: &mpsc::Sender<std::pat
                 }
             }
             Some(Action::PathInput) => {
-                let target = crate::nav::expand(&app.input.value());
-                if !app.navigate_to(Path::new(&target)) {
-                    app.set_err("path not found");
-                }
-                app.mode = Mode::Normal;
+                commit_path_input(app, git_tx);
             }
             Some(Action::OpenWith) => {
                 if let Some(&id) = app.visible.get(app.selected) {
@@ -1744,6 +1764,41 @@ mod tests {
         app.mode = crate::keymap::Mode::Normal;
         handle(&mut app, Action::Trash, d.path(), &tx).unwrap();
         assert_ne!(app.mode, crate::keymap::Mode::Confirm, "single trash stays immediate");
+    }
+
+    #[test]
+    fn path_input_reroots_outside_current_root() {
+        let outer = tempdir().unwrap();
+        let inner = outer.path().join("inner");
+        std::fs::create_dir(&inner).unwrap();
+        let (mut app, tx, _rx) = app_at(&inner);
+        app.input.set(outer.path().to_str().unwrap());
+        commit_path_input(&mut app, &tx);
+        assert_eq!(app.arena.nodes[app.arena.root].path, outer.path());
+    }
+
+    #[test]
+    fn path_input_reroots_to_parent_and_selects_file() {
+        let outer = tempdir().unwrap();
+        let inner = outer.path().join("inner");
+        std::fs::create_dir(&inner).unwrap();
+        let target_file = outer.path().join("target.txt");
+        std::fs::write(&target_file, "x").unwrap();
+        let (mut app, tx, _rx) = app_at(&inner);
+        app.input.set(target_file.to_str().unwrap());
+        commit_path_input(&mut app, &tx);
+        assert_eq!(app.arena.nodes[app.arena.root].path, outer.path());
+        let cur = app.arena.nodes[app.visible[app.selected]].path.clone();
+        assert_eq!(cur, target_file);
+    }
+
+    #[test]
+    fn path_input_reports_error_for_missing_path() {
+        let d = tempdir().unwrap();
+        let (mut app, tx, _rx) = app_at(d.path());
+        app.input.set(d.path().join("does-not-exist").to_str().unwrap());
+        commit_path_input(&mut app, &tx);
+        assert!(app.status.contains("not found"));
     }
 
     #[test]
