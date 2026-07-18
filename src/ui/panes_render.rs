@@ -177,7 +177,7 @@ pub fn render_pane_bookmarks(f: &mut Frame, area: Rect, app: &App, theme: &Theme
         .state
         .bookmarks
         .iter()
-        .map(|b| ListItem::new(short_bookmark_label(b)))
+        .map(|b| ListItem::new(crate::ui::display_name(&short_bookmark_label(b))))
         .collect();
     let title_text = if focused {
         " bookmarks ● "

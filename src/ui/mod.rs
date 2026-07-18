@@ -170,6 +170,14 @@ mod tests {
     }
 
     #[test]
+    fn bookmark_label_sanitizes_control_chars() {
+        let path = std::path::Path::new("/tmp/bad\x1b[31mdir\rname");
+        let label = short_bookmark_label(path);
+        let sanitized = display_name(&label);
+        assert_eq!(sanitized, "bad?[31mdir?name");
+    }
+
+    #[test]
     fn viewport_start_centers_and_clamps() {
         // fits on screen → start 0
         assert_eq!(viewport_start(5, 3, 10), 0);
