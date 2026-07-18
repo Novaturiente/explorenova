@@ -54,7 +54,9 @@ fn ext_key(n: &Node) -> String {
 
 /// Natural order: digit runs compare numerically, so `file2` < `file10`.
 /// Numerically-equal runs ("07" vs "7") fall through to the next segment;
-/// the raw-name tiebreak in `cmp_names` keeps the total order deterministic.
+/// the raw-name tiebreak in `cmp_name_keys` keeps the total order
+/// deterministic — without it, `A` vs `a` order would follow arbitrary
+/// `read_dir` order and could flip between reloads.
 fn natural_cmp(a: &str, b: &str) -> Ordering {
     let mut ac = a.chars().peekable();
     let mut bc = b.chars().peekable();
@@ -99,41 +101,67 @@ fn natural_cmp(a: &str, b: &str) -> Ordering {
     }
 }
 
-/// Case-insensitive natural name compare with a deterministic raw-name
-/// tiebreak — without it, `A` vs `a` order would follow arbitrary
-/// `read_dir` order and could flip between reloads.
-fn cmp_names(a: &Node, b: &Node) -> Ordering {
-    natural_cmp(&name_key(a), &name_key(b))
-        .then_with(|| a.path.file_name().cmp(&b.path.file_name()))
+/// Precomputed per-entry sort key. `name`/`ext` are lowercased once here
+/// instead of being recomputed (and re-allocated) on every comparison
+/// `sort_by`'s O(n log n) comparisons would otherwise make — for name_key
+/// and ext_key that was two extra String allocations per comparison.
+struct Key {
+    idx: usize,
+    is_dir: bool,
+    name: String,
+    raw: std::ffi::OsString,
+    ext: String,
+    size: u64,
+    mtime: std::time::SystemTime,
 }
 
-fn cmp_by(a: &Node, b: &Node, mode: SortMode) -> Ordering {
+fn cmp_name_keys(a: &Key, b: &Key) -> Ordering {
+    natural_cmp(&a.name, &b.name).then_with(|| a.raw.cmp(&b.raw))
+}
+
+fn cmp_keys(a: &Key, b: &Key, mode: SortMode) -> Ordering {
     match mode {
-        SortMode::Name => cmp_names(a, b),
-        SortMode::Size => a.size.cmp(&b.size).then_with(|| cmp_names(a, b)),
-        SortMode::Mtime => a.mtime.cmp(&b.mtime).then_with(|| cmp_names(a, b)),
-        SortMode::Ext => ext_key(a).cmp(&ext_key(b)).then_with(|| cmp_names(a, b)),
+        SortMode::Name => cmp_name_keys(a, b),
+        SortMode::Size => a.size.cmp(&b.size).then_with(|| cmp_name_keys(a, b)),
+        SortMode::Mtime => a.mtime.cmp(&b.mtime).then_with(|| cmp_name_keys(a, b)),
+        SortMode::Ext => a.ext.cmp(&b.ext).then_with(|| cmp_name_keys(a, b)),
     }
 }
 
 /// Reorder `indices` in place per `sort`. `indices` is a slice of indices
 /// into `arena_nodes` (typically a parent node's `children` vector).
 pub fn sort_children(indices: &mut [usize], arena_nodes: &[Node], sort: &SortState) {
-    indices.sort_by(|&ai, &bi| {
-        let a = &arena_nodes[ai];
-        let b = &arena_nodes[bi];
+    let mut keyed: Vec<Key> = indices
+        .iter()
+        .map(|&i| {
+            let n = &arena_nodes[i];
+            Key {
+                idx: i,
+                is_dir: n.is_dir(),
+                name: name_key(n),
+                raw: n.path.file_name().unwrap_or_default().to_owned(),
+                ext: ext_key(n),
+                size: n.size,
+                mtime: n.mtime,
+            }
+        })
+        .collect();
+    keyed.sort_by(|a, b| {
         let primary = if sort.dir_first {
-            b.is_dir().cmp(&a.is_dir()) // dirs first (true > false)
+            b.is_dir.cmp(&a.is_dir) // dirs first (true > false)
         } else {
             Ordering::Equal
         };
         // Reverse only flips the sort field, not the dir/file grouping:
         // with dir_first on, reversing keeps dirs above files and reverses
         // order *within* each group (the intuitive behavior).
-        let secondary = cmp_by(a, b, sort.mode);
+        let secondary = cmp_keys(a, b, sort.mode);
         let secondary = if sort.reverse { secondary.reverse() } else { secondary };
         primary.then(secondary)
     });
+    for (slot, k) in indices.iter_mut().zip(keyed.into_iter()) {
+        *slot = k.idx;
+    }
 }
 
 pub fn render_menu(area: Rect, frame: &mut Frame, sort: &SortState, theme: &crate::ui::theme::Theme) {
@@ -342,6 +370,25 @@ mod tests {
         assert_eq!(natural_cmp("a2b3", "a2b10"), Less);
         assert_eq!(natural_cmp("abc", "abd"), Less);
         assert_eq!(natural_cmp("", "a"), Less);
+    }
+
+    #[test]
+    fn cached_key_sort_matches_reference_order() {
+        // names covering: case, digits, extensionless, unicode. Expected
+        // order captured from the pre-refactor comparator (recomputing
+        // keys per comparison) — the cached-key version must match it
+        // exactly; semantics are frozen, only the allocation pattern
+        // changes.
+        let names = ["File10", "file2", "a.TXT", "b.txt", "Makefile", "ä", "07", "7"];
+        let nodes: Vec<Node> = names.iter().map(|n| mk(n, NodeKind::File, 0, 0)).collect();
+        let mut idx: Vec<usize> = (0..nodes.len()).collect();
+        let s = SortState::default();
+        sort_children(&mut idx, &nodes, &s);
+        let order: Vec<&str> = idx.iter().map(|&i| names[i]).collect();
+        assert_eq!(
+            order,
+            vec!["07", "7", "a.TXT", "b.txt", "file2", "File10", "Makefile", "ä"]
+        );
     }
 
     #[test]
