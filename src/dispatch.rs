@@ -1160,7 +1160,7 @@ pub fn handle(
             if app.config.confirm_trash || app.targets().len() > 1 {
                 prompt_trash(app);
             } else {
-                trash_targets(app, git_tx);
+                trash_targets(app);
             }
         }
         Action::ToggleHidden => toggle_hidden(app, git_tx),
@@ -1421,50 +1421,26 @@ fn bulk_rename(app: &mut App, git_tx: &mpsc::Sender<std::path::PathBuf>) {
     }
 }
 
-fn trash_targets(app: &mut App, git_tx: &mpsc::Sender<std::path::PathBuf>) {
+/// Trash the current target set as a cancellable background op (#4) — a
+/// big selection or a slow trash backend (gio on a network mount) must
+/// not freeze the loop. Self-write marking, refresh, and reveal happen
+/// in the generic op-finished handler in main.rs once it completes.
+fn trash_targets(app: &mut App) {
     let targets = app.targets();
-    let n = targets.len();
-    if n == 0 {
+    if targets.is_empty() {
         app.set_status("nothing to trash");
         return;
     }
-    let mut ok = 0usize;
-    let mut failed: Vec<String> = Vec::new();
-    for p in &targets {
-        match crate::fs_ops::trash_path(p) {
-            Ok(_) => ok += 1,
-            Err(e) => failed.push(format!("{}: {e}", p.display())),
-        }
+    // Dead code in practice: handle_key already refuses all input but
+    // Esc/Ctrl-c while an op is in flight, so `handle` (and this fn)
+    // can't be reached with `app.op` set. Kept for defense-in-depth,
+    // matching the guard shape used at the other op-spawn sites.
+    if app.op.is_some() {
+        app.set_status("another op in progress");
+        return;
     }
-    let msg = if failed.is_empty() {
-        if n == 1 {
-            format!("trashed {}", targets[0].display())
-        } else {
-            format!("trashed {n}")
-        }
-    } else {
-        let preview = failed.iter().take(2).cloned().collect::<Vec<_>>().join(", ");
-        let tail = if failed.len() > 2 { ", …" } else { "" };
-        format!(
-            "trashed {}/{} ({} failed: {}{})",
-            ok,
-            n,
-            failed.len(),
-            preview,
-            tail
-        )
-    };
-    app.set_status(msg);
     app.marks.clear();
-    // Trash can span multiple dirs (marked selection) — mark + reload
-    // exactly the parents touched instead of the whole root.
-    let dirs: std::collections::HashSet<std::path::PathBuf> = targets
-        .iter()
-        .filter_map(|p| p.parent().map(|x| x.to_path_buf()))
-        .collect();
-    let dirs: Vec<std::path::PathBuf> = dirs.into_iter().collect();
-    app.mark_self_write(dirs.clone());
-    refresh_dirs(app, &dirs, git_tx);
+    app.op = Some(crate::ops::spawn_trash(targets));
 }
 
 /// Flip `show_hidden` and rebuild via [`rebuild`], which replays every

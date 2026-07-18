@@ -16,6 +16,7 @@ pub enum OpKind {
     Extract,
     Mount,
     Unmount,
+    Trash,
 }
 
 impl OpKind {
@@ -26,6 +27,7 @@ impl OpKind {
             OpKind::Extract => "Extracting",
             OpKind::Mount => "Mounting",
             OpKind::Unmount => "Unmounting",
+            OpKind::Trash => "Trashing",
         }
     }
 }
@@ -412,6 +414,72 @@ pub fn spawn_unmount(url: String) -> OpState {
     )
 }
 
+/// Trash `targets` off-thread. Progress is an item count (not bytes) —
+/// the op modal renders "{done} / {total} items". Esc cancels between
+/// items; items already trashed before a cancel/failure stay trashed
+/// (trash is per-item atomic, there's nothing to roll back).
+///
+/// ponytail: `reveal_hint` (and the generic op-finished handler's root +
+/// reveal-parent self-write marks) only precisely cover the FIRST
+/// target's dir when a marked multi-select spans several directories —
+/// the other dirs still refresh correctly, just via the normal
+/// fs-watcher debounce instead of being pre-suppressed. Upgrade path if
+/// that shows up as a visible double-refresh: thread the full parent-dir
+/// set through `OpState` instead of a single `reveal_hint`.
+pub fn spawn_trash(targets: Vec<PathBuf>) -> OpState {
+    let (tx, rx) = mpsc::channel();
+    let n = targets.len();
+    let label = format!("Trashing {n} item{}", if n == 1 { "" } else { "s" });
+    let cancel = Arc::new(AtomicBool::new(false));
+    let cancel_worker = cancel.clone();
+    let reveal = targets.first().and_then(|p| p.parent().map(|x| x.to_path_buf()));
+    thread::spawn(move || {
+        let mut ok = 0usize;
+        let mut failed: Vec<String> = Vec::new();
+        let mut cancelled = false;
+        for p in &targets {
+            if cancel_worker.load(Ordering::Relaxed) {
+                cancelled = true;
+                break;
+            }
+            match crate::fs_ops::trash_path(p) {
+                Ok(_) => ok += 1,
+                Err(e) => failed.push(format!("{}: {e}", p.display())),
+            }
+            let _ = tx.send(OpMsg::Progress(ok as u64, n as u64));
+        }
+        // Mirrors the message shaping the old synchronous trash_targets used
+        // (always a status, not an error — a partial failure still trashed
+        // most of the selection).
+        let msg = if cancelled {
+            format!("cancelled ({ok} trashed)")
+        } else if failed.is_empty() {
+            if n == 1 {
+                format!("trashed {}", targets[0].display())
+            } else {
+                format!("trashed {n}")
+            }
+        } else {
+            let preview = failed.iter().take(2).cloned().collect::<Vec<_>>().join(", ");
+            let tail = if failed.len() > 2 { ", …" } else { "" };
+            format!("trashed {ok}/{n} ({} failed: {preview}{tail})", failed.len())
+        };
+        let _ = tx.send(OpMsg::Finished(Ok(msg)));
+    });
+    OpState {
+        kind: OpKind::Trash,
+        label,
+        done_bytes: 0,
+        total_bytes: n as u64,
+        indeterminate: false,
+        started_at: Instant::now(),
+        rx,
+        reveal_hint: reveal,
+        finished: None,
+        cancel,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -423,6 +491,38 @@ mod tests {
         assert_eq!(OpKind::Extract.verb(), "Extracting");
         assert_eq!(OpKind::Mount.verb(), "Mounting");
         assert_eq!(OpKind::Unmount.verb(), "Unmounting");
+        assert_eq!(OpKind::Trash.verb(), "Trashing");
+    }
+
+    #[test]
+    fn spawn_trash_moves_files_and_reports_progress() {
+        // Isolate the freedesktop trash dir under a tempdir so this
+        // doesn't touch the real user trash (same pattern as
+        // tests/apps_int.rs for XDG_DATA_HOME).
+        let data_home = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_DATA_HOME", data_home.path());
+        let src = tempfile::tempdir().unwrap();
+        let f1 = src.path().join("a.txt");
+        let f2 = src.path().join("b.txt");
+        std::fs::write(&f1, "1").unwrap();
+        std::fs::write(&f2, "2").unwrap();
+
+        let mut op = spawn_trash(vec![f1.clone(), f2.clone()]);
+        assert_eq!(op.kind, OpKind::Trash);
+        assert_eq!(op.total_bytes, 2); // item count, not bytes
+        let t0 = Instant::now();
+        while !op.poll() {
+            if t0.elapsed() > std::time::Duration::from_secs(10) {
+                panic!("spawn_trash never finished");
+            }
+            thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(!f1.exists());
+        assert!(!f2.exists());
+        match op.finished {
+            Some(Ok(s)) => assert_eq!(s, "trashed 2"),
+            other => panic!("expected Ok(\"trashed 2\"), got {other:?}"),
+        }
     }
 
     #[test]

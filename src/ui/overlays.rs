@@ -77,15 +77,22 @@ pub fn render_op_modal(f: &mut Frame, body: Rect, op: &OpState, theme: &Theme) {
     } else {
         let pct = (op.done_bytes as f64 / op.total_bytes as f64 * 100.0)
             .clamp(0.0, 100.0) as u16;
-        let gauge = Gauge::default()
-            .gauge_style(Style::default().fg(theme.symlink).bg(theme.selected_bg))
-            .percent(pct)
-            .label(format!(
+        // Trash progress is an item count, not bytes — human_bytes on a
+        // count like "7" would misleadingly render "7 B".
+        let label = if op.kind == crate::ops::OpKind::Trash {
+            format!("{} / {} items  ·  {}%", op.done_bytes, op.total_bytes, pct)
+        } else {
+            format!(
                 "{} / {}  ·  {}%",
                 crate::status::human_bytes(op.done_bytes),
                 crate::status::human_bytes(op.total_bytes),
                 pct
-            ));
+            )
+        };
+        let gauge = Gauge::default()
+            .gauge_style(Style::default().fg(theme.symlink).bg(theme.selected_bg))
+            .percent(pct)
+            .label(label);
         f.render_widget(gauge, bar_rect);
     }
 
