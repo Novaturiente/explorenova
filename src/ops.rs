@@ -226,7 +226,11 @@ pub fn spawn_paste(srcs: Vec<PathBuf>, dst_dir: PathBuf, mode: PasteMode) -> OpS
                     done_shared.store(base_done + src_size, Ordering::Relaxed);
                     let _ = tx.send(OpMsg::Progress(base_done + src_size, total));
                 }
-                Err(e) if e.kind() == io::ErrorKind::Interrupted => {
+                // Interrupted alone isn't proof of cancellation — gate on the
+                // flag so a stray EINTR can't end the loop reporting success.
+                Err(e) if e.kind() == io::ErrorKind::Interrupted
+                    && cancel_worker.load(Ordering::Relaxed) =>
+                {
                     if src.is_dir() {
                         cancel_partial_dst = Some(dst.clone());
                     }

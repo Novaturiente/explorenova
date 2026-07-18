@@ -7,7 +7,6 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex};
-use std::time::SystemTime;
 
 #[derive(Debug, Clone)]
 pub enum PreviewKind {
@@ -237,7 +236,7 @@ const BYTE_BUDGET: usize = 128 * 1024 * 1024;
 /// external invalidation (`invalidate_dir`/`clear`) driven by fs-watch
 /// events and op/shell-out completions, not per-frame mtime checks.
 pub struct PreviewCache {
-    map: HashMap<PathBuf, (SystemTime, Arc<PreviewKind>)>,
+    map: HashMap<PathBuf, Arc<PreviewKind>>,
     in_flight: HashSet<PathBuf>,
     /// Insertion order, for FIFO eviction once `cap`/`byte_budget` is hit.
     order: VecDeque<PathBuf>,
@@ -252,7 +251,7 @@ pub struct PreviewCache {
     /// render thread with previews nobody is looking at anymore.
     want: Arc<Mutex<Option<PathBuf>>>,
     req_tx: Sender<(PathBuf, u64)>,
-    res_rx: Receiver<(PathBuf, Option<(SystemTime, PreviewKind)>)>,
+    res_rx: Receiver<(PathBuf, Option<PreviewKind>)>,
 }
 
 impl Default for PreviewCache {
@@ -269,7 +268,7 @@ impl PreviewCache {
     pub fn with_cap(cap: usize) -> Self {
         let cap = if cap == 0 { CACHE_CAP } else { cap };
         let (req_tx, req_rx) = mpsc::channel::<(PathBuf, u64)>();
-        let (res_tx, res_rx) = mpsc::channel::<(PathBuf, Option<(SystemTime, PreviewKind)>)>();
+        let (res_tx, res_rx) = mpsc::channel::<(PathBuf, Option<PreviewKind>)>();
         let want: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(None));
         let want_worker = want.clone();
         std::thread::spawn(move || {
@@ -285,9 +284,6 @@ impl PreviewCache {
                     let _ = res_tx.send((path, None));
                     continue;
                 }
-                let mtime = std::fs::metadata(&path)
-                    .and_then(|m| m.modified())
-                    .unwrap_or(SystemTime::UNIX_EPOCH);
                 let kind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     render(&path, max_bytes)
                 }))
@@ -295,7 +291,7 @@ impl PreviewCache {
                     "{}\n(preview failed)",
                     path.display()
                 )));
-                let _ = res_tx.send((path, Some((mtime, kind))));
+                let _ = res_tx.send((path, Some(kind)));
             }
         });
         Self {
@@ -322,7 +318,7 @@ impl PreviewCache {
     /// just an `Arc` clone (cheap refcount bump, not a deep copy of the
     /// underlying `Text`/`Image`).
     pub fn get(&self, path: &Path) -> Option<Arc<PreviewKind>> {
-        self.map.get(path).map(|(_, v)| v.clone())
+        self.map.get(path).cloned()
     }
 
     /// Queue a render for `path` if it isn't already cached or in flight.
@@ -346,8 +342,8 @@ impl PreviewCache {
         let mut got = false;
         while let Ok((path, res)) = self.res_rx.try_recv() {
             self.in_flight.remove(&path);
-            if let Some((mtime, kind)) = res {
-                self.insert_result(path, mtime, kind);
+            if let Some(kind) = res {
+                self.insert_result(path, kind);
                 got = true;
             }
         }
@@ -358,7 +354,7 @@ impl PreviewCache {
     /// Cheap: a filtered retain over the map, no I/O.
     pub fn invalidate_dir(&mut self, dir: &Path) {
         let mut freed = 0usize;
-        self.map.retain(|p, (_, kind)| {
+        self.map.retain(|p, kind| {
             let keep = p.parent() != Some(dir);
             if !keep {
                 freed += kind.approx_bytes();
@@ -380,11 +376,11 @@ impl PreviewCache {
 
     /// Insert a freshly-rendered result and enforce the cap/byte budget.
     /// Shared by `drain()` and (in tests) direct injection.
-    fn insert_result(&mut self, path: PathBuf, mtime: SystemTime, kind: PreviewKind) {
+    fn insert_result(&mut self, path: PathBuf, kind: PreviewKind) {
         let kind = Arc::new(kind);
         let bytes = kind.approx_bytes();
-        match self.map.insert(path.clone(), (mtime, kind)) {
-            Some((_, old)) => {
+        match self.map.insert(path.clone(), kind) {
+            Some(old) => {
                 self.total_bytes = (self.total_bytes + bytes).saturating_sub(old.approx_bytes());
             }
             None => {
@@ -399,7 +395,7 @@ impl PreviewCache {
             && self.order.len() > 1
         {
             if let Some(old) = self.order.pop_front() {
-                if let Some((_, k)) = self.map.remove(&old) {
+                if let Some(k) = self.map.remove(&old) {
                     self.total_bytes = self.total_bytes.saturating_sub(k.approx_bytes());
                 }
             }
@@ -421,7 +417,7 @@ impl PreviewCache {
     /// byte-budget eviction can be exercised with synthetic sizes instead
     /// of real (multi-hundred-MiB) files.
     fn insert_for_test(&mut self, path: PathBuf, kind: PreviewKind) {
-        self.insert_result(path, SystemTime::UNIX_EPOCH, kind);
+        self.insert_result(path, kind);
     }
 }
 
