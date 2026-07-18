@@ -865,17 +865,32 @@ fn text_input_enter(app: &mut App, _start: &Path, git_tx: &mpsc::Sender<std::pat
                 app.mode = Mode::Normal;
             }
             Some(Action::Rename) => {
+                let root = app.arena.nodes[app.arena.root].path.clone();
                 let np = app.commit_rename();
-                app.mark_self_write([app.arena.nodes[app.arena.root].path.clone()]);
-                refresh_in_place(app, git_tx);
+                // Rename touches exactly one dir (the parent — renaming
+                // never moves across dirs): mark + reload just that one
+                // instead of the whole root, so the watcher echo is
+                // suppressed and the refresh is an incremental reload.
+                let parent = np
+                    .as_ref()
+                    .and_then(|p| p.parent().map(|x| x.to_path_buf()))
+                    .unwrap_or(root);
+                app.mark_self_write([parent.clone()]);
+                refresh_dirs(app, &[parent], git_tx);
                 if let Some(p) = np {
                     app.navigate_to(&p);
                 }
             }
             Some(Action::Create) => {
+                let root = app.arena.nodes[app.arena.root].path.clone();
                 let np = app.commit_create();
-                app.mark_self_write([app.arena.nodes[app.arena.root].path.clone()]);
-                refresh_in_place(app, git_tx);
+                // Create touches exactly one dir (its parent).
+                let parent = np
+                    .as_ref()
+                    .and_then(|p| p.parent().map(|x| x.to_path_buf()))
+                    .unwrap_or(root);
+                app.mark_self_write([parent.clone()]);
+                refresh_dirs(app, &[parent], git_tx);
                 if let Some(p) = np {
                     app.navigate_to(&p);
                 }
@@ -1036,12 +1051,26 @@ fn text_input_enter(app: &mut App, _start: &Path, git_tx: &mpsc::Sender<std::pat
 fn handle_confirm_key(app: &mut App, k: &KeyEvent, git_tx: &mpsc::Sender<std::path::PathBuf>) {
     match k.code {
         KeyCode::Char('y') | KeyCode::Char('Y') => {
+            // Targets (and their parent dirs) before confirm_yes clears
+            // marks/pending — a delete/trash can span multiple dirs, so
+            // mark and reload exactly those instead of the whole root.
+            let dirs: std::collections::HashSet<std::path::PathBuf> = app
+                .targets()
+                .iter()
+                .filter_map(|p| p.parent().map(|x| x.to_path_buf()))
+                .collect();
             app.confirm_yes();
             // confirm_yes lives in app.rs and can't see git_tx —
             // refresh from here so the freshly unlinked entries drop
             // out of the tree at once.
-            app.mark_self_write([app.arena.nodes[app.arena.root].path.clone()]);
-            refresh_in_place(app, git_tx);
+            if dirs.is_empty() {
+                app.mark_self_write([app.arena.nodes[app.arena.root].path.clone()]);
+                refresh_in_place(app, git_tx);
+            } else {
+                let dirs: Vec<std::path::PathBuf> = dirs.into_iter().collect();
+                app.mark_self_write(dirs.clone());
+                refresh_dirs(app, &dirs, git_tx);
+            }
         }
         _ => {
             app.pending = None;
@@ -1389,7 +1418,7 @@ fn bulk_rename(app: &mut App, git_tx: &mpsc::Sender<std::path::PathBuf>) {
     }
     app.marks.clear();
     app.mark_self_write([parent.clone()]);
-    refresh_in_place(app, git_tx);
+    refresh_dirs(app, std::slice::from_ref(&parent), git_tx);
     if failed.is_empty() {
         app.set_status(format!("renamed {ok}"));
     } else {
@@ -1434,8 +1463,15 @@ fn trash_targets(app: &mut App, git_tx: &mpsc::Sender<std::path::PathBuf>) {
     };
     app.set_status(msg);
     app.marks.clear();
-    app.mark_self_write([app.arena.nodes[app.arena.root].path.clone()]);
-    refresh_in_place(app, git_tx);
+    // Trash can span multiple dirs (marked selection) — mark + reload
+    // exactly the parents touched instead of the whole root.
+    let dirs: std::collections::HashSet<std::path::PathBuf> = targets
+        .iter()
+        .filter_map(|p| p.parent().map(|x| x.to_path_buf()))
+        .collect();
+    let dirs: Vec<std::path::PathBuf> = dirs.into_iter().collect();
+    app.mark_self_write(dirs.clone());
+    refresh_dirs(app, &dirs, git_tx);
 }
 
 /// Flip `show_hidden` and rebuild via [`rebuild`], which replays every
@@ -1660,6 +1696,52 @@ mod tests {
         std::fs::remove_file(d.path().join("gone.txt")).unwrap();
         refresh_in_place(&mut app, &tx);
         assert!(!names(&app).contains(&"gone.txt".to_string()));
+    }
+
+    #[test]
+    fn rename_refresh_is_incremental_and_keeps_expansion() {
+        // Two expanded sibling dirs; rename a file in one. The OTHER
+        // dir's node ids/expansion must be untouched — proof the
+        // refresh reloaded only the renamed file's parent, not the
+        // whole tree (T18: precise self-write marks + surgical refresh).
+        let d = tempdir().unwrap();
+        let dir_a = d.path().join("a");
+        let dir_b = d.path().join("b");
+        std::fs::create_dir(&dir_a).unwrap();
+        std::fs::create_dir(&dir_b).unwrap();
+        std::fs::write(dir_a.join("old.txt"), "1").unwrap();
+        std::fs::write(dir_b.join("kept.txt"), "2").unwrap();
+        let (mut app, tx, _rx) = app_at(d.path());
+
+        let id_a = app.visible.iter().copied()
+            .find(|&id| app.arena.nodes[id].path == dir_a).unwrap();
+        let id_b = app.visible.iter().copied()
+            .find(|&id| app.arena.nodes[id].path == dir_b).unwrap();
+        app.arena.expand(id_a).unwrap();
+        app.arena.expand(id_b).unwrap();
+        app.visible = app.arena.flatten();
+
+        let id_b_child = app.visible.iter().copied()
+            .find(|&id| app.arena.nodes[id].path == dir_b.join("kept.txt")).unwrap();
+
+        let id_old = app.visible.iter().copied()
+            .find(|&id| app.arena.nodes[id].path == dir_a.join("old.txt")).unwrap();
+        app.selected = app.visible.iter().position(|&id| id == id_old).unwrap();
+        app.input.set("new.txt");
+        app.pending = Some(Action::Rename);
+        app.mode = Mode::Input;
+        text_input_enter(&mut app, d.path(), &tx);
+
+        assert!(names(&app).contains(&"new.txt".to_string()));
+        // dir_b's child kept the exact same NodeId and is still expanded —
+        // it was never touched by the rename's refresh.
+        assert!(app.arena.nodes[id_b].expanded);
+        assert_eq!(
+            app.arena.nodes[id_b_child].path,
+            dir_b.join("kept.txt"),
+            "dir_b's subtree must be untouched by a rename scoped to dir_a"
+        );
+        assert!(app.visible.contains(&id_b_child));
     }
 
     #[test]
