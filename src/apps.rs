@@ -166,19 +166,57 @@ fn terminal_cmd() -> Option<String> {
     None
 }
 
+/// Tokenize a desktop-entry `Exec=` value per the spec: double-quoted
+/// segments (with backslash escapes inside them) stay one token even if
+/// they contain whitespace, so `"/opt/My App/app" %f` yields the program
+/// path as a single arg instead of splitting on the embedded space.
+fn exec_tokens(exec: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut cur = String::new();
+    let mut chars = exec.chars().peekable();
+    let mut in_q = false;
+    while let Some(c) = chars.next() {
+        match c {
+            '"' => in_q = !in_q,
+            '\\' if in_q => {
+                if let Some(n) = chars.next() {
+                    cur.push(n)
+                }
+            }
+            c if c.is_whitespace() && !in_q => {
+                if !cur.is_empty() {
+                    out.push(std::mem::take(&mut cur));
+                }
+            }
+            _ => cur.push(c),
+        }
+    }
+    if !cur.is_empty() {
+        out.push(cur);
+    }
+    out
+}
+
 /// The substituted argv *without* any terminal wrapping — the bare program
 /// and its file argument. Terminal apps run this in-place (TUI suspended).
 pub fn argv_bare(app: &AppEntry, file: &Path) -> Vec<String> {
     let fpath = file.to_string_lossy().to_string();
     let mut out: Vec<String> = Vec::new();
-    for tok in app.exec.split_whitespace() {
-        match tok {
-            "%f" | "%F" | "%u" | "%U" => out.push(fpath.clone()),
+    // Whether a field code (%f/%F/%u/%U) was present — NOT whether '%'
+    // appears at all, which misfired on a literal `%%` (spec escape for
+    // a single `%`) and silently dropped the file argument.
+    let mut had_field = false;
+    for tok in exec_tokens(&app.exec) {
+        match tok.as_str() {
+            "%f" | "%F" | "%u" | "%U" => {
+                out.push(fpath.clone());
+                had_field = true;
+            }
             "%i" | "%c" | "%k" => {}
-            _ => out.push(tok.to_string()),
+            _ => out.push(tok.replace("%%", "%")),
         }
     }
-    if !app.exec.contains('%') {
+    if !had_field {
         out.push(fpath.clone());
     }
     out
@@ -272,6 +310,28 @@ mod tests {
             argv(&b, Path::new("/tmp/p.png")),
             vec!["viewer", "/tmp/p.png"]
         );
+    }
+
+    #[test]
+    fn exec_quoted_path_stays_one_arg() {
+        let app = AppEntry {
+            name: "My App".into(),
+            exec: r#""/opt/My App/app" %f"#.into(),
+            terminal: false,
+        };
+        let v = argv_bare(&app, Path::new("/tmp/x"));
+        assert_eq!(v, vec!["/opt/My App/app".to_string(), "/tmp/x".to_string()]);
+    }
+
+    #[test]
+    fn exec_percent_percent_unescapes() {
+        let app = AppEntry {
+            name: "Prog".into(),
+            exec: "prog 100%% %f".into(),
+            terminal: false,
+        };
+        let v = argv_bare(&app, Path::new("/tmp/x"));
+        assert_eq!(v, vec!["prog".to_string(), "100%".to_string(), "/tmp/x".to_string()]);
     }
 
     #[test]
