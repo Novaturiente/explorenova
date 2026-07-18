@@ -181,7 +181,23 @@ use ratatui_image::{Resize, StatefulImage};
 
 /// Lazily-built terminal graphics picker (kitty/sixel/iTerm2/halfblocks).
 pub fn make_picker() -> Picker {
-    Picker::from_query_stdio().unwrap_or_else(|_| Picker::from_fontsize((8, 16)))
+    Picker::from_query_stdio().unwrap_or_else(|e| {
+        if matches!(e, ratatui_image::errors::Errors::Timeout(_)) {
+            // The capability query got no reply (e.g. tmux with
+            // allow-passthrough off swallows the wrapped queries).
+            // ratatui-image then LEAKS its stdin-reader thread, which sits
+            // in a blocking read racing crossterm for every keystroke —
+            // roughly every other keypress silently vanishes. Send a bare,
+            // un-wrapped DSR: any terminal (tmux included) answers ESC[0n,
+            // the leaked thread parses it as its exit signal and dies.
+            // It queued on the tty before crossterm's reader exists, so
+            // the reply reaches it, not the event loop.
+            use std::io::Write;
+            let _ = std::io::stdout().write_all(b"\x1b[5n");
+            let _ = std::io::stdout().flush();
+        }
+        Picker::from_fontsize((8, 16))
+    })
 }
 
 /// Caches the decoded image protocol so it is rebuilt only when the

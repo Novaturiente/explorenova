@@ -232,6 +232,7 @@ fn list_7z(archive: &Path) -> Option<String> {
     let out = std::process::Command::new("7z")
         .args(["l", "-ba", "-slt"])
         .arg(archive)
+        .stdin(std::process::Stdio::null())
         .output()
         .ok()?;
     if !out.status.success() {
@@ -250,6 +251,7 @@ fn list_unrar(archive: &Path) -> Option<String> {
     let out = std::process::Command::new("unrar")
         .args(["lb", "-y"])
         .arg(archive)
+        .stdin(std::process::Stdio::null())
         .output()
         .ok()?;
     if !out.status.success() {
@@ -263,7 +265,14 @@ fn list_unrar(archive: &Path) -> Option<String> {
 /// (unzip / tar / 7z / unrar / gunzip / bunzip2 / xz / zstd) per
 /// extension. Tar handles its own compression detection.
 pub fn extract_archive(archive: &Path) -> io::Result<PathBuf> {
-    use std::process::Command;
+    use std::process::{Command, Stdio};
+    // The TUI owns the terminal: a child that inherits stdio sprays its
+    // progress over the alternate screen and can steal / block on
+    // keyboard input (e.g. unrar prompting for a password). Detach all
+    // three streams on every extractor.
+    fn silent(cmd: &mut Command) -> &mut Command {
+        cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+    }
     let dest = extract_dest_for(archive);
     fs::create_dir_all(&dest)?;
     let name = archive
@@ -287,19 +296,19 @@ pub fn extract_archive(archive: &Path) -> io::Result<PathBuf> {
         || ext == "txz"
         || ext == "tzst"
     {
-        Command::new("tar")
+        silent(Command::new("tar")
             .arg("-xf")
             .arg(archive)
             .arg("-C")
-            .arg(&dest)
+            .arg(&dest))
             .status()
     } else if ext == "zip" {
-        Command::new("unzip")
+        silent(Command::new("unzip")
             .arg("-q")
             .arg("-o")
             .arg(archive)
             .arg("-d")
-            .arg(&dest)
+            .arg(&dest))
             .status()
     } else if ext == "7z" {
         if list_7z(archive).map(|l| entries_escape(&l)).unwrap_or(false) {
@@ -307,11 +316,11 @@ pub fn extract_archive(archive: &Path) -> io::Result<PathBuf> {
                 "archive refused: entries with ../ or absolute paths",
             ));
         }
-        Command::new("7z")
+        silent(Command::new("7z")
             .arg("x")
             .arg("-y")
             .arg(format!("-o{}", dest.display()))
-            .arg(archive)
+            .arg(archive))
             .status()
     } else if ext == "rar" {
         if list_unrar(archive).map(|l| entries_escape(&l)).unwrap_or(false) {
@@ -319,11 +328,11 @@ pub fn extract_archive(archive: &Path) -> io::Result<PathBuf> {
                 "archive refused: entries with ../ or absolute paths",
             ));
         }
-        Command::new("unrar")
+        silent(Command::new("unrar")
             .arg("x")
             .arg("-y")
             .arg(archive)
-            .arg(format!("{}/", dest.display()))
+            .arg(format!("{}/", dest.display())))
             .status()
     } else if matches!(ext.as_str(), "gz" | "bz2" | "xz" | "zst") {
         // Single-file compressors: write decompressed bytes to dest/<stem>.
@@ -352,7 +361,9 @@ pub fn extract_archive(archive: &Path) -> io::Result<PathBuf> {
         Command::new(tool)
             .args(args)
             .arg(archive)
+            .stdin(Stdio::null())
             .stdout(out_file)
+            .stderr(Stdio::null())
             .status()
     } else {
         return Err(io::Error::new(
