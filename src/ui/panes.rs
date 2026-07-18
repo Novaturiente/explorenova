@@ -33,11 +33,16 @@ pub fn tree_row<'a>(
     } else {
         "  "
     };
-    let name = n
-        .path
-        .file_name()
-        .map(|s| s.to_string_lossy().to_string())
-        .unwrap_or_else(|| n.path.display().to_string());
+    // Sanitize BEFORE `.width()` is measured below so padding math lines
+    // up with what's actually rendered — a raw control char would either
+    // corrupt the row (a \r overwrites from col 0) or desync the padding
+    // (an ESC sequence has zero display width but nonzero char count).
+    let name = crate::ui::display_name(
+        &n.path
+            .file_name()
+            .map(|s| s.to_string_lossy().to_string())
+            .unwrap_or_else(|| n.path.display().to_string()),
+    );
 
     let kind = crate::icons::classify(n.kind, n.exec, &name);
     let mut type_color = match kind {

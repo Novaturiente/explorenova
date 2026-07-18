@@ -73,7 +73,10 @@ fn cursor_meta(app: &App) -> (String, String, String, String) {
     let Some(n) = app.arena.nodes.get(id) else {
         return ("".into(), "".into(), "".into(), "".into());
     };
-    let path_s = n.path.display().to_string();
+    // Sanitize: a control char in the path (rare, but filenames allow it)
+    // would otherwise corrupt the status line the same way it would a
+    // tree row.
+    let path_s = crate::ui::display_name(&n.path.display().to_string());
     let perms = format_perms(n);
     let size = if n.is_dir() {
         "-".into()
@@ -159,7 +162,10 @@ pub fn render(area: Rect, frame: &mut Frame, app: &App) {
     let showing_status = !app.status.is_empty()
         && (app.status_err || app.status_set_at.elapsed() < Duration::from_secs(3));
     let body = if showing_status {
-        app.status.clone()
+        // Status messages embed file/dir names from op results (trash,
+        // rename, paste failures, …) — sanitize the same as any other
+        // filename-derived chrome text.
+        crate::ui::display_name(&app.status)
     } else {
         let (p, perms, size, mt) = cursor_meta(app);
         let max = segs[0].width.saturating_sub(

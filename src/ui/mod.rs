@@ -28,6 +28,13 @@ pub fn short_bookmark_label(p: &std::path::Path) -> String {
     }
 }
 
+/// Filenames can contain \e, \r, etc — rendered raw they corrupt the frame
+/// (a \r name overwrites the row from col 0; \e[31m injects live SGR).
+/// ratatui does not sanitize span content; do it at the boundary.
+pub fn display_name(s: &str) -> String {
+    crate::preview::sanitize_plain(s)
+}
+
 /// Build (pane_name, Constraint) pairs in display order from config,
 /// skipping hidden panes. Fixed `width` -> Length; else Ratio via weight.
 pub fn layout_constraints(p: &PanesConfig) -> Vec<(String, Constraint)> {
@@ -155,6 +162,11 @@ mod tests {
         // raw display string.
         let label = short_bookmark_label(std::path::Path::new("/"));
         assert_eq!(label, "/");
+    }
+
+    #[test]
+    fn row_name_strips_control_chars() {
+        assert_eq!(display_name("bad\x1b[31mred\rname"), "bad?[31mred?name");
     }
 
     #[test]

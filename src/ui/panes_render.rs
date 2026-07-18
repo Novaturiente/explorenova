@@ -43,8 +43,9 @@ pub fn render_header(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let root = &app.arena.nodes[app.arena.root].path;
     // A gvfs SMB mount has an unreadable dir name
     // (smb-share:server=...,share=...); show "share on server" instead.
-    let root_path = crate::smb::gvfs_display_label(root)
-        .unwrap_or_else(|| root.display().to_string());
+    let root_path = crate::ui::display_name(
+        &crate::smb::gvfs_display_label(root).unwrap_or_else(|| root.display().to_string()),
+    );
     let w = area.width.max(1) as usize;
     // Truncate by display cells so wide (CJK/emoji) path components
     // don't overflow the header line.
