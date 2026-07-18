@@ -9,7 +9,9 @@ pub fn expand(input: &str) -> String {
             s = format!("{}{}", home.to_string_lossy(), rest);
         }
     }
-    while let Some(start) = s.find('$') {
+    let mut scan_from = 0usize;
+    while let Some(rel) = s[scan_from..].find('$') {
+        let start = scan_from + rel;
         let bytes = &s[start + 1..];
         let (name, end) = if let Some(inner) = bytes.strip_prefix('{') {
             match inner.find('}') {
@@ -26,6 +28,9 @@ pub fn expand(input: &str) -> String {
         };
         let val = std::env::var(name).unwrap_or_default();
         s.replace_range(start..end, &val);
+        // Resume scanning after the substituted value so a var whose own
+        // value re-expands to `$SELF` (a cyclic env var) can't loop forever.
+        scan_from = start + val.len();
     }
     s
 }
@@ -124,6 +129,14 @@ mod tests {
         // ${€} — multibyte var name must not panic; undefined → empty
         let out = expand("a${€}b");
         assert_eq!(out, "ab");
+    }
+
+    #[test]
+    fn expand_terminates_on_cyclic_env() {
+        std::env::set_var("EXPLORENOVA_TEST_CYC", "$EXPLORENOVA_TEST_CYC");
+        let out = expand("$EXPLORENOVA_TEST_CYC");
+        // Any terminating result is acceptable; the bug is the hang.
+        let _ = out;
     }
 
     #[test]
