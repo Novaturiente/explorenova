@@ -46,15 +46,38 @@ pub fn run_once(cwd: &Path, cmd: &str) -> io::Result<()> {
 /// Suspend the TUI, run `prog args` with inherited stdio (so the child can
 /// prompt the user directly), wait for Enter, restore the TUI. Used for
 /// `gio mount`, whose own auth prompt is the password UI.
+///
+/// ponytail: only this path (gio prompts) gets the SIGINT guard — the
+/// state-loss was verified here. `run_once`/`drop_to_shell`/editor paths
+/// keep default Ctrl-C behavior on purpose: a user Ctrl-C-ing vim expects
+/// vim to handle it, and shells manage their own process groups.
 pub fn run_interactive(prog: &str, args: &[&str]) -> io::Result<()> {
     around_terminal(|| {
-        Command::new(prog)
-            .args(args)
-            .status()
-            // Name the binary so a missing tool reads "gio: No such file…"
-            // instead of a bare OS error with no context.
-            .map_err(|e| io::Error::new(e.kind(), format!("{prog}: {e}")))
-            .map(|_| ())
+        // Cooked mode means Ctrl-C raises SIGINT to the whole foreground
+        // group — child AND us. Ignore it here for the child's lifetime so
+        // aborting a gio password prompt doesn't kill the app (and skip the
+        // quit-time state save with it). The child gets it reset to default
+        // via pre_exec (SIG_IGN would otherwise be inherited across exec),
+        // so Ctrl-C still cancels the prompt itself.
+        unsafe {
+            let old = libc::signal(libc::SIGINT, libc::SIG_IGN);
+            let r = {
+                use std::os::unix::process::CommandExt;
+                let mut cmd = Command::new(prog);
+                cmd.args(args);
+                cmd.pre_exec(|| {
+                    libc::signal(libc::SIGINT, libc::SIG_DFL);
+                    Ok(())
+                });
+                cmd.status()
+                    // Name the binary so a missing tool reads "gio: No such
+                    // file…" instead of a bare OS error with no context.
+                    .map_err(|e| io::Error::new(e.kind(), format!("{prog}: {e}")))
+                    .map(|_| ())
+            };
+            libc::signal(libc::SIGINT, old);
+            r
+        }
     })
 }
 
