@@ -11,7 +11,7 @@ pub enum Mode {
     Help,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Action {
     Down,
     Up,
@@ -157,7 +157,7 @@ impl Keymap {
         Keymap { normal }
     }
 
-    fn defaults() -> Vec<(Action, Vec<&'static str>)> {
+    pub(crate) fn defaults() -> Vec<(Action, Vec<&'static str>)> {
         use Action::*;
         vec![
             (Down, vec!["j", "down"]), (Up, vec!["k", "up"]),

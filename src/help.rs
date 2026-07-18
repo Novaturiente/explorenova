@@ -27,6 +27,7 @@ const ACTION_META: &[(Action, &str, &str)] = &[
     (Action::OpenDefault, "Navigation", "Open default"),
     (Action::OpenWith, "Navigation", "Open with..."),
     (Action::JumpHome, "Navigation", "Jump home"),
+    (Action::ZoxideJump, "Navigation", "Zoxide jump"),
     (Action::PathInput, "Navigation", "Path input"),
     // Panes / Tabs
     (Action::FocusNext, "Panes / Tabs", "Cycle focus / swap tabs"),
@@ -40,9 +41,11 @@ const ACTION_META: &[(Action, &str, &str)] = &[
     (Action::ReorderRight, "Panes / Tabs", "Move pane right"),
     (Action::NewTab, "Panes / Tabs", "New tab (split)"),
     (Action::CloseTab, "Panes / Tabs", "Close tab"),
+    (Action::CycleLinemode, "Panes / Tabs", "Cycle line info"),
     // Files
     (Action::Create, "Files", "Create file/dir"),
     (Action::Rename, "Files", "Rename"),
+    (Action::BulkRename, "Files", "Bulk rename (editor)"),
     (Action::Copy, "Files", "Copy"),
     (Action::Cut, "Files", "Cut"),
     (Action::Paste, "Files", "Paste"),
@@ -59,6 +62,8 @@ const ACTION_META: &[(Action, &str, &str)] = &[
     (Action::SearchNext, "Search / Bookmarks", "Next match"),
     (Action::SearchPrev, "Search / Bookmarks", "Prev match"),
     (Action::ToggleBookmark, "Search / Bookmarks", "Toggle bookmark"),
+    (Action::Filter, "Search / Bookmarks", "Filter tree"),
+    (Action::ContentSearch, "Search / Bookmarks", "Content search (rg)"),
     // Shell / Misc
     (Action::ShellOnce, "Shell / Misc", "Shell one-shot ({paths}/{file}/{dir})"),
     (Action::ScriptPick, "Shell / Misc", "Run script from scripts dir"),
@@ -318,6 +323,21 @@ mod tests {
         // Multi-token: every token must match the haystack.
         assert!(row_matches(&["ctrl", "page"], "nav", "Half page down", "ctrl-d"));
         assert!(!row_matches(&["xyz"], "nav", "Quit", "q"));
+    }
+
+    #[test]
+    fn every_default_bound_action_is_documented() {
+        let documented: std::collections::HashSet<crate::keymap::Action> =
+            ACTION_META.iter().map(|(a, _, _)| *a).collect();
+        for (action, _chords) in crate::keymap::Keymap::defaults() {
+            // Cancel is bound to "esc" everywhere implicitly (dialog escape
+            // hatch) and is already surfaced via the footer hint text, not
+            // as a dedicated row.
+            if action == crate::keymap::Action::Cancel {
+                continue;
+            }
+            assert!(documented.contains(&action), "undocumented action: {action:?}");
+        }
     }
 
     #[test]
