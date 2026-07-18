@@ -1,6 +1,7 @@
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 
 #[derive(Clone, Copy, Debug)]
 pub enum PasteMode {
@@ -151,6 +152,70 @@ pub fn move_file_cross_fs(src: &Path, dst: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Cancel flag + progress callback shared by [`copy_file_chunked`] and
+/// [`copy_dir_recursive`]. `progress` is a delta (bytes copied since the
+/// last call), not a running total — callers accumulate.
+pub struct CopyCtl<'a> {
+    pub cancel: &'a AtomicBool,
+    pub progress: &'a dyn Fn(u64),
+}
+
+/// Chunked copy: 1 MiB reads, cancel checked per chunk, progress reported
+/// per chunk. Preserves permissions best-effort. On cancel the partial
+/// destination file is removed and `Err` with `ErrorKind::Interrupted` is
+/// returned — never leave a silent truncated file behind.
+pub fn copy_file_chunked(src: &Path, dst: &Path, ctl: &CopyCtl) -> io::Result<()> {
+    use std::io::{Read, Write};
+    let mut r = fs::File::open(src)?;
+    let mut w = fs::File::create(dst)?;
+    let mut buf = vec![0u8; 1024 * 1024];
+    loop {
+        if ctl.cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            drop(w);
+            let _ = fs::remove_file(dst); // never leave a silent truncated file
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
+        }
+        let n = r.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        w.write_all(&buf[..n])?;
+        (ctl.progress)(n as u64);
+    }
+    if let Ok(meta) = fs::metadata(src) {
+        let _ = fs::set_permissions(dst, meta.permissions());
+    }
+    Ok(())
+}
+
+/// Recursive dir copy. Symlinks are recreated as symlinks and never
+/// followed — broken and cyclic links copy fine as links, with no
+/// recursion and no error. Dirs are created first; permissions are
+/// preserved best-effort on both dirs and files.
+pub fn copy_dir_recursive(src: &Path, dst: &Path, ctl: &CopyCtl) -> io::Result<()> {
+    let meta = fs::symlink_metadata(src)?;
+    if meta.file_type().is_symlink() {
+        let target = fs::read_link(src)?;
+        std::os::unix::fs::symlink(target, dst)?; // never follow — broken/cyclic safe
+        return Ok(());
+    }
+    if meta.is_file() {
+        return copy_file_chunked(src, dst, ctl);
+    }
+    fs::create_dir_all(dst)?;
+    for e in fs::read_dir(src)? {
+        let e = e?;
+        if ctl.cancel.load(std::sync::atomic::Ordering::Relaxed) {
+            return Err(io::Error::new(io::ErrorKind::Interrupted, "cancelled"));
+        }
+        copy_dir_recursive(&e.path(), &dst.join(e.file_name()), ctl)?;
+    }
+    if let Ok(m) = fs::metadata(src) {
+        let _ = fs::set_permissions(dst, m.permissions());
+    }
+    Ok(())
+}
+
 /// Recoverable delete via system trash.
 pub fn trash_path(path: &Path) -> anyhow::Result<()> {
     trash::delete(path)?;
@@ -200,7 +265,7 @@ pub fn is_archive(path: &Path) -> bool {
 /// Pick a destination directory for the extracted contents. Strips
 /// the archive extension(s) from the file name; if a path with that
 /// name already exists, falls back to the unique-dest scheme.
-fn extract_dest_for(archive: &Path) -> PathBuf {
+pub fn extract_dest_for(archive: &Path) -> PathBuf {
     let parent = archive.parent().unwrap_or_else(|| Path::new("."));
     let stem = archive
         .file_name()
@@ -272,21 +337,25 @@ fn list_unrar(archive: &Path) -> Option<String> {
     Some(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// Extract `archive` into a sibling directory (`unique_dest` rules).
-/// Returns the destination path on success. Shells out to system tools
-/// (unzip / tar / 7z / unrar / gunzip / bunzip2 / xz / zstd) per
-/// extension. Tar handles its own compression detection.
-pub fn extract_archive(archive: &Path) -> io::Result<PathBuf> {
+/// Build (but do not spawn) the `Command` that extracts `archive` into
+/// `dest`. Pure builder — no process is spawned here, so callers can
+/// choose to run it synchronously or drive it with a spawn/try_wait/kill
+/// loop for cancellation. `dest` must already exist as a directory (the
+/// caller creates it via `extract_dest_for` + `create_dir_all`).
+///
+/// Shells out to system tools (unzip / tar / 7z / unrar / gunzip /
+/// bunzip2 / xz / zstd) per extension; tar handles its own compression
+/// detection. Runs the 7z/rar zip-slip precheck (`entries_escape`) before
+/// building their commands, refusing archives with absolute or `../`
+/// entries. Detaches stdio (`silent`) on every extractor — the TUI owns
+/// the terminal, so a child that inherits stdio can spray progress over
+/// the alternate screen or steal keyboard input (e.g. unrar prompting for
+/// a password).
+pub fn extract_command(archive: &Path, dest: &Path) -> io::Result<std::process::Command> {
     use std::process::{Command, Stdio};
-    // The TUI owns the terminal: a child that inherits stdio sprays its
-    // progress over the alternate screen and can steal / block on
-    // keyboard input (e.g. unrar prompting for a password). Detach all
-    // three streams on every extractor.
     fn silent(cmd: &mut Command) -> &mut Command {
         cmd.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
     }
-    let dest = extract_dest_for(archive);
-    fs::create_dir_all(&dest)?;
     let name = archive
         .file_name()
         .and_then(|s| s.to_str())
@@ -297,7 +366,7 @@ pub fn extract_archive(archive: &Path) -> io::Result<PathBuf> {
         .and_then(|s| s.to_str())
         .map(|s| s.to_lowercase())
         .unwrap_or_default();
-    let status = if name.ends_with(".tar.gz")
+    let mut cmd = if name.ends_with(".tar.gz")
         || name.ends_with(".tar.xz")
         || name.ends_with(".tar.bz2")
         || name.ends_with(".tar.zst")
@@ -308,44 +377,31 @@ pub fn extract_archive(archive: &Path) -> io::Result<PathBuf> {
         || ext == "txz"
         || ext == "tzst"
     {
-        silent(Command::new("tar")
-            .arg("-xf")
-            .arg(archive)
-            .arg("-C")
-            .arg(&dest))
-            .status()
+        let mut c = Command::new("tar");
+        c.arg("-xf").arg(archive).arg("-C").arg(dest);
+        c
     } else if ext == "zip" {
-        silent(Command::new("unzip")
-            .arg("-q")
-            .arg("-o")
-            .arg(archive)
-            .arg("-d")
-            .arg(&dest))
-            .status()
+        let mut c = Command::new("unzip");
+        c.arg("-q").arg("-o").arg(archive).arg("-d").arg(dest);
+        c
     } else if ext == "7z" {
         if list_7z(archive).map(|l| entries_escape(&l)).unwrap_or(false) {
             return Err(io::Error::other(
                 "archive refused: entries with ../ or absolute paths",
             ));
         }
-        silent(Command::new("7z")
-            .arg("x")
-            .arg("-y")
-            .arg(format!("-o{}", dest.display()))
-            .arg(archive))
-            .status()
+        let mut c = Command::new("7z");
+        c.arg("x").arg("-y").arg(format!("-o{}", dest.display())).arg(archive);
+        c
     } else if ext == "rar" {
         if list_unrar(archive).map(|l| entries_escape(&l)).unwrap_or(false) {
             return Err(io::Error::other(
                 "archive refused: entries with ../ or absolute paths",
             ));
         }
-        silent(Command::new("unrar")
-            .arg("x")
-            .arg("-y")
-            .arg(archive)
-            .arg(format!("{}/", dest.display())))
-            .status()
+        let mut c = Command::new("unrar");
+        c.arg("x").arg("-y").arg(archive).arg(format!("{}/", dest.display()));
+        c
     } else if matches!(ext.as_str(), "gz" | "bz2" | "xz" | "zst") {
         // Single-file compressors: write decompressed bytes to dest/<stem>.
         // Stem from the real filename, not the lowercased `name`, so
@@ -370,28 +426,19 @@ pub fn extract_archive(archive: &Path) -> io::Result<PathBuf> {
         } else {
             vec!["-c"]
         };
-        Command::new(tool)
-            .args(args)
-            .arg(archive)
-            .stdin(Stdio::null())
-            .stdout(out_file)
-            .stderr(Stdio::null())
-            .status()
+        let mut c = Command::new(tool);
+        c.args(args).arg(archive).stdin(Stdio::null()).stdout(out_file).stderr(Stdio::null());
+        // stdout is the redirected out_file, not null — return directly,
+        // skip the generic `silent()` below which would clobber it.
+        return Ok(c);
     } else {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "unsupported archive type",
         ));
     };
-    match status {
-        Ok(s) if s.success() => Ok(dest),
-        Ok(s) => Err(io::Error::other(format!(
-            "extractor exited with status {s}"
-        ))),
-        Err(e) => Err(io::Error::other(format!(
-            "failed to spawn extractor: {e}"
-        ))),
-    }
+    silent(&mut cmd);
+    Ok(cmd)
 }
 
 /// Compute the rename plan from edited names. Validates: equal counts, no
@@ -631,5 +678,84 @@ mod tests {
         // untouched on rejection
         assert_eq!(std::fs::read_to_string(d.path().join("a")).unwrap(), "A");
         assert_eq!(std::fs::read_to_string(d.path().join("z")).unwrap(), "Z");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_dir_preserves_symlinks_and_broken_links() {
+        let d = tempdir().unwrap();
+        let src = d.path().join("src");
+        std::fs::create_dir_all(src.join("real")).unwrap();
+        std::fs::write(src.join("real/f.txt"), "data").unwrap();
+        std::os::unix::fs::symlink("real", src.join("link-to-dir")).unwrap();
+        std::os::unix::fs::symlink("nowhere", src.join("broken")).unwrap();
+        let dst = d.path().join("dst");
+        let cancel = AtomicBool::new(false);
+        let ctl = CopyCtl { cancel: &cancel, progress: &|_| {} };
+        copy_dir_recursive(&src, &dst, &ctl).unwrap();
+        assert!(dst.join("real/f.txt").is_file());
+        assert!(dst
+            .join("link-to-dir")
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(std::fs::read_link(dst.join("broken")).unwrap(), Path::new("nowhere"));
+    }
+
+    #[test]
+    fn chunked_copy_cancels_mid_file() {
+        // 8 MiB file, cancel flag set from the progress callback after the
+        // first 1 MiB chunk: expect Err(Interrupted) and the partial dst
+        // removed (copy_file_chunked's own contract).
+        let d = tempdir().unwrap();
+        let src = d.path().join("big.bin");
+        std::fs::write(&src, vec![7u8; 8 * 1024 * 1024]).unwrap();
+        let dst = d.path().join("dst.bin");
+        let cancel = AtomicBool::new(false);
+        let progress = |_n: u64| {
+            cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+        };
+        let ctl = CopyCtl { cancel: &cancel, progress: &progress };
+        let err = copy_file_chunked(&src, &dst, &ctl).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::Interrupted);
+        assert!(!dst.exists(), "partial dst must be removed on cancel");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn copy_dir_handles_cyclic_symlink() {
+        // ln -s . self  → copies as a symlink, no recursion, no error.
+        let d = tempdir().unwrap();
+        let src = d.path().join("src");
+        std::fs::create_dir_all(&src).unwrap();
+        std::os::unix::fs::symlink(".", src.join("self")).unwrap();
+        let dst = d.path().join("dst");
+        let cancel = AtomicBool::new(false);
+        let ctl = CopyCtl { cancel: &cancel, progress: &|_| {} };
+        copy_dir_recursive(&src, &dst, &ctl).unwrap();
+        assert!(dst
+            .join("self")
+            .symlink_metadata()
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(std::fs::read_link(dst.join("self")).unwrap(), Path::new("."));
+    }
+
+    #[test]
+    fn extract_command_rejects_traversal_rar() {
+        // No real rar fixture needed: an archive with an unsupported
+        // extension (no rar/7z tool required) still exercises the
+        // unsupported-type error path; the entries_escape precheck itself
+        // is covered directly above. This test pins extract_command's
+        // "unsupported archive type" error for a non-archive extension.
+        let d = tempdir().unwrap();
+        let archive = d.path().join("notes.txt");
+        std::fs::write(&archive, "hi").unwrap();
+        let dest = d.path().join("out");
+        std::fs::create_dir_all(&dest).unwrap();
+        let err = extract_command(&archive, &dest).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
     }
 }

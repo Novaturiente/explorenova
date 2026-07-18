@@ -1,9 +1,10 @@
 //! Background long-running file ops (copy/move/extract) with a
 //! progress channel back to the main loop.
 
-use crate::fs_ops::{is_archive, unique_dest, PasteMode};
+use crate::fs_ops::{copy_dir_recursive, copy_file_chunked, is_archive, unique_dest, CopyCtl, PasteMode};
+use std::io;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::thread;
@@ -132,14 +133,25 @@ pub fn spawn_paste(srcs: Vec<PathBuf>, dst_dir: PathBuf, mode: PasteMode) -> OpS
     let srcs_for_worker = srcs.clone();
     let dst_for_worker = dst_dir.clone();
     thread::spawn(move || {
-        // Pre-walk: compute total bytes for the progress denominator.
-        let total: u64 = srcs_for_worker.iter().map(|s| size_of(s)).sum();
+        // Pre-walk ONCE: record each source's size from the same walk that
+        // computes the total, instead of re-walking every item a second
+        // time inside the loop.
+        let sizes: Vec<u64> = srcs_for_worker.iter().map(|s| size_of(s)).collect();
+        let total: u64 = sizes.iter().sum();
         let _ = tx.send(OpMsg::Progress(0, total));
-        let mut done = 0u64;
+        // `done` flows through the copy_file_chunked/copy_dir_recursive
+        // progress callback, which needs `Fn(u64)` (not `FnMut`) — an
+        // atomic gives the interior mutability a plain u64 can't, even
+        // though this worker is single-threaded.
+        let done_shared = AtomicU64::new(0);
         let mut failed: Vec<String> = Vec::new();
         let mut claimed: std::collections::HashSet<std::path::PathBuf> = std::collections::HashSet::new();
         let mut first = true;
-        for src in &srcs_for_worker {
+        // Set only when a mid-item cancel leaves a genuine partial
+        // directory behind (copy_file_chunked cleans up its own partial
+        // file, so single-file cancels never need this).
+        let mut cancel_partial_dst: Option<PathBuf> = None;
+        for (i, src) in srcs_for_worker.iter().enumerate() {
             if cancel_worker.load(Ordering::Relaxed) {
                 break;
             }
@@ -154,28 +166,20 @@ pub fn spawn_paste(srcs: Vec<PathBuf>, dst_dir: PathBuf, mode: PasteMode) -> OpS
                 let _ = tx.send(OpMsg::Reveal(dst.clone()));
                 first = false;
             }
-            let src_size = size_of(src);
-            let base_done = done;
-            let result: Result<(), String> = match mode {
+            let src_size = sizes[i];
+            let base_done = done_shared.load(Ordering::Relaxed);
+            let tx_progress = tx.clone();
+            let progress = |d: u64| {
+                let cur = done_shared.fetch_add(d, Ordering::Relaxed) + d;
+                let _ = tx_progress.send(OpMsg::Progress(cur, total));
+            };
+            let ctl = CopyCtl { cancel: &cancel_worker, progress: &progress };
+            let result: io::Result<()> = match mode {
                 PasteMode::Copy => {
                     if src.is_dir() {
-                        let opts = fs_extra::dir::CopyOptions::new().copy_inside(true);
-                        let tx2 = tx.clone();
-                        let cancel2 = cancel_worker.clone();
-                        fs_extra::dir::copy_with_progress(src, &dst, &opts, |p| {
-                            let _ = tx2.send(OpMsg::Progress(
-                                base_done + p.copied_bytes,
-                                total,
-                            ));
-                            if cancel2.load(Ordering::Relaxed) {
-                                return fs_extra::dir::TransitProcessResult::Abort;
-                            }
-                            fs_extra::dir::TransitProcessResult::ContinueOrAbort
-                        })
-                        .map(|_| ())
-                        .map_err(|e| e.to_string())
+                        copy_dir_recursive(src, &dst, &ctl)
                     } else {
-                        std::fs::copy(src, &dst).map(|_| ()).map_err(|e| e.to_string())
+                        copy_file_chunked(src, &dst, &ctl)
                     }
                 }
                 PasteMode::Move => {
@@ -187,44 +191,64 @@ pub fn spawn_paste(srcs: Vec<PathBuf>, dst_dir: PathBuf, mode: PasteMode) -> OpS
                         // denied, etc.) is reported as-is rather than masked
                         // by a doomed copy attempt.
                         Err(e) if e.raw_os_error() != Some(libc::EXDEV) => {
-                            Err(format!("move failed: {e}"))
+                            Err(io::Error::new(e.kind(), format!("move failed: {e}")))
                         }
                         Err(_) => {
-                            // Cross-device → copy+remove.
-                            if src.is_dir() {
-                                let opts = fs_extra::dir::CopyOptions::new().copy_inside(true);
-                                let tx2 = tx.clone();
-                                let cancel2 = cancel_worker.clone();
-                                fs_extra::dir::move_dir_with_progress(
-                                    src, &dst, &opts, |p| {
-                                        let _ = tx2.send(OpMsg::Progress(
-                                            base_done + p.copied_bytes,
-                                            total,
-                                        ));
-                                        if cancel2.load(Ordering::Relaxed) {
-                                            return fs_extra::dir::TransitProcessResult::Abort;
-                                        }
-                                        fs_extra::dir::TransitProcessResult::ContinueOrAbort
-                                    },
-                                )
-                                .map(|_| ())
-                                .map_err(|e| format!("dir move partial — check both locations: {e}"))
+                            // Cross-device → copy+remove, symlinks recreated
+                            // (never dereferenced) by copy_dir_recursive.
+                            // Remove the source ONLY on full copy success.
+                            let copy_result = if src.is_dir() {
+                                copy_dir_recursive(src, &dst, &ctl)
                             } else {
-                                crate::fs_ops::move_file_cross_fs(src, &dst)
-                            }
+                                copy_file_chunked(src, &dst, &ctl)
+                            };
+                            copy_result.and_then(|_| {
+                                let rm = if src.is_dir() {
+                                    std::fs::remove_dir_all(src)
+                                } else {
+                                    std::fs::remove_file(src)
+                                };
+                                rm.map_err(|e| {
+                                    io::Error::new(
+                                        e.kind(),
+                                        format!(
+                                            "move partial — copied but source not removed: {e}"
+                                        ),
+                                    )
+                                })
+                            })
                         }
                     }
                 }
             };
             match result {
-                Ok(_) => done = done.saturating_add(src_size),
-                Err(e) => failed.push(format!("{}: {e}", src.display())),
+                Ok(_) => {
+                    done_shared.store(base_done + src_size, Ordering::Relaxed);
+                    let _ = tx.send(OpMsg::Progress(base_done + src_size, total));
+                }
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {
+                    if src.is_dir() {
+                        cancel_partial_dst = Some(dst.clone());
+                    }
+                    break;
+                }
+                Err(e) => {
+                    done_shared.store(base_done, Ordering::Relaxed);
+                    failed.push(format!("{}: {e}", src.display()));
+                    let _ = tx.send(OpMsg::Progress(base_done, total));
+                }
             }
-            let _ = tx.send(OpMsg::Progress(done, total));
         }
         let was_cancelled = cancel_worker.load(Ordering::Relaxed);
         let msg = if was_cancelled {
-            Ok(format!("cancelled ({} done)", crate::status::human_bytes(done)))
+            if let Some(partial) = &cancel_partial_dst {
+                Ok(format!("cancelled — partial copy left at {}", partial.display()))
+            } else {
+                Ok(format!(
+                    "cancelled ({} done)",
+                    crate::status::human_bytes(done_shared.load(Ordering::Relaxed))
+                ))
+            }
         } else if failed.is_empty() {
             Ok(format!(
                 "{} {n} -> {}",
@@ -264,6 +288,9 @@ pub fn spawn_paste(srcs: Vec<PathBuf>, dst_dir: PathBuf, mode: PasteMode) -> OpS
 
 /// Spawn an extract worker. Shell tools don't expose a progress stream,
 /// so the op is indeterminate; the UI shows a spinner + elapsed time.
+/// Cancel works like `spawn_mount`'s gio calls: a try_wait poll loop that
+/// kills the child on request, then removes the partial destination dir
+/// so a cancelled extract never leaves a half-unpacked archive behind.
 pub fn spawn_extract(archive: PathBuf) -> Option<OpState> {
     if !is_archive(&archive) {
         return None;
@@ -273,14 +300,52 @@ pub fn spawn_extract(archive: PathBuf) -> Option<OpState> {
         "Extracting {}",
         archive.file_name().and_then(|s| s.to_str()).unwrap_or("?")
     );
-    // ponytail: extract is one external process; cancel is a no-op until it
-    // returns. Killing the child process is a future upgrade.
     let cancel = Arc::new(AtomicBool::new(false));
+    let cancel_worker = cancel.clone();
     let reveal_archive = archive.clone();
     thread::spawn(move || {
-        let result = crate::fs_ops::extract_archive(&archive)
-            .map(|dest| format!("extracted -> {}", dest.display()))
-            .map_err(|e| e.to_string());
+        let dest = crate::fs_ops::extract_dest_for(&archive);
+        let outcome: io::Result<PathBuf> = (|| {
+            std::fs::create_dir_all(&dest)?;
+            let mut cmd = crate::fs_ops::extract_command(&archive, &dest)?;
+            let mut child = cmd
+                .spawn()
+                .map_err(|e| io::Error::other(format!("failed to spawn extractor: {e}")))?;
+            loop {
+                match child.try_wait() {
+                    Ok(Some(status)) if status.success() => return Ok(dest.clone()),
+                    Ok(Some(status)) => {
+                        return Err(io::Error::other(format!(
+                            "extractor exited with status {status}"
+                        )))
+                    }
+                    Ok(None) => {
+                        if cancel_worker.load(Ordering::Relaxed) {
+                            let _ = child.kill();
+                            let _ = child.wait();
+                            let _ = std::fs::remove_dir_all(&dest);
+                            return Err(io::Error::new(
+                                io::ErrorKind::Interrupted,
+                                "extraction cancelled",
+                            ));
+                        }
+                        thread::sleep(std::time::Duration::from_millis(100));
+                    }
+                    Err(e) => {
+                        let _ = child.kill();
+                        let _ = child.wait();
+                        return Err(io::Error::other(format!("wait failed: {e}")));
+                    }
+                }
+            }
+        })();
+        let result = match outcome {
+            Ok(dest) => Ok(format!("extracted -> {}", dest.display())),
+            Err(e) if e.kind() == io::ErrorKind::Interrupted => {
+                Err("extraction cancelled".to_string())
+            }
+            Err(e) => Err(e.to_string()),
+        };
         let _ = tx.send(OpMsg::Finished(result));
     });
     Some(OpState {
