@@ -275,29 +275,28 @@ impl App {
     }
 
     /// Compute the size sum of marked files (skipping directories).
-    /// Called by the status renderer per frame; O(arena × marks) but
-    /// both are small in practice.
+    /// Called by the status renderer per frame.
+    ///
+    /// O(nodes · log marks) single pass — safe to call per frame even after
+    /// select-all on a large tree (the old shape was O(marks · nodes)).
     pub fn marks_bytes(&self) -> u64 {
-        self.marks
-            .iter()
-            .filter_map(|p| {
-                self.arena.nodes.iter()
-                    .find(|n| n.path == *p && !n.is_dir())
-                    .map(|n| n.size)
-            })
+        self.arena.nodes.iter()
+            .filter(|n| !n.is_dir() && self.marks.contains(&n.path))
+            .map(|n| n.size)
             .sum()
     }
 
     /// Total byte weight of the current delete/op targets (marks, else the
     /// cursor file). Dirs contribute 0 — we don't recurse for a confirm line.
+    ///
+    /// Same single-pass shape as `marks_bytes`: build the lookup set once,
+    /// then one arena pass.
     pub fn targets_bytes(&self) -> u64 {
-        self.targets()
-            .iter()
-            .filter_map(|p| {
-                self.arena.nodes.iter()
-                    .find(|n| n.path == *p && !n.is_dir())
-                    .map(|n| n.size)
-            })
+        let targets = self.targets();
+        let set: BTreeSet<&std::path::Path> = targets.iter().map(|p| p.as_path()).collect();
+        self.arena.nodes.iter()
+            .filter(|n| !n.is_dir() && set.contains(n.path.as_path()))
+            .map(|n| n.size)
             .sum()
     }
 
@@ -1042,6 +1041,13 @@ mod tests {
         App::new(arena, Config::with_defaults(), State::default())
     }
 
+    /// Build an App rooted at `path` (unlike `app()`, which always roots
+    /// at "."). Needed by tests that assert on paths inside a tempdir.
+    fn test_app(path: &std::path::Path) -> App {
+        let arena = Arena::new(path).unwrap();
+        App::new(arena, Config::with_defaults(), State::default())
+    }
+
     fn app_with_theme(pairs: &[(&str, &str)]) -> App {
         let arena = Arena::new(std::path::Path::new(".")).unwrap_or_else(|_| {
             Arena::new(std::env::temp_dir().as_path()).unwrap()
@@ -1429,6 +1435,18 @@ mod tests {
         assert!(a.clipboard.is_some(), "clipboard survives swap");
         a.close_tab();
         assert!(a.clipboard.is_some(), "clipboard survives close");
+    }
+
+    #[test]
+    fn marks_bytes_sums_marked_files_only() {
+        let d = tempdir().unwrap();
+        std::fs::write(d.path().join("a.txt"), vec![0u8; 100]).unwrap();
+        std::fs::write(d.path().join("b.txt"), vec![0u8; 50]).unwrap();
+        std::fs::create_dir(d.path().join("sub")).unwrap();
+        let mut app = test_app(d.path());
+        app.marks.insert(d.path().join("a.txt"));
+        app.marks.insert(d.path().join("sub"));
+        assert_eq!(app.marks_bytes(), 100);
     }
 
     #[test]
