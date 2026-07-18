@@ -421,18 +421,23 @@ pub fn spawn_unmount(url: String) -> OpState {
 ///
 /// ponytail: `reveal_hint` (and the generic op-finished handler's root +
 /// reveal-parent self-write marks) only precisely cover the FIRST
-/// target's dir when a marked multi-select spans several directories —
-/// the other dirs still refresh correctly, just via the normal
-/// fs-watcher debounce instead of being pre-suppressed. Upgrade path if
-/// that shows up as a visible double-refresh: thread the full parent-dir
-/// set through `OpState` instead of a single `reveal_hint`.
+/// target's own dir when a marked multi-select spans several
+/// directories — the other dirs still refresh correctly, just via the
+/// normal fs-watcher debounce instead of being pre-suppressed. Upgrade
+/// path if that shows up as a visible double-refresh: thread the full
+/// parent-dir set through `OpState` instead of a single `reveal_hint`.
 pub fn spawn_trash(targets: Vec<PathBuf>) -> OpState {
     let (tx, rx) = mpsc::channel();
     let n = targets.len();
     let label = format!("Trashing {n} item{}", if n == 1 { "" } else { "s" });
     let cancel = Arc::new(AtomicBool::new(false));
     let cancel_worker = cancel.clone();
-    let reveal = targets.first().and_then(|p| p.parent().map(|x| x.to_path_buf()));
+    // reveal_hint is the target's own path (spawn_paste/extract
+    // convention) — main.rs's op-finished handler takes `.parent()` of
+    // this to find the dir to mark self-written, so this must be a FILE
+    // path, not a dir. (Was mistakenly set to the parent dir, which made
+    // main.rs mark the grandparent instead.)
+    let reveal = targets.first().cloned();
     thread::spawn(move || {
         let mut ok = 0usize;
         let mut failed: Vec<String> = Vec::new();
@@ -522,6 +527,29 @@ mod tests {
         match op.finished {
             Some(Ok(s)) => assert_eq!(s, "trashed 2"),
             other => panic!("expected Ok(\"trashed 2\"), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn spawn_trash_reveal_hint_is_first_target_itself() {
+        // main.rs's op-finished handler does `reveal.parent()` to find the
+        // dir to mark self-written (spawn_paste/extract convention) — so
+        // reveal_hint must be the target's own path, not its parent dir.
+        let data_home = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_DATA_HOME", data_home.path());
+        let src = tempfile::tempdir().unwrap();
+        let f1 = src.path().join("a.txt");
+        let f2 = src.path().join("b.txt");
+        std::fs::write(&f1, "1").unwrap();
+        std::fs::write(&f2, "2").unwrap();
+        let mut op = spawn_trash(vec![f1.clone(), f2.clone()]);
+        assert_eq!(op.reveal_hint, Some(f1));
+        let t0 = Instant::now();
+        while !op.poll() {
+            if t0.elapsed() > std::time::Duration::from_secs(10) {
+                panic!("spawn_trash never finished");
+            }
+            thread::sleep(std::time::Duration::from_millis(10));
         }
     }
 

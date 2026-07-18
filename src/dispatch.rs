@@ -1051,8 +1051,29 @@ fn text_input_enter(app: &mut App, _start: &Path, git_tx: &mpsc::Sender<std::pat
 fn handle_confirm_key(app: &mut App, k: &KeyEvent, git_tx: &mpsc::Sender<std::path::PathBuf>) {
     match k.code {
         KeyCode::Char('y') | KeyCode::Char('Y') => {
+            // Trash (confirmed or not) always goes through spawn_trash —
+            // the background op — so there's ONE trash implementation.
+            // main.rs's op-finished handler does the self-write mark,
+            // refresh, and reveal once the op completes.
+            if let Some(Action::Trash) = app.pending {
+                app.pending = None;
+                app.mode = Mode::Normal;
+                app.status.clear();
+                let targets = app.targets();
+                if targets.is_empty() {
+                    app.set_status("nothing to trash");
+                    return;
+                }
+                if app.op.is_some() {
+                    app.set_status("another op in progress");
+                    return;
+                }
+                app.marks.clear();
+                app.op = Some(crate::ops::spawn_trash(targets));
+                return;
+            }
             // Targets (and their parent dirs) before confirm_yes clears
-            // marks/pending — a delete/trash can span multiple dirs, so
+            // marks/pending — a delete can span multiple dirs, so
             // mark and reload exactly those instead of the whole root.
             let dirs: std::collections::HashSet<std::path::PathBuf> = app
                 .targets()
@@ -1827,6 +1848,45 @@ mod tests {
         app.mode = crate::keymap::Mode::Normal;
         handle(&mut app, Action::Trash, d.path(), &tx).unwrap();
         assert_ne!(app.mode, crate::keymap::Mode::Confirm, "single trash stays immediate");
+    }
+
+    #[test]
+    fn confirm_trash_spawns_background_op_not_sync_delete() {
+        // Finding 1 regression: confirm-gated trash (multi-select, or
+        // confirm_trash=true) must route through spawn_trash's background
+        // op, not app::confirm_yes's old synchronous fs_ops::trash_path
+        // loop. Isolate XDG_DATA_HOME like the spawn_trash op tests.
+        let data_home = tempdir().unwrap();
+        std::env::set_var("XDG_DATA_HOME", data_home.path());
+        let d = tempdir().unwrap();
+        for f in ["a.txt", "b.txt"] {
+            std::fs::write(d.path().join(f), "x").unwrap();
+        }
+        let (mut app, tx, _rx) = app_at(d.path());
+        for &id in &app.visible.clone() {
+            if !app.arena.nodes[id].is_dir() {
+                app.marks.insert(app.arena.nodes[id].path.clone());
+            }
+        }
+        prompt_trash(&mut app);
+        assert_eq!(app.mode, crate::keymap::Mode::Confirm);
+
+        let y = KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE);
+        handle_confirm_key(&mut app, &y, &tx);
+
+        assert_eq!(app.mode, crate::keymap::Mode::Normal);
+        let op = app.op.as_mut().expect("trash must spawn a background op, not run sync");
+        assert_eq!(op.kind, crate::ops::OpKind::Trash);
+
+        let t0 = std::time::Instant::now();
+        while !op.poll() {
+            if t0.elapsed() > std::time::Duration::from_secs(10) {
+                panic!("confirm-mode trash op never finished");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(!d.path().join("a.txt").exists());
+        assert!(!d.path().join("b.txt").exists());
     }
 
     #[test]
