@@ -15,8 +15,20 @@ pub fn write_atomic(path: &Path, contents: &str) -> io::Result<()> {
     let mut tmp = path.as_os_str().to_owned();
     tmp.push(".tmp");
     let tmp = PathBuf::from(tmp);
-    fs::write(&tmp, contents)?;
-    fs::rename(&tmp, path)
+    {
+        use std::io::Write;
+        let mut f = fs::File::create(&tmp)?;
+        f.write_all(contents.as_bytes())?;
+        f.sync_all()?; // data hits disk BEFORE the rename can be journaled
+    }
+    fs::rename(&tmp, path)?;
+    // Persist the rename itself; ignore failure (some fs don't support dir fsync).
+    if let Some(parent) = path.parent() {
+        if let Ok(d) = fs::File::open(parent) {
+            let _ = d.sync_all();
+        }
+    }
+    Ok(())
 }
 
 /// Decide directory vs file from `path`:
@@ -420,6 +432,15 @@ pub fn plan_bulk_rename(
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    #[test]
+    fn write_atomic_persists_content() {
+        let d = tempdir().unwrap();
+        let p = d.path().join("state.toml");
+        write_atomic(&p, "a = 1").unwrap();
+        write_atomic(&p, "a = 2").unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "a = 2");
+    }
 
     #[test]
     fn entries_escape_flags_traversal_and_absolute() {
