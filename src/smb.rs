@@ -303,26 +303,12 @@ fn unmount_argv(url: &str) -> Vec<String> {
     vec!["mount".into(), "-u".into(), url.into()]
 }
 
-/// Mount a saved share. With a username in the URL, gio prompts for the
-/// password on the real TTY (suspending the TUI) and can remember it in
-/// the keyring. With no username, mounts anonymously via `gio -a` — which
-/// needs no prompt, so the TUI is left untouched.
+/// Mount a saved share interactively. Callers pre-route anonymous URLs to
+/// `spawn_mount`/`mount_background` (no username → no prompt needed), so by
+/// the time a URL reaches here it always carries credentials: gio prompts
+/// for the password on the real TTY (suspending the TUI) and can remember
+/// it in the keyring.
 pub fn mount_interactive(url: &str) -> std::io::Result<()> {
-    if wants_anonymous(url) {
-        // `-a` never prompts; run it inline and surface any error.
-        let out = Command::new("gio")
-            .args(mount_argv(url, true))
-            .output()
-            .map_err(|e| {
-                std::io::Error::new(e.kind(), format!("gio: {e}"))
-            })?;
-        if !out.status.success() {
-            let err =
-                String::from_utf8_lossy(&out.stderr).trim().to_string();
-            return Err(std::io::Error::other(err));
-        }
-        return Ok(());
-    }
     let args = mount_argv(url, false);
     let refs: Vec<&str> =
         args.iter().map(String::as_str).collect();
