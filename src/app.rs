@@ -58,6 +58,10 @@ pub struct PaneSnapshot {
     pub visual_mode: bool,
     pub search_results: Vec<(PathBuf, Vec<u32>)>,
     pub search_idx: usize,
+    pub filter_query: String,
+    pub filter_cands: Option<Vec<PathBuf>>,
+    pub preview_scroll: usize,
+    pub mount_floor: Option<PathBuf>,
 }
 
 pub struct App {
@@ -366,6 +370,10 @@ impl App {
             visual_mode: std::mem::replace(&mut self.visual_mode, false),
             search_results: std::mem::take(&mut self.search_results),
             search_idx: std::mem::replace(&mut self.search_idx, 0),
+            filter_query: std::mem::take(&mut self.filter_query),
+            filter_cands: std::mem::take(&mut self.filter_cands),
+            preview_scroll: std::mem::replace(&mut self.preview_scroll, 0),
+            mount_floor: std::mem::take(&mut self.mount_floor),
         };
         self.visible = self.arena.flatten();
         self.tabs.push(snap);
@@ -387,6 +395,10 @@ impl App {
         self.visual_mode = snap.visual_mode;
         self.search_results = snap.search_results;
         self.search_idx = snap.search_idx;
+        self.filter_query = snap.filter_query;
+        self.filter_cands = snap.filter_cands;
+        self.preview_scroll = snap.preview_scroll;
+        self.mount_floor = snap.mount_floor;
         // Back to single mode — only one slot exists.
         self.active_slot = 0;
     }
@@ -407,6 +419,10 @@ impl App {
         std::mem::swap(&mut self.visual_mode, &mut snap.visual_mode);
         std::mem::swap(&mut self.search_results, &mut snap.search_results);
         std::mem::swap(&mut self.search_idx, &mut snap.search_idx);
+        std::mem::swap(&mut self.filter_query, &mut snap.filter_query);
+        std::mem::swap(&mut self.filter_cands, &mut snap.filter_cands);
+        std::mem::swap(&mut self.preview_scroll, &mut snap.preview_scroll);
+        std::mem::swap(&mut self.mount_floor, &mut snap.mount_floor);
         self.active_slot ^= 1;
     }
 
@@ -1048,6 +1064,14 @@ mod tests {
         App::new(arena, Config::with_defaults(), State::default())
     }
 
+    /// An App already split into two tabs (via `open_tab`), for tests
+    /// that exercise `swap_tab`/`close_tab`.
+    fn test_app_with_tab(path: &std::path::Path) -> App {
+        let mut app = test_app(path);
+        app.open_tab().unwrap();
+        app
+    }
+
     fn app_with_theme(pairs: &[(&str, &str)]) -> App {
         let arena = Arena::new(std::path::Path::new(".")).unwrap_or_else(|_| {
             Arena::new(std::env::temp_dir().as_path()).unwrap()
@@ -1435,6 +1459,22 @@ mod tests {
         assert!(a.clipboard.is_some(), "clipboard survives swap");
         a.close_tab();
         assert!(a.clipboard.is_some(), "clipboard survives close");
+    }
+
+    #[test]
+    fn swap_tab_carries_filter_and_scroll_state() {
+        let d = tempdir().unwrap();
+        let mut app = test_app_with_tab(d.path());
+        app.filter_query = "abc".into();
+        app.preview_scroll = 7;
+        app.mount_floor = Some(d.path().to_path_buf());
+        app.swap_tab();
+        assert!(app.filter_query.is_empty(), "filter must not leak into other tab");
+        assert_eq!(app.preview_scroll, 0);
+        assert!(app.mount_floor.is_none());
+        app.swap_tab();
+        assert_eq!(app.filter_query, "abc"); // round-trips back
+        assert_eq!(app.preview_scroll, 7);
     }
 
     #[test]
