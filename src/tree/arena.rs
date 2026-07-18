@@ -283,9 +283,16 @@ impl Arena {
         let mut new_children: Vec<NodeId> = Vec::with_capacity(entries.len());
         for p in entries {
             if let Some(cid) = by_path.remove(&p) {
-                // Survivor: refresh its own metadata, keep subtree/expanded.
+                // Survivor: refresh its own metadata, keep subtree/expanded
+                // UNLESS the entry changed kind in place (dir swapped for a
+                // file or vice versa) — the old subtree is meaningless then
+                // and flatten() would render ghost rows for children that
+                // no longer exist on disk.
                 let (kind, exec, size, mtime, mode, link_to_dir) = Self::classify(&p);
                 let n = &mut self.nodes[cid];
+                let was_dir = n.is_dir();
+                let is_dir_now = matches!(kind, NodeKind::Dir) || link_to_dir;
+                let kind_changed = was_dir != is_dir_now;
                 n.kind = kind;
                 n.exec = exec;
                 n.size = size;
@@ -293,6 +300,10 @@ impl Arena {
                 n.mode = mode;
                 n.link_to_dir = link_to_dir;
                 n.empty = None;
+                if kind_changed {
+                    n.children = None;
+                    n.expanded = false;
+                }
                 new_children.push(cid);
             } else {
                 let (kind, exec, size, mtime, mode, link_to_dir) = Self::classify(&p);
@@ -692,5 +703,27 @@ mod tests {
         let has_new = a.nodes[live].children.as_ref().unwrap().iter()
             .any(|&c| a.nodes[c].path.ends_with("new.txt"));
         assert!(has_new, "live recreated dir must refresh, not the orphan");
+    }
+
+    #[test]
+    fn reload_clears_children_when_dir_becomes_file() {
+        let d = tempdir().unwrap();
+        std::fs::create_dir(d.path().join("sub")).unwrap();
+        std::fs::write(d.path().join("sub/inner.txt"), "x").unwrap();
+        let mut a = Arena::new(d.path()).unwrap();
+        let sub = a.flatten().iter().copied()
+            .find(|&id| a.nodes[id].path.ends_with("sub")).unwrap();
+        a.expand(sub).unwrap();
+        // Replace dir with same-named file.
+        std::fs::remove_dir_all(d.path().join("sub")).unwrap();
+        std::fs::write(d.path().join("sub"), "now a file").unwrap();
+        assert!(a.reload_dir(d.path()));
+        let sub = a.flatten().iter().copied()
+            .find(|&id| a.nodes[id].path.ends_with("sub")).unwrap();
+        assert!(!a.nodes[sub].is_dir());
+        assert!(!a.nodes[sub].expanded, "file must not stay expanded");
+        assert!(a.nodes[sub].children.is_none(), "stale children must be dropped");
+        // No ghost rows.
+        assert!(!a.flatten().iter().any(|&id| a.nodes[id].path.ends_with("inner.txt")));
     }
 }
