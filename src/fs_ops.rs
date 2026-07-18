@@ -428,6 +428,39 @@ pub fn plan_bulk_rename(
         .collect())
 }
 
+/// Execute rename pairs atomically-ish: every source moves to a unique
+/// temp name first, then temps move to finals. A final that collides with
+/// an untracked existing file still errors (no overwrite). Handles swaps
+/// and chains, unlike a naive `rename(old, new)` loop.
+///
+/// `pairs` are same-dir names (no separators — `plan_bulk_rename` already
+/// validates that).
+///
+/// ponytail: phase-1 failure leaves earlier files parked under
+/// `.en-bulk-*` names — visible, recoverable, not silently lost; full
+/// rollback on partial failure is the upgrade path if this ever bites.
+pub fn execute_bulk_rename(dir: &Path, pairs: &[(String, String)]) -> Result<(), String> {
+    let olds: std::collections::HashSet<&str> = pairs.iter().map(|(o, _)| o.as_str()).collect();
+    // Phase 0: a target may not collide with a file that is NOT being renamed away.
+    for (_, n) in pairs {
+        if dir.join(n).exists() && !olds.contains(n.as_str()) {
+            return Err(format!("target exists: {n}"));
+        }
+    }
+    // Phase 1: park sources under collision-free temp names.
+    let mut temps = Vec::new();
+    for (i, (o, _)) in pairs.iter().enumerate() {
+        let tmp = dir.join(format!(".en-bulk-{i}-{o}"));
+        std::fs::rename(dir.join(o), &tmp).map_err(|e| format!("{o}: {e}"))?;
+        temps.push(tmp);
+    }
+    // Phase 2: temps → finals.
+    for (tmp, (_, n)) in temps.iter().zip(pairs) {
+        std::fs::rename(tmp, dir.join(n)).map_err(|e| format!("{n}: {e}"))?;
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -561,5 +594,42 @@ mod tests {
         assert!(plan_bulk_rename(&["a".into()], &["".into()]).is_err());
         // path separator in new name -> error
         assert!(plan_bulk_rename(&["a".into()], &["x/y".into()]).is_err());
+    }
+
+    #[test]
+    fn bulk_rename_swap_works() {
+        let d = tempdir().unwrap();
+        std::fs::write(d.path().join("a"), "A").unwrap();
+        std::fs::write(d.path().join("b"), "B").unwrap();
+        let pairs = vec![("a".to_string(), "b".to_string()), ("b".to_string(), "a".to_string())];
+        execute_bulk_rename(d.path(), &pairs).unwrap();
+        assert_eq!(std::fs::read_to_string(d.path().join("a")).unwrap(), "B");
+        assert_eq!(std::fs::read_to_string(d.path().join("b")).unwrap(), "A");
+    }
+
+    #[test]
+    fn bulk_rename_chain_works() {
+        // a→b, b→c: both must land (b's old content ends up at c, a's
+        // old content ends up at b).
+        let d = tempdir().unwrap();
+        std::fs::write(d.path().join("a"), "A").unwrap();
+        std::fs::write(d.path().join("b"), "B").unwrap();
+        let pairs = vec![("a".to_string(), "b".to_string()), ("b".to_string(), "c".to_string())];
+        execute_bulk_rename(d.path(), &pairs).unwrap();
+        assert!(!d.path().join("a").exists());
+        assert_eq!(std::fs::read_to_string(d.path().join("b")).unwrap(), "A");
+        assert_eq!(std::fs::read_to_string(d.path().join("c")).unwrap(), "B");
+    }
+
+    #[test]
+    fn bulk_rename_rejects_collision_with_untracked_file() {
+        let d = tempdir().unwrap();
+        std::fs::write(d.path().join("a"), "A").unwrap();
+        std::fs::write(d.path().join("z"), "Z").unwrap();
+        let pairs = vec![("a".to_string(), "z".to_string())];
+        assert!(execute_bulk_rename(d.path(), &pairs).is_err());
+        // untouched on rejection
+        assert_eq!(std::fs::read_to_string(d.path().join("a")).unwrap(), "A");
+        assert_eq!(std::fs::read_to_string(d.path().join("z")).unwrap(), "Z");
     }
 }

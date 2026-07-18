@@ -1408,23 +1408,16 @@ fn bulk_rename(app: &mut App, git_tx: &mpsc::Sender<std::path::PathBuf>) {
         app.set_status("no names changed");
         return;
     }
-    let mut ok = 0usize;
-    let mut failed: Vec<String> = Vec::new();
-    for (old, new) in &plan {
-        match crate::fs_ops::rename(&parent.join(old), new) {
-            Ok(_) => ok += 1,
-            Err(e) => failed.push(format!("{old}: {e}")),
-        }
-    }
+    let n = plan.len();
+    // Two-phase (via unique temp names) so swaps/chains land correctly —
+    // a naive rename-in-plan-order loop clobbers/loses files on a swap.
+    let res = crate::fs_ops::execute_bulk_rename(&parent, &plan);
     app.marks.clear();
     app.mark_self_write([parent.clone()]);
     refresh_dirs(app, std::slice::from_ref(&parent), git_tx);
-    if failed.is_empty() {
-        app.set_status(format!("renamed {ok}"));
-    } else {
-        let preview = failed.iter().take(2).cloned().collect::<Vec<_>>().join(", ");
-        let tail = if failed.len() > 2 { ", …" } else { "" };
-        app.set_err(format!("renamed {ok}, {} failed: {preview}{tail}", failed.len()));
+    match res {
+        Ok(()) => app.set_status(format!("renamed {n}")),
+        Err(e) => app.set_err(format!("bulk rename failed: {e}")),
     }
 }
 
