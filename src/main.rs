@@ -392,6 +392,9 @@ fn main() -> Result<()> {
             continue;
         }
         if let Event::Key(k) = event::read()? {
+            if k.kind == crossterm::event::KeyEventKind::Release {
+                continue;
+            }
             let prev_selected_outer = app.selected;
             // `key_token` only maps chord-relevant keys; it returns None for
             // Backspace/Home/End/etc. That gate belongs to Normal-mode chord
