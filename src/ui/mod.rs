@@ -221,16 +221,19 @@ pub fn make_picker() -> Picker {
 }
 
 /// Caches the decoded image protocol so it is rebuilt only when the
-/// previewed file (path or mtime) changes — not every frame.
+/// previewed file changes — not every frame. No filesystem access: keyed
+/// by path plus `Arc::ptr_eq` on the decoded image, so freshness comes
+/// from the preview cache's invalidation (a new render produces a new
+/// `Arc`) rather than a per-frame mtime stat.
 #[derive(Default)]
 pub struct ImageCache {
-    pub key: Option<(std::path::PathBuf, std::time::SystemTime)>,
+    pub key: Option<(std::path::PathBuf, std::sync::Arc<image::DynamicImage>)>,
     proto: Option<StatefulProtocol>,
 }
 
 /// Render an already-decoded image into `area`, caching the protocol by
-/// (path, mtime). Decoding happens on the preview worker thread — this
-/// only rebuilds the terminal-graphics protocol when the file changes.
+/// (path, image identity). Decoding happens on the preview worker thread —
+/// this only rebuilds the terminal-graphics protocol when the file changes.
 pub fn render_image(
     f: &mut Frame,
     area: Rect,
@@ -239,15 +242,16 @@ pub fn render_image(
     path: &std::path::Path,
     img: &std::sync::Arc<image::DynamicImage>,
 ) {
-    let mtime = std::fs::metadata(path)
-        .and_then(|m| m.modified())
-        .unwrap_or(std::time::SystemTime::UNIX_EPOCH);
-    let key = (path.to_path_buf(), mtime);
-    if cache.key.as_ref() != Some(&key) {
+    let same = cache
+        .key
+        .as_ref()
+        .map(|(p, i)| p == path && std::sync::Arc::ptr_eq(i, img))
+        .unwrap_or(false);
+    if !same {
         // One pixel-buffer copy per image change (protocol wants
         // ownership), never per frame.
         cache.proto = Some(picker.new_resize_protocol((**img).clone()));
-        cache.key = Some(key);
+        cache.key = Some((path.to_path_buf(), img.clone()));
     }
     match &mut cache.proto {
         Some(proto) => {

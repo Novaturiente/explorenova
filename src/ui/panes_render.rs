@@ -272,19 +272,23 @@ pub fn render_pane_preview(
         return;
     }
 
-    let Some(kind) = cache.request(&path, app.config.preview_max_bytes) else {
+    // Fire-and-forget: queues a render if needed (no-op if already cached
+    // or in flight), then `get()` picks up whatever's there right now.
+    // Both are pure map lookups — no filesystem access on this thread.
+    cache.request(&path, app.config.preview_max_bytes);
+    let Some(kind) = cache.get(&path) else {
         f.render_widget(Paragraph::new("(loading…)"), inner);
         return;
     };
-    match kind {
+    match &*kind {
         PreviewKind::Image(p, img) => {
             let already_decoded = img_cache
                 .key
                 .as_ref()
-                .map(|(k, _)| k == &p)
+                .map(|(k, cached_img)| k == p && std::sync::Arc::ptr_eq(cached_img, img))
                 .unwrap_or(false);
             if already_decoded || elapsed {
-                render_image(f, inner, picker, img_cache, &p, &img);
+                render_image(f, inner, picker, img_cache, p, img);
             } else {
                 f.render_widget(Paragraph::new("(loading…)"), inner);
             }
@@ -293,8 +297,14 @@ pub fn render_pane_preview(
             // ctrl-j/ctrl-k scroll; clamp so the last line stays on screen.
             let max = t.lines.len().saturating_sub(1);
             let off = app.preview_scroll.min(max) as u16;
-            f.render_widget(Paragraph::new(t).scroll((off, 0)), inner)
+            // Borrow the styled spans instead of deep-cloning the Text —
+            // Paragraph needs an owned value, but a borrowed view only
+            // reallocates the container Vecs, not every span's String.
+            f.render_widget(
+                Paragraph::new(crate::preview::borrow_text(t)).scroll((off, 0)),
+                inner,
+            )
         }
-        PreviewKind::Meta(t) => f.render_widget(Paragraph::new(t), inner),
+        PreviewKind::Meta(t) => f.render_widget(Paragraph::new(t.as_str()), inner),
     }
 }

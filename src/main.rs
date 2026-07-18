@@ -272,6 +272,9 @@ fn main() -> Result<()> {
                 } else {
                     p.parent().map(Path::to_path_buf).unwrap_or(p)
                 };
+                // A file under `dir` changed on disk — drop any stale
+                // preview so the next request() re-renders it.
+                preview_cache.invalidate_dir(&dir);
                 pending_dirs.insert(dir);
             }
         }
@@ -316,6 +319,9 @@ fn main() -> Result<()> {
                 if let Some(dst) = reveal.as_ref().and_then(|p| p.parent()) {
                     dirs.push(dst.to_path_buf());
                 }
+                for d in &dirs {
+                    preview_cache.invalidate_dir(d);
+                }
                 app.mark_self_write(dirs);
                 refresh_in_place(&mut app, &git_tx);
                 if let Some(target) = reveal {
@@ -358,6 +364,11 @@ fn main() -> Result<()> {
         // repaint once.
         if app.force_redraw {
             term.clear()?;
+            // A child process (editor, `!`, a `[commands]` key, drop-to-
+            // shell) had the terminal and may have rewritten anything —
+            // cheaper and safer to drop the whole preview cache than try
+            // to enumerate what it touched.
+            preview_cache.clear();
             app.force_redraw = false;
         }
         term.draw(|f| {
