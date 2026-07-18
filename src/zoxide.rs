@@ -26,8 +26,15 @@ pub fn query(query: &str) -> Option<PathBuf> {
 
 /// Record a visited directory (fire-and-forget; ignores all errors).
 pub fn add(path: &Path) {
-    if let Ok(mut child) =
-        Command::new("zoxide").arg("add").arg("--").arg(path).spawn()
+    use std::process::Stdio;
+    if let Ok(mut child) = Command::new("zoxide")
+        .arg("add")
+        .arg("--")
+        .arg(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
     {
         // Reap off-thread: a dropped Child is never waited on, so each
         // `cd` would otherwise leave a zombie for the session lifetime.
