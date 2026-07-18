@@ -165,6 +165,14 @@ pub struct App {
     /// trigger a second (redundant) refresh.
     pub self_write_dirs: std::collections::HashSet<std::path::PathBuf>,
     pub self_write_until: Option<std::time::Instant>,
+    /// ponytail: URL of the last credentialed share whose background mount
+    /// attempt we kicked off (not necessarily failed — success is implied
+    /// by the share showing mounted). If Enter is pressed on the SAME
+    /// still-unmounted share again, dispatch falls back to the interactive
+    /// `gio` prompt instead of retrying silently. Two-step UX (background
+    /// try → explicit retry) instead of auto-fallback, keeps the main loop
+    /// free of modal re-entry on op completion.
+    pub last_mount_failed_auth: Option<String>,
 }
 
 impl App {
@@ -224,6 +232,7 @@ impl App {
             mount_floor: None,
             self_write_dirs: std::collections::HashSet::new(),
             self_write_until: None,
+            last_mount_failed_auth: None,
         }
     }
 

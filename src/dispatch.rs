@@ -506,9 +506,10 @@ fn devices_delete_selected(app: &mut App) {
         return;
     };
     let url = url.clone();
-    // Best-effort unmount before forgetting it.
+    // Best-effort unmount before forgetting it — off the UI thread (#12a):
+    // a dead/unreachable share must not hang share deletion.
     if d.is_mounted() {
-        let _ = crate::smb::unmount(&url);
+        app.op = Some(crate::ops::spawn_unmount(url.clone()));
     }
     let backup = app.shares.clone();
     app.shares.retain(|s| s.url != url);
@@ -542,19 +543,23 @@ fn devices_unmount_selected(app: &mut App) {
         app.set_err("not mounted");
         return;
     }
-    let res = match &d.kind {
+    match &d.kind {
         crate::devices::DeviceKind::Smb { url } => {
-            crate::smb::unmount(url)
+            // Off the UI thread (#12a): gio unmount can hang on a dead or
+            // unreachable share. Same background-op pattern as mount; the
+            // modal closes since nothing re-syncs it once the op finishes.
+            app.op = Some(crate::ops::spawn_unmount(url.clone()));
+            app.mode = Mode::Normal;
+            app.dialog = Dialog::None;
         }
         crate::devices::DeviceKind::Block => {
-            crate::devices::unmount(&d.device)
+            match crate::devices::unmount(&d.device) {
+                Ok(_) => app.set_status(format!("unmounted {}", d.device)),
+                Err(e) => app.set_err(format!("umount failed: {e}")),
+            }
+            refresh_devices(app);
         }
-    };
-    match res {
-        Ok(_) => app.set_status(format!("unmounted {}", d.device)),
-        Err(e) => app.set_err(format!("umount failed: {e}")),
     }
-    refresh_devices(app);
 }
 
 fn devices_enter_selected(app: &mut App) {
@@ -611,8 +616,22 @@ fn devices_enter_selected(app: &mut App) {
                     app.dialog = Dialog::None;
                     return;
                 }
-                crate::smb::mount_interactive(url)
-                    .map_err(|e| anyhow::anyhow!("{e}"))
+                // Keyring may already hold the password: try a background
+                // mount first (30s ceiling, Esc cancels) and only fall
+                // back to the interactive prompt when the SAME share is
+                // still unmounted on a repeat Enter (see
+                // App::last_mount_failed_auth).
+                if app.last_mount_failed_auth.as_deref() == Some(url.as_str()) {
+                    app.last_mount_failed_auth = None;
+                    crate::smb::mount_interactive(url)
+                        .map_err(|e| anyhow::anyhow!("{e}"))
+                } else {
+                    app.last_mount_failed_auth = Some(url.clone());
+                    app.op = Some(crate::ops::spawn_mount(url.clone(), false));
+                    app.mode = Mode::Normal;
+                    app.dialog = Dialog::None;
+                    return;
+                }
             }
             crate::devices::DeviceKind::Block => {
                 crate::devices::mount(&d.device)
@@ -909,7 +928,11 @@ fn text_input_enter(app: &mut App, _start: &Path, git_tx: &mpsc::Sender<std::pat
             Some(Action::AddSmb) => {
                 // Never persist an inline password: strip it up front so
                 // it can't reach shares.toml, the modal, or gio's argv.
-                let (raw, had_pass) =
+                // ponytail: the stripped password is no longer echoed in a
+                // "keyring stores it" status message now that credentialed
+                // mounts run async (below) — the strip itself (never
+                // persisting the password) is unconditional either way.
+                let (raw, _had_pass) =
                     crate::smb::strip_url_password(&app.input.value());
                 match crate::smb::parse_url(&raw) {
                     Ok(p) => {
@@ -949,28 +972,17 @@ fn text_input_enter(app: &mut App, _start: &Path, git_tx: &mpsc::Sender<std::pat
                             app.dialog = Dialog::None;
                             return;
                         }
-                        // Interactive mount: gio prompts for the
-                        // password on the real TTY and can remember
-                        // it in the keyring.
-                        if let Err(e) =
-                            crate::smb::mount_interactive(&raw)
-                        {
-                            app.set_status(
-                                format!("mount failed: {e}"),
-                            );
-                        } else if had_pass {
-                            app.set_status(format!(
-                                "added {raw} — password stripped, keyring stores it"
-                            ));
-                        } else {
-                            app.set_status(format!("added {raw}"));
-                        }
-                        app.force_redraw = true;
-                        // Reopen the devices modal with the new share.
-                        let items = build_device_rows(app);
-                        app.dialog =
-                            Dialog::Devices { items, sel: 0 };
-                        app.mode = Mode::Input;
+                        // Credentialed: keyring may already hold the
+                        // password, so try a background mount first (30s
+                        // ceiling, Esc cancels) instead of always prompting.
+                        // If it's still unmounted next time Enter is
+                        // pressed on this share in the devices modal,
+                        // dispatch falls back to the interactive prompt
+                        // (see App::last_mount_failed_auth).
+                        app.last_mount_failed_auth = Some(raw.clone());
+                        app.op = Some(crate::ops::spawn_mount(raw.clone(), false));
+                        app.mode = Mode::Normal;
+                        app.dialog = Dialog::None;
                     }
                     Err(e) => {
                         app.set_status(

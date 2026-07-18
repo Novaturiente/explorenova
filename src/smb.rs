@@ -299,7 +299,7 @@ pub(crate) fn mount_argv(url: &str, anon: bool) -> Vec<String> {
     a
 }
 
-fn unmount_argv(url: &str) -> Vec<String> {
+pub(crate) fn unmount_argv(url: &str) -> Vec<String> {
     vec!["mount".into(), "-u".into(), url.into()]
 }
 

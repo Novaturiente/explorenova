@@ -15,6 +15,7 @@ pub enum OpKind {
     Move,
     Extract,
     Mount,
+    Unmount,
 }
 
 impl OpKind {
@@ -24,6 +25,7 @@ impl OpKind {
             OpKind::Move => "Moving",
             OpKind::Extract => "Extracting",
             OpKind::Mount => "Mounting",
+            OpKind::Unmount => "Unmounting",
         }
     }
 }
@@ -301,19 +303,26 @@ pub fn spawn_extract(archive: PathBuf) -> Option<OpState> {
     })
 }
 
-/// Spawn an anonymous `gio mount` off-thread. gio has no connect
-/// timeout of its own — run inline it froze the whole TUI for the OS
-/// TCP timeout (minutes) on an unreachable host. Indeterminate spinner;
-/// Esc cancels; hard 30s ceiling.
-pub fn spawn_mount(url: String, anonymous: bool) -> OpState {
+/// Spawn a `gio` subcommand off-thread with a 30s ceiling and Esc-cancel.
+/// gio has no connect timeout of its own — run inline it froze the whole
+/// TUI for the OS TCP timeout (minutes) on an unreachable host.
+/// `ok_msg`/`fail_prefix` shape the Finished text; `cancel_msg` covers the
+/// cancelled-or-timed-out case. Indeterminate spinner (no byte/item total).
+fn spawn_gio(
+    kind: OpKind,
+    args: Vec<String>,
+    label: String,
+    ok_msg: String,
+    fail_prefix: String,
+    cancel_msg: String,
+) -> OpState {
     let (tx, rx) = mpsc::channel();
-    let label = format!("Mounting {url}");
     let cancel = Arc::new(AtomicBool::new(false));
     let cancel_worker = cancel.clone();
     thread::spawn(move || {
         use std::io::Read;
         let child = std::process::Command::new("gio")
-            .args(crate::smb::mount_argv(&url, anonymous))
+            .args(args)
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
@@ -355,20 +364,20 @@ pub fn spawn_mount(url: String, anonymous: bool) -> OpState {
                 // reader has finished.
                 let stderr_txt = reader.join().unwrap_or_default();
                 match status {
-                    Some(st) if st.success() => Ok(format!("mounted {url}")),
+                    Some(st) if st.success() => Ok(ok_msg),
                     Some(_) => Err(if stderr_txt.trim().is_empty() {
-                        format!("mount failed: {url}")
+                        fail_prefix
                     } else {
                         stderr_txt.trim().to_string()
                     }),
-                    None => Err(format!("mount cancelled / timed out: {url}")),
+                    None => Err(cancel_msg),
                 }
             }
         };
         let _ = tx.send(OpMsg::Finished(result));
     });
     OpState {
-        kind: OpKind::Mount,
+        kind,
         label,
         done_bytes: 0,
         total_bytes: 0,
@@ -381,6 +390,28 @@ pub fn spawn_mount(url: String, anonymous: bool) -> OpState {
     }
 }
 
+pub fn spawn_mount(url: String, anonymous: bool) -> OpState {
+    spawn_gio(
+        OpKind::Mount,
+        crate::smb::mount_argv(&url, anonymous),
+        format!("Mounting {url}"),
+        format!("mounted {url}"),
+        format!("mount failed: {url}"),
+        format!("mount cancelled / timed out: {url}"),
+    )
+}
+
+pub fn spawn_unmount(url: String) -> OpState {
+    spawn_gio(
+        OpKind::Unmount,
+        crate::smb::unmount_argv(&url),
+        format!("Unmounting {url}"),
+        format!("unmounted {url}"),
+        format!("unmount failed: {url}"),
+        format!("unmount cancelled / timed out: {url}"),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -391,6 +422,7 @@ mod tests {
         assert_eq!(OpKind::Move.verb(), "Moving");
         assert_eq!(OpKind::Extract.verb(), "Extracting");
         assert_eq!(OpKind::Mount.verb(), "Mounting");
+        assert_eq!(OpKind::Unmount.verb(), "Unmounting");
     }
 
     #[test]
