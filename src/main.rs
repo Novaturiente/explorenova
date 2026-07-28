@@ -270,11 +270,16 @@ fn main() -> Result<()> {
                 let dir = if watched.contains(&p) {
                     p.clone()
                 } else {
-                    p.parent().map(Path::to_path_buf).unwrap_or(p)
+                    p.parent().map(Path::to_path_buf).unwrap_or(p.clone())
                 };
-                // A file under `dir` changed on disk — drop any stale
-                // preview so the next request() re-renders it.
-                preview_cache.invalidate_dir(&dir);
+                // Only `p`'s own preview went stale, plus `dir`'s (its
+                // preview is an entry count, which a create/delete moves).
+                // Invalidating the whole dir would re-render the file the
+                // user is *looking at* every time an unrelated sibling
+                // changes — a log file or download churning in the same
+                // directory made the preview flash back to "(loading…)".
+                preview_cache.invalidate_path(&p);
+                preview_cache.invalidate_path(&dir);
                 pending_dirs.insert(dir);
             }
         }

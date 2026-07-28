@@ -350,6 +350,15 @@ impl PreviewCache {
         got
     }
 
+    /// Drop the entry for exactly `path`. What an fs-watch event actually
+    /// justifies: one file changed, so only that file's preview is stale.
+    pub fn invalidate_path(&mut self, path: &Path) {
+        if let Some(k) = self.map.remove(path) {
+            self.total_bytes = self.total_bytes.saturating_sub(k.approx_bytes());
+            self.order.retain(|p| p != path);
+        }
+    }
+
     /// Drop cache entries whose parent is `dir` — one fs-event's worth.
     /// Cheap: a filtered retain over the map, no I/O.
     pub fn invalidate_dir(&mut self, dir: &Path) {
@@ -590,6 +599,21 @@ mod tests {
         assert!(!c.contains(Path::new("/tmp/d/g")));
         // Untouched sibling directory survives.
         assert!(c.contains(Path::new("/tmp/other/h")));
+    }
+
+    #[test]
+    fn invalidate_path_spares_siblings() {
+        // An fs event for one file must not evict the preview the user is
+        // currently looking at (its sibling) — that flashed "(loading…)"
+        // on every unrelated write in the directory.
+        let mut c = PreviewCache::with_cap(8);
+        c.insert_for_test(PathBuf::from("/tmp/d/noise.log"), PreviewKind::Meta("n".into()));
+        c.insert_for_test(PathBuf::from("/tmp/d/viewed.rs"), PreviewKind::Meta("v".into()));
+        c.invalidate_path(Path::new("/tmp/d/noise.log"));
+        assert!(!c.contains(Path::new("/tmp/d/noise.log")));
+        assert!(c.contains(Path::new("/tmp/d/viewed.rs")));
+        assert_eq!(c.total_bytes, 1);
+        assert_eq!(c.order.len(), 1);
     }
 
     #[test]
