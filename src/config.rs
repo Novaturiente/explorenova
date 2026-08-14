@@ -123,7 +123,7 @@ impl Default for PanesConfig {
     fn default() -> Self {
         Self {
             order: vec!["bookmarks".into(), "tree".into(), "preview".into()],
-            bookmarks: PaneConfig { visible: false, width: Some(24), weight: 1 },
+            bookmarks: PaneConfig { visible: true, width: Some(24), weight: 1 },
             tree: PaneConfig { visible: true, width: None, weight: 2 },
             preview: PaneConfig { visible: true, width: None, weight: 3 },
         }
@@ -244,7 +244,7 @@ mod tests {
     fn defaults_have_three_panes_in_order() {
         let c = Config::with_defaults();
         assert_eq!(c.panes.order, vec!["bookmarks", "tree", "preview"]);
-        assert!(!c.panes.bookmarks.visible);
+        assert!(c.panes.bookmarks.visible);
         assert!(c.panes.preview.visible);
         assert_eq!(c.preview_max_bytes, 1_048_576);
     }

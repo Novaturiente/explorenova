@@ -177,7 +177,30 @@ pub fn render_pane_bookmarks(f: &mut Frame, area: Rect, app: &App, theme: &Theme
         .state
         .bookmarks
         .iter()
-        .map(|b| ListItem::new(crate::ui::display_name(&short_bookmark_label(b))))
+        .map(|b| {
+            let label = crate::ui::display_name(&short_bookmark_label(b));
+            if !app.config.icons {
+                return ListItem::new(label);
+            }
+            let kind = if b.is_dir() {
+                crate::tree::NodeKind::Dir
+            } else {
+                crate::tree::NodeKind::File
+            };
+            let color = match crate::icons::classify(kind, false, &label) {
+                crate::icons::Kind::Dir => theme.dir,
+                crate::icons::Kind::Symlink => theme.symlink,
+                crate::icons::Kind::Exec => theme.executable,
+                crate::icons::Kind::Media => theme.media,
+                crate::icons::Kind::Archive => theme.archive,
+                crate::icons::Kind::File => theme.file,
+            };
+            let ic = crate::icons::icon_for(kind, false, &label);
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("{ic} "), Style::default().fg(color)),
+                Span::styled(label, Style::default().fg(color)),
+            ]))
+        })
         .collect();
     let title_text = if focused {
         " bookmarks ● "

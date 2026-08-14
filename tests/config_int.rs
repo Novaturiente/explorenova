@@ -23,7 +23,7 @@ fn empty_config_yields_all_defaults() {
     assert_eq!(c.preview.cache_cap, 128);
     assert_eq!(c.fs_refresh_debounce_ms, 150);
     assert_eq!(c.panes.order, vec!["bookmarks", "tree", "preview"]);
-    assert!(!c.panes.bookmarks.visible);
+    assert!(c.panes.bookmarks.visible);
     assert!(c.panes.tree.visible);
     assert!(c.theme.is_empty());
 }

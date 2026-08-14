@@ -82,12 +82,12 @@ mod tests {
 
     #[test]
     fn hidden_pane_excluded() {
-        let mut p = PanesConfig::default(); // bookmarks hidden by default
+        let mut p = PanesConfig::default();
+        assert_eq!(layout_constraints(&p).len(), 3); // bookmarks visible by default
+        p.bookmarks.visible = false;
         let cons = layout_constraints(&p);
         assert_eq!(cons.len(), 2);
         assert_eq!(cons[0].0, "tree");
-        p.bookmarks.visible = true;
-        assert_eq!(layout_constraints(&p).len(), 3);
     }
 
     #[test]
