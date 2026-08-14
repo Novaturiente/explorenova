@@ -122,7 +122,7 @@ A file whose extension has no rule opens with the OS default app. Same
 | Copy / cut / paste | `yy` / `dd` / `p` |
 | Rename | `r` |
 | Trash / permanent delete | `x` or `Del` (optional confirm via `confirm_trash`) / `X` (always y/N confirm) |
-| Toggle bookmark | `m` |
+| Toggle pin | `m` |
 | Fuzzy search | `/`, `n` / `N`, `Esc` clear |
 | Path navigation | `:` (Tab completion) |
 | Shell | `!` one-shot (with `{paths}`/`{file}`/… expansion), `S` drop to `$SHELL` |

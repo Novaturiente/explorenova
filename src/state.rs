@@ -13,7 +13,8 @@ pub struct PaneOverride {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq)]
 #[serde(default)]
 pub struct State {
-    pub bookmarks: Vec<PathBuf>,
+    #[serde(alias = "bookmarks")]
+    pub pinned: Vec<PathBuf>,
     pub last_cwd: Option<PathBuf>,
     pub pane_order: Option<Vec<String>>,
     pub bookmarks_pane: PaneOverride,
@@ -32,11 +33,11 @@ impl State {
         toml::to_string_pretty(self).unwrap_or_default()
     }
 
-    pub fn toggle_bookmark(&mut self, p: PathBuf) {
-        if let Some(i) = self.bookmarks.iter().position(|b| b == &p) {
-            self.bookmarks.remove(i);
+    pub fn toggle_pin(&mut self, p: PathBuf) {
+        if let Some(i) = self.pinned.iter().position(|b| b == &p) {
+            self.pinned.remove(i);
         } else {
-            self.bookmarks.push(p);
+            self.pinned.push(p);
         }
     }
 
@@ -93,16 +94,16 @@ mod tests {
     fn toggle_adds_then_removes() {
         let mut s = State::default();
         let p = PathBuf::from("/tmp/x");
-        s.toggle_bookmark(p.clone());
-        assert_eq!(s.bookmarks, vec![p.clone()]);
-        s.toggle_bookmark(p.clone());
-        assert!(s.bookmarks.is_empty());
+        s.toggle_pin(p.clone());
+        assert_eq!(s.pinned, vec![p.clone()]);
+        s.toggle_pin(p.clone());
+        assert!(s.pinned.is_empty());
     }
 
     #[test]
     fn roundtrips_through_toml() {
         let mut s = State::default();
-        s.bookmarks.push(PathBuf::from("/a"));
+        s.pinned.push(PathBuf::from("/a"));
         s.last_cwd = Some(PathBuf::from("/b"));
         let back = State::parse(&s.to_toml());
         assert_eq!(back, s);
@@ -139,6 +140,14 @@ mod tests {
     fn missing_sort_section_yields_default() {
         let s = State::parse("bookmarks = []\n");
         assert_eq!(s.sort, crate::sort::SortState::default());
+    }
+
+    #[test]
+    fn old_bookmarks_key_aliases_to_pinned() {
+        // Pre-rename state.toml files saved the list under `bookmarks`;
+        // the alias keeps those entries alive after upgrading.
+        let s = State::parse("bookmarks = [\"/tmp/x\"]\n");
+        assert_eq!(s.pinned, vec![PathBuf::from("/tmp/x")]);
     }
 
     #[test]

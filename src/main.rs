@@ -166,6 +166,8 @@ fn main() -> Result<()> {
     let sharesp = shares_path();
     app.shares = explorenova::smb::load(&sharesp);
     app.shares_path = sharesp;
+    app.well_known = explorenova::sidebar::well_known_dirs();
+    app.disks = explorenova::devices::build_rows(&app.shares);
     // Background auto-mount: fire `gio mount` per saved share off-thread
     // so the first draw is never blocked by network I/O. An unreachable
     // server / locked keyring fails quietly; the share just shows

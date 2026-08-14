@@ -71,6 +71,15 @@ fn parse_line(line: &str) -> Option<Device> {
     })
 }
 
+/// Build the full devices row list: physical block devices first, then
+/// saved SMB shares with live mount status. Shared by the `M` devices
+/// modal and the sidebar's Disks section.
+pub fn build_rows(shares: &[crate::smb::SmbShare]) -> Vec<Device> {
+    let mut items = list().unwrap_or_default();
+    items.extend(crate::smb::to_device_rows(shares));
+    items
+}
+
 pub fn list() -> anyhow::Result<Vec<Device>> {
     let out = Command::new("udiskie-info")
         .args([

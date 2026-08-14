@@ -474,14 +474,6 @@ fn handle_devices_key(app: &mut App, k: &KeyEvent) {
     }
 }
 
-/// Build the full devices-modal row list: physical block devices
-/// first, then saved SMB shares with live mount status.
-fn build_device_rows(app: &App) -> Vec<crate::devices::Device> {
-    let mut items = crate::devices::list().unwrap_or_default();
-    items.extend(crate::smb::to_device_rows(&app.shares));
-    items
-}
-
 fn devices_begin_add(app: &mut App) {
     // Mirror the AppPick custom-command branch: set Dialog::Input
     // EXPLICITLY. main.rs's dialog-sync keeps Dialog::Devices while
@@ -523,7 +515,7 @@ fn devices_delete_selected(app: &mut App) {
 }
 
 fn refresh_devices(app: &mut App) {
-    let items = build_device_rows(app);
+    let items = crate::devices::build_rows(&app.shares);
     let new_len = items.len();
     if let Dialog::Devices { items: it, sel } = &mut app.dialog {
         *it = items;
@@ -953,7 +945,7 @@ fn text_input_enter(app: &mut App, _start: &Path, git_tx: &mpsc::Sender<std::pat
                     Ok(p) => {
                         if app.shares.iter().any(|s| s.url == raw) {
                             app.set_status("already saved");
-                            let items = build_device_rows(app);
+                            let items = crate::devices::build_rows(&app.shares);
                             app.dialog =
                                 Dialog::Devices { items, sel: 0 };
                             app.mode = Mode::Input;
@@ -1132,7 +1124,7 @@ pub fn handle(
             app.force_redraw = true;
         }
         Action::ShowDevices => {
-            let items = build_device_rows(app);
+            let items = crate::devices::build_rows(&app.shares);
             app.dialog = Dialog::Devices { items, sel: 0 };
             app.mode = Mode::Input;
         }
@@ -1140,6 +1132,7 @@ pub fn handle(
             // Re-read the tree from disk (picks up external changes) and
             // re-trigger the git scan. refresh_in_place sends git_tx itself.
             refresh_in_place(app, git_tx);
+            app.disks = crate::devices::build_rows(&app.shares);
         }
         Action::JumpHome => {
             let Some(home) = std::env::var_os("HOME").map(std::path::PathBuf::from)
@@ -1592,7 +1585,15 @@ fn toggle_action(app: &mut App, git_tx: &mpsc::Sender<std::path::PathBuf>) {
     // OpenTrash behaviour). Files reveal to the parent dir and select
     // the file row.
     if app.focus == Pane::Bookmarks {
-        let target = app.state.bookmarks.get(app.bookmark_sel).cloned();
+        let rows = crate::sidebar::build(app);
+        let row = rows.get(app.bookmark_sel);
+        let target = match row {
+            Some(r) => r.path.clone(),
+            None => None,
+        };
+        let unmounted_disk = row
+            .map(|r| r.section == crate::sidebar::Section::Disks && r.path.is_none())
+            .unwrap_or(false);
         if let Some(p) = target {
             if !app.navigate_to(&p) {
                 // path outside current root → reroot. If target is a
@@ -1610,6 +1611,8 @@ fn toggle_action(app: &mut App, git_tx: &mpsc::Sender<std::path::PathBuf>) {
                 }
             }
             app.focus = Pane::Tree;
+        } else if unmounted_disk {
+            app.set_status("press M to mount");
         }
         return;
     }

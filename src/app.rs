@@ -173,6 +173,13 @@ pub struct App {
     /// try → explicit retry) instead of auto-fallback, keeps the main loop
     /// free of modal re-entry on op completion.
     pub last_mount_failed_auth: Option<String>,
+    /// Auto-detected well-known dirs (Home + any of Desktop/Documents/
+    /// Downloads/Music/Pictures/Videos that exist), computed once at
+    /// startup. Sidebar "bookmarks" section.
+    pub well_known: Vec<(String, PathBuf)>,
+    /// Cached disks/shares list for the sidebar "disks" section.
+    /// Populated at startup and on `Action::Refresh`; not polled live.
+    pub disks: Vec<crate::devices::Device>,
 }
 
 impl App {
@@ -233,6 +240,11 @@ impl App {
             self_write_dirs: std::collections::HashSet::new(),
             self_write_until: None,
             last_mount_failed_auth: None,
+            // Populated by main.rs after startup (reads real $HOME /
+            // shells out to udiskie-info) — kept empty here so App::new
+            // stays deterministic for tests.
+            well_known: Vec::new(),
+            disks: Vec::new(),
         }
     }
 
@@ -467,7 +479,7 @@ impl App {
         match a {
             Action::Down => {
                 if self.focus == Pane::Bookmarks {
-                    let n = self.state.bookmarks.len();
+                    let n = crate::sidebar::build(self).len();
                     if n > 0 && self.bookmark_sel + 1 < n {
                         self.bookmark_sel += 1;
                     }
@@ -492,7 +504,7 @@ impl App {
             Action::Bottom => {
                 if self.focus == Pane::Bookmarks {
                     self.bookmark_sel =
-                        self.state.bookmarks.len().saturating_sub(1);
+                        crate::sidebar::build(self).len().saturating_sub(1);
                 } else {
                     self.selected = self.visible.len().saturating_sub(1);
                 }
@@ -502,7 +514,7 @@ impl App {
                 // to 10 before the first frame sets viewport_h.
                 let step = if self.viewport_h >= 2 { self.viewport_h / 2 } else { 10 };
                 if self.focus == Pane::Bookmarks {
-                    let n = self.state.bookmarks.len();
+                    let n = crate::sidebar::build(self).len();
                     self.bookmark_sel =
                         (self.bookmark_sel + step).min(n.saturating_sub(1));
                 } else {
@@ -571,23 +583,29 @@ impl App {
             Action::TogglePreviewPane => {
                 self.config.panes.preview.visible = !self.config.panes.preview.visible;
             }
-            Action::ToggleBookmark => {
+            Action::TogglePin => {
                 if self.focus == Pane::Bookmarks {
-                    // Focused on the bookmarks pane: m removes the
-                    // highlighted entry, focus stays put. Clamp the
-                    // bookmark cursor so it lands on a valid row.
-                    let n = self.state.bookmarks.len();
-                    if n > 0 && self.bookmark_sel < n {
-                        self.state.bookmarks.remove(self.bookmark_sel);
-                        let new_len = self.state.bookmarks.len();
-                        if new_len == 0 {
-                            self.bookmark_sel = 0;
-                        } else if self.bookmark_sel >= new_len {
-                            self.bookmark_sel = new_len - 1;
+                    // Only the Pinned section is user-editable — Bookmarks
+                    // (well-known dirs) and Disks are auto-derived.
+                    let rows = crate::sidebar::build(self);
+                    let target = rows
+                        .get(self.bookmark_sel)
+                        .filter(|r| r.section == crate::sidebar::Section::Pinned)
+                        .and_then(|r| r.path.clone());
+                    match target {
+                        Some(p) => {
+                            self.state.toggle_pin(p);
+                            let n = crate::sidebar::build(self).len();
+                            if n == 0 {
+                                self.bookmark_sel = 0;
+                            } else if self.bookmark_sel >= n {
+                                self.bookmark_sel = n - 1;
+                            }
                         }
+                        None => self.set_status("not pinnable"),
                     }
                 } else if let Some(id) = self.sel_id() {
-                    self.state.toggle_bookmark(
+                    self.state.toggle_pin(
                         self.arena.nodes[id].path.clone(),
                     );
                 }
@@ -1156,29 +1174,40 @@ mod tests {
     }
 
     #[test]
-    fn m_in_bookmarks_pane_removes_selected_bookmark() {
+    fn m_in_bookmarks_pane_removes_selected_pin() {
         let mut a = app();
-        a.state.bookmarks.push(PathBuf::from("/a"));
-        a.state.bookmarks.push(PathBuf::from("/b"));
-        a.state.bookmarks.push(PathBuf::from("/c"));
+        a.state.pinned.push(PathBuf::from("/a"));
+        a.state.pinned.push(PathBuf::from("/b"));
+        a.state.pinned.push(PathBuf::from("/c"));
         a.focus = Pane::Bookmarks;
         a.bookmark_sel = 1;
-        a.apply(Action::ToggleBookmark);
+        a.apply(Action::TogglePin);
         assert_eq!(
-            a.state.bookmarks,
+            a.state.pinned,
             vec![PathBuf::from("/a"), PathBuf::from("/c")]
         );
         assert_eq!(a.bookmark_sel, 1, "stays in range");
         assert_eq!(a.focus, Pane::Bookmarks, "focus stays on bookmarks");
         // Remove the last entry — cursor clamps to new last.
         a.bookmark_sel = 1;
-        a.apply(Action::ToggleBookmark);
-        assert_eq!(a.state.bookmarks, vec![PathBuf::from("/a")]);
+        a.apply(Action::TogglePin);
+        assert_eq!(a.state.pinned, vec![PathBuf::from("/a")]);
         assert_eq!(a.bookmark_sel, 0);
         // Remove the final entry — cursor stays at 0.
-        a.apply(Action::ToggleBookmark);
-        assert!(a.state.bookmarks.is_empty());
+        a.apply(Action::TogglePin);
+        assert!(a.state.pinned.is_empty());
         assert_eq!(a.bookmark_sel, 0);
+    }
+
+    #[test]
+    fn m_on_well_known_row_is_not_pinnable() {
+        let mut a = app();
+        a.well_known = vec![("Home".to_string(), PathBuf::from("/home/x"))];
+        a.focus = Pane::Bookmarks;
+        a.bookmark_sel = 0;
+        a.apply(Action::TogglePin);
+        assert!(a.state.pinned.is_empty());
+        assert_eq!(a.status, "not pinnable");
     }
 
     #[test]

@@ -61,7 +61,7 @@ const ACTION_META: &[(Action, &str, &str)] = &[
     (Action::Search, "Search / Bookmarks", "Fuzzy search"),
     (Action::SearchNext, "Search / Bookmarks", "Next match"),
     (Action::SearchPrev, "Search / Bookmarks", "Prev match"),
-    (Action::ToggleBookmark, "Search / Bookmarks", "Toggle bookmark"),
+    (Action::TogglePin, "Search / Bookmarks", "Toggle pin"),
     (Action::Filter, "Search / Bookmarks", "Filter tree"),
     (Action::ContentSearch, "Search / Bookmarks", "Content search (rg)"),
     // Shell / Misc

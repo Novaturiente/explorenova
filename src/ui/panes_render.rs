@@ -15,7 +15,8 @@ use ratatui_image::picker::Picker;
 use crate::app::App;
 use crate::preview::{PreviewCache, PreviewKind};
 use crate::ui::theme::Theme;
-use crate::ui::{render_image, short_bookmark_label, ImageCache};
+use crate::ui::modal;
+use crate::ui::{render_image, ImageCache};
 
 /// Render dim, centered placeholder text inside `area` — used for the
 /// empty states of the tree and bookmarks panes (e.g. an empty directory
@@ -169,44 +170,91 @@ pub fn render_pane_tree(
     f.render_stateful_widget(list, area, &mut st);
 }
 
-/// Render the bookmarks pane. Highlights the selected bookmark only
-/// when the bookmarks pane is the focused one.
-pub fn render_pane_bookmarks(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
-    let focused = app.focus == crate::app::Pane::Bookmarks;
-    let items: Vec<ListItem> = app
-        .state
-        .bookmarks
-        .iter()
-        .map(|b| {
-            let label = crate::ui::display_name(&short_bookmark_label(b));
-            if !app.config.icons {
-                return ListItem::new(label);
-            }
-            let kind = if b.is_dir() {
-                crate::tree::NodeKind::Dir
+/// Icon + color span pair for a sidebar row's path (dir/file/etc, same
+/// classification the tree pane uses).
+fn path_icon_spans(path: &std::path::Path, label: &str, theme: &Theme) -> (String, ratatui::style::Color) {
+    let kind = if path.is_dir() {
+        crate::tree::NodeKind::Dir
+    } else {
+        crate::tree::NodeKind::File
+    };
+    let color = match crate::icons::classify(kind, false, label) {
+        crate::icons::Kind::Dir => theme.dir,
+        crate::icons::Kind::Symlink => theme.symlink,
+        crate::icons::Kind::Exec => theme.executable,
+        crate::icons::Kind::Media => theme.media,
+        crate::icons::Kind::Archive => theme.archive,
+        crate::icons::Kind::File => theme.file,
+    };
+    (crate::icons::icon_for(kind, false, label).to_string(), color)
+}
+
+fn sidebar_row_item(row: &crate::sidebar::Row, app: &App, theme: &Theme) -> ListItem<'static> {
+    let label = row.label.clone();
+    if !app.config.icons {
+        return ListItem::new(label);
+    }
+    match (&row.path, &row.device) {
+        (_, Some(d)) => {
+            let kind_glyph = if d.is_smb() { "\u{f233}" } else { "\u{f0a0}" };
+            let (mark, mark_color) = if d.is_mounted() {
+                ("● ", theme.git_added)
             } else {
-                crate::tree::NodeKind::File
+                ("○ ", theme.dim)
             };
-            let color = match crate::icons::classify(kind, false, &label) {
-                crate::icons::Kind::Dir => theme.dir,
-                crate::icons::Kind::Symlink => theme.symlink,
-                crate::icons::Kind::Exec => theme.executable,
-                crate::icons::Kind::Media => theme.media,
-                crate::icons::Kind::Archive => theme.archive,
-                crate::icons::Kind::File => theme.file,
-            };
-            let ic = crate::icons::icon_for(kind, false, &label);
+            ListItem::new(Line::from(vec![
+                Span::styled(format!("{kind_glyph} "), Style::default().fg(theme.symlink)),
+                Span::styled(mark, Style::default().fg(mark_color)),
+                Span::styled(label, Style::default().fg(theme.file)),
+            ]))
+        }
+        (Some(p), None) => {
+            let (ic, color) = path_icon_spans(p, &label, theme);
             ListItem::new(Line::from(vec![
                 Span::styled(format!("{ic} "), Style::default().fg(color)),
                 Span::styled(label, Style::default().fg(color)),
             ]))
-        })
-        .collect();
-    let title_text = if focused {
-        " bookmarks ● "
-    } else {
-        " bookmarks "
-    };
+        }
+        (None, None) => ListItem::new(label),
+    }
+}
+
+/// Render the sidebar pane: three stacked, non-editable-header groups
+/// (Bookmarks = auto well-known dirs, Pinned = user's own, Disks =
+/// mounted devices/shares) sharing one flat selection index
+/// (`app.bookmark_sel`), built by [`crate::sidebar::build`].
+pub fn render_pane_bookmarks(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
+    let focused = app.focus == crate::app::Pane::Bookmarks;
+    let rows = crate::sidebar::build(app);
+
+    let header_style = Style::default().fg(theme.header).add_modifier(Modifier::BOLD | Modifier::ITALIC);
+    let mut items: Vec<ListItem> = Vec::new();
+    let mut select_at: Option<usize> = None;
+    let mut sel_idx = 0usize;
+    for section in [
+        crate::sidebar::Section::Bookmarks,
+        crate::sidebar::Section::Pinned,
+        crate::sidebar::Section::Disks,
+    ] {
+        items.push(ListItem::new(Span::styled(
+            format!(" {} ", section.title()),
+            header_style,
+        )));
+        let mut any = false;
+        for row in rows.iter().filter(|r| r.section == section) {
+            any = true;
+            if focused && sel_idx == app.bookmark_sel {
+                select_at = Some(items.len());
+            }
+            sel_idx += 1;
+            items.push(sidebar_row_item(row, app, theme));
+        }
+        if !any {
+            items.push(ListItem::new(Span::styled("  (none)", modal::dim_style(theme))));
+        }
+    }
+
+    let title_text = if focused { " sidebar ● " } else { " sidebar " };
     let title_style = if focused {
         Style::default().fg(theme.mark).add_modifier(Modifier::BOLD)
     } else {
@@ -224,14 +272,7 @@ pub fn render_pane_bookmarks(f: &mut Frame, area: Rect, app: &App, theme: &Theme
         .border_type(BorderType::Rounded)
         .border_style(border_style)
         .title(Span::styled(title_text, title_style));
-    // No bookmarks yet: frame the pane + a discoverability hint instead of
-    // an empty box.
-    if app.state.bookmarks.is_empty() {
-        let inner = block.inner(area);
-        f.render_widget(block, area);
-        render_centered_hint(f, inner, theme, &["no bookmarks", "press m to add"]);
-        return;
-    }
+
     let list = List::new(items)
         .block(block)
         .highlight_style(
@@ -240,10 +281,7 @@ pub fn render_pane_bookmarks(f: &mut Frame, area: Rect, app: &App, theme: &Theme
                 .add_modifier(Modifier::BOLD),
         );
     let mut st = ListState::default();
-    if focused {
-        let i = app.bookmark_sel.min(app.state.bookmarks.len() - 1);
-        st.select(Some(i));
-    }
+    st.select(select_at);
     f.render_stateful_widget(list, area, &mut st);
 }
 
