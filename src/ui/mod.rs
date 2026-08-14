@@ -1,3 +1,4 @@
+pub mod keyhints;
 pub mod modal;
 pub mod overlays;
 pub mod panes;
@@ -312,11 +313,13 @@ pub fn render_frame(
             Constraint::Length(1),
             Constraint::Min(0),
             Constraint::Length(1),
+            Constraint::Length(1),
         ])
         .split(f.area());
     let header_area = outer[0];
     let body = outer[1];
     let prompt_area = outer[2];
+    let keyhints_area = outer[3];
 
     panes_render::render_header(f, header_area, app, &theme);
 
@@ -363,6 +366,7 @@ pub fn render_frame(
     // 3-segment status bar (Left: cursor meta/status, Center: selection,
     // Right: items + free disk). VISUAL flag is folded into Left segment.
     crate::status::render(prompt_area, f, app);
+    crate::ui::keyhints::render(keyhints_area, f, app, keymap, &theme);
 
     // In-flight long op: render a floating progress modal on top of
     // everything else and return early so other modal arms don't paint

@@ -59,9 +59,7 @@ pub fn render_op_modal(f: &mut Frame, body: Rect, op: &OpState, theme: &Theme) {
         ..inner
     };
     if op.indeterminate || op.total_bytes == 0 {
-        let frames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
-        let i = (op.started_at.elapsed().as_millis() / 100) as usize;
-        let frame = frames[i % frames.len()];
+        let frame = modal::spinner_char(op.started_at.elapsed().as_millis());
         f.render_widget(
             Paragraph::new(Line::from(vec![
                 Span::styled(

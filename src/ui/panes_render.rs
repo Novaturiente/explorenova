@@ -130,7 +130,7 @@ pub fn render_pane_tree(
             ))
         })
         .collect();
-    let is_active = split && app_here;
+    let is_active = (split && app_here) || (!split && app.focus == crate::app::Pane::Tree);
     let title_text = if is_active { " tree ● " } else { " tree " };
     let title_style = if is_active {
         Style::default().fg(theme.mark).add_modifier(Modifier::BOLD)
@@ -267,8 +267,18 @@ pub fn render_pane_preview(
     ) as u128;
     let elapsed = app.cursor_moved_at.elapsed().as_millis() >= debounce_ms;
     let cached = cache.contains(&path);
+    let spinner_line = || {
+        Line::from(vec![
+            Span::styled(
+                format!("{} ", crate::ui::modal::spinner_char(app.cursor_moved_at.elapsed().as_millis())),
+                Style::default().fg(theme.symlink).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("loading…", crate::ui::modal::dim_style(theme)),
+        ])
+    };
+
     if !(elapsed || cached) {
-        f.render_widget(Paragraph::new("(loading…)"), inner);
+        f.render_widget(Paragraph::new(spinner_line()), inner);
         return;
     }
 
@@ -277,7 +287,7 @@ pub fn render_pane_preview(
     // Both are pure map lookups — no filesystem access on this thread.
     cache.request(&path, app.config.preview_max_bytes);
     let Some(kind) = cache.get(&path) else {
-        f.render_widget(Paragraph::new("(loading…)"), inner);
+        f.render_widget(Paragraph::new(spinner_line()), inner);
         return;
     };
     match &*kind {

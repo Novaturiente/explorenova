@@ -95,6 +95,29 @@ impl Theme {
         }
     }
 
+    /// Superfile-inspired palette: vivid cyan/pink accents on a dark base,
+    /// louder than Mocha's muted defaults. Opt-in via
+    /// `[theme] preset = "superfile"`.
+    pub fn superfile() -> Self {
+        Self {
+            dir: Color::Rgb(97, 214, 214),          // Cyan
+            file: Color::Rgb(220, 220, 220),        // near-white
+            selected_bg: Color::Rgb(55, 65, 81),    // slate
+            git_modified: Color::Rgb(250, 204, 21), // amber
+            git_added: Color::Rgb(74, 222, 128),    // green
+            git_untracked: Color::Rgb(56, 189, 248), // sky
+            git_conflict: Color::Rgb(248, 113, 113), // red
+            match_hl: Color::Rgb(232, 121, 249),    // fuchsia
+            mark: Color::Rgb(244, 114, 182),        // pink
+            executable: Color::Rgb(52, 211, 153),   // emerald
+            symlink: Color::Rgb(34, 211, 238),      // cyan
+            media: Color::Rgb(167, 139, 250),       // violet
+            archive: Color::Rgb(251, 146, 60),      // orange
+            header: Color::Rgb(103, 232, 249),      // bright cyan
+            dim: Color::Rgb(107, 114, 128),         // gray
+        }
+    }
+
     /// Set the field named `name` to `color`. Returns false if `name` is
     /// not a known theme field.
     pub fn set_field(&mut self, name: &str, color: Color) -> bool {
@@ -128,6 +151,7 @@ impl Theme {
             None | Some("default") => Theme::default(),
             Some("terminal") => Theme::terminal(),
             Some("light") | Some("latte") => Theme::light(),
+            Some("superfile") => Theme::superfile(),
             Some(other) => {
                 warnings.push(format!("theme.preset: unknown preset '{other}', using default"));
                 Theme::default()
@@ -217,6 +241,13 @@ mod tests {
         assert!(w.is_empty());
         let (t2, _) = Theme::from_config(&map(&[("preset", "latte")]));
         assert_eq!(t2.file, t.file);
+    }
+
+    #[test]
+    fn superfile_preset_resolves() {
+        let (t, w) = Theme::from_config(&map(&[("preset", "superfile")]));
+        assert_eq!(t.header, Theme::superfile().header);
+        assert!(w.is_empty());
     }
 
     #[test]

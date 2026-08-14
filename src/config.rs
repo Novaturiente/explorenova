@@ -72,7 +72,8 @@ pub const SAMPLE_CONFIG: &str = r##"# explorenova configuration
 
 # --- Theme -------------------------------------------------------------
 # preset: omit (tuned RGB default), "terminal" (follow your terminal
-# palette), or "light"/"latte" (light-background palette).
+# palette), "light"/"latte" (light-background palette), or "superfile"
+# (vivid cyan/pink accents).
 # Override any field with an ANSI name ("blue", "light_cyan") or hex ("#50C8FA").
 # A bad value warns in the status bar and keeps the default.
 # [theme]

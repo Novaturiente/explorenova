@@ -75,6 +75,14 @@ pub fn dim_style(theme: &Theme) -> Style {
     Style::default().fg(theme.dim)
 }
 
+/// Braille spinner glyph for `elapsed_ms` since some start time. Shared by
+/// the op-progress modal and the preview pane's loading state so both
+/// animate on the same 100ms cadence.
+pub fn spinner_char(elapsed_ms: u128) -> char {
+    const FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+    FRAMES[(elapsed_ms / 100) as usize % FRAMES.len()]
+}
+
 /// Move `sel` within `0..len` with wrap-around. Returns the new index.
 pub fn wrap_nav(sel: usize, len: usize, down: bool) -> usize {
     if len == 0 {
