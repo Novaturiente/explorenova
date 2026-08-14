@@ -5,7 +5,7 @@
 //! independently. The split-mode shenanigans (active slot, tab swap)
 //! stay in [`render_pane_tree`] because they are tree-pane specific.
 
-use ratatui::layout::{Alignment, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, BorderType, List, ListItem, ListState, Paragraph};
@@ -15,7 +15,6 @@ use ratatui_image::picker::Picker;
 use crate::app::App;
 use crate::preview::{PreviewCache, PreviewKind};
 use crate::ui::theme::Theme;
-use crate::ui::modal;
 use crate::ui::{render_image, ImageCache};
 
 /// Render dim, centered placeholder text inside `area` — used for the
@@ -219,50 +218,35 @@ fn sidebar_row_item(row: &crate::sidebar::Row, app: &App, theme: &Theme) -> List
     }
 }
 
-/// Render the sidebar pane: three stacked, non-editable-header groups
-/// (Bookmarks = auto well-known dirs, Pinned = user's own, Disks =
-/// mounted devices/shares) sharing one flat selection index
-/// (`app.bookmark_sel`), built by [`crate::sidebar::build`].
-pub fn render_pane_bookmarks(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
-    let focused = app.focus == crate::app::Pane::Bookmarks;
-    let rows = crate::sidebar::build(app);
-
-    let header_style = Style::default().fg(theme.header).add_modifier(Modifier::BOLD | Modifier::ITALIC);
-    let mut items: Vec<ListItem> = Vec::new();
-    let mut select_at: Option<usize> = None;
-    let mut sel_idx = 0usize;
-    for section in [
-        crate::sidebar::Section::Bookmarks,
-        crate::sidebar::Section::Pinned,
-        crate::sidebar::Section::Disks,
-    ] {
-        items.push(ListItem::new(Span::styled(
-            format!(" {} ", section.title()),
-            header_style,
-        )));
-        let mut any = false;
-        for row in rows.iter().filter(|r| r.section == section) {
-            any = true;
-            if focused && sel_idx == app.bookmark_sel {
-                select_at = Some(items.len());
-            }
-            sel_idx += 1;
-            items.push(sidebar_row_item(row, app, theme));
-        }
-        if !any {
-            items.push(ListItem::new(Span::styled("  (none)", modal::dim_style(theme))));
-        }
-    }
-
-    let title_text = if focused { " sidebar ● " } else { " sidebar " };
-    let title_style = if focused {
+/// Render one third of the sidebar: its own rounded-border box, titled
+/// with the section name, holding only that section's rows. `local_sel`
+/// is `Some(i)` when the sidebar cursor currently sits on row `i` of
+/// *this* section (so exactly one of the three boxes is ever active).
+#[allow(clippy::too_many_arguments)]
+fn render_sidebar_section(
+    f: &mut Frame,
+    area: Rect,
+    section: crate::sidebar::Section,
+    rows: &[&crate::sidebar::Row],
+    local_sel: Option<usize>,
+    pane_focused: bool,
+    app: &App,
+    theme: &Theme,
+) {
+    let active = pane_focused && local_sel.is_some();
+    let title_text = if active {
+        format!(" {} ● ", section.title())
+    } else {
+        format!(" {} ", section.title())
+    };
+    let title_style = if active {
         Style::default().fg(theme.mark).add_modifier(Modifier::BOLD)
     } else {
         Style::default()
             .fg(theme.header)
             .add_modifier(Modifier::BOLD)
     };
-    let border_style = if focused {
+    let border_style = if active {
         Style::default().fg(theme.mark)
     } else {
         Style::default().fg(theme.dim)
@@ -273,16 +257,66 @@ pub fn render_pane_bookmarks(f: &mut Frame, area: Rect, app: &App, theme: &Theme
         .border_style(border_style)
         .title(Span::styled(title_text, title_style));
 
-    let list = List::new(items)
-        .block(block)
-        .highlight_style(
-            Style::default()
-                .bg(theme.selected_bg)
-                .add_modifier(Modifier::BOLD),
-        );
+    if rows.is_empty() {
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+        render_centered_hint(f, inner, theme, &["(none)"]);
+        return;
+    }
+
+    let win_h = area.height.saturating_sub(2) as usize;
+    let start = crate::ui::viewport_start(rows.len(), local_sel.unwrap_or(0), win_h);
+    let end = (start + win_h).min(rows.len());
+    let items: Vec<ListItem> = rows[start..end]
+        .iter()
+        .map(|r| sidebar_row_item(r, app, theme))
+        .collect();
+    let list = List::new(items).block(block).highlight_style(
+        Style::default()
+            .bg(theme.selected_bg)
+            .add_modifier(Modifier::BOLD),
+    );
     let mut st = ListState::default();
-    st.select(select_at);
+    if let Some(sel) = local_sel {
+        st.select(Some(sel - start));
+    }
     f.render_stateful_widget(list, area, &mut st);
+}
+
+/// Render the sidebar pane as three equal-height boxes (Bookmarks = auto
+/// well-known dirs, Pinned = user's own, Disks = mounted devices/shares),
+/// sharing one flat selection index (`app.bookmark_sel`) built by
+/// [`crate::sidebar::build`].
+pub fn render_pane_bookmarks(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
+    let focused = app.focus == crate::app::Pane::Bookmarks;
+    let rows = crate::sidebar::build(app);
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Ratio(1, 3); 3])
+        .split(area);
+
+    let mut offset = 0usize;
+    for (i, section) in [
+        crate::sidebar::Section::Bookmarks,
+        crate::sidebar::Section::Pinned,
+        crate::sidebar::Section::Disks,
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let section_rows: Vec<&crate::sidebar::Row> =
+            rows.iter().filter(|r| r.section == section).collect();
+        let local_sel = if focused
+            && app.bookmark_sel >= offset
+            && app.bookmark_sel < offset + section_rows.len()
+        {
+            Some(app.bookmark_sel - offset)
+        } else {
+            None
+        };
+        render_sidebar_section(f, chunks[i], section, &section_rows, local_sel, focused, app, theme);
+        offset += section_rows.len();
+    }
 }
 
 /// Render the preview pane. Honours a 150ms settle gate so cursor
