@@ -48,8 +48,16 @@ pub const HEAVY_FILE_MAX_DEFAULT: u64 = 64 * 1024 * 1024;
 
 /// Decode with explicit limits so a decompression-bomb PNG can't OOM
 /// the process. Returns None on unreadable/oversized images.
+///
+/// Sniffs the format from the file's magic bytes (`with_guessed_format`)
+/// instead of trusting the extension `ImageReader::open` would otherwise
+/// pick — a PNG saved/downloaded with a `.jpg` name is common enough
+/// (browsers, screenshot tools) that trusting the extension made those
+/// files fail to decode and fall back to the misleading
+/// "(binary or oversized)" message.
 fn decode_image_bounded(path: &Path) -> Option<image::DynamicImage> {
-    let mut reader = image::ImageReader::open(path).ok()?;
+    let reader = image::ImageReader::open(path).ok()?;
+    let mut reader = reader.with_guessed_format().ok()?;
     let mut limits = image::Limits::default();
     limits.max_image_width = Some(16_384);
     limits.max_image_height = Some(16_384);
@@ -516,6 +524,17 @@ mod tests {
         // proving the threshold is the caller's value, not the hardcoded
         // HEAVY_FILE_MAX_DEFAULT.
         assert!(matches!(render(&f, 1024, 1), PreviewKind::Meta(_)));
+        assert!(matches!(render(&f, 1024, HEAVY_FILE_MAX_DEFAULT), PreviewKind::Image(..)));
+    }
+
+    #[test]
+    fn png_content_with_jpg_extension_still_decodes() {
+        // Downloaded/screenshotted images are routinely saved with a
+        // mismatched extension; the decoder must sniff actual content,
+        // not trust the extension, or this falls back to Meta.
+        let d = tempdir().unwrap();
+        let f = d.path().join("mislabeled.jpg");
+        image::RgbaImage::new(4, 4).save_with_format(&f, image::ImageFormat::Png).unwrap();
         assert!(matches!(render(&f, 1024, HEAVY_FILE_MAX_DEFAULT), PreviewKind::Image(..)));
     }
 
