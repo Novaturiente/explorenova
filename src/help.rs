@@ -31,6 +31,7 @@ const ACTION_META: &[(Action, &str, &str)] = &[
     (Action::PathInput, "Navigation", "Path input"),
     // Panes / Tabs
     (Action::FocusNext, "Panes / Tabs", "Cycle focus / swap tabs"),
+    (Action::SidebarNextSection, "Panes / Tabs", "Sidebar: jump to next section"),
     (Action::ToggleBookmarksPane, "Panes / Tabs", "Toggle bookmarks pane"),
     (Action::TogglePreviewPane, "Panes / Tabs", "Toggle preview pane"),
     (Action::PreviewScrollDown, "Panes / Tabs", "Scroll preview down"),

@@ -572,6 +572,29 @@ impl App {
                     Pane::Tree => Pane::Tree,
                 };
             }
+            Action::SidebarNextSection => {
+                // Shift-Tab: jump the cursor to the next sidebar box
+                // (bookmarks -> pinned -> disks -> wrap), skipping empty
+                // sections. No-op outside the sidebar pane.
+                if self.focus == Pane::Bookmarks {
+                    let rows = crate::sidebar::build(self);
+                    let ranges = crate::sidebar::section_ranges(&rows);
+                    let cur = ranges.iter().position(|&(_, start, count)| {
+                        count > 0 && self.bookmark_sel >= start && self.bookmark_sel < start + count
+                    });
+                    if let Some(cur) = cur {
+                        for step in 1..=ranges.len() {
+                            let next = (cur + step) % ranges.len();
+                            if ranges[next].2 > 0 {
+                                self.bookmark_sel = ranges[next].1;
+                                break;
+                            }
+                        }
+                    } else if let Some(&(_, start, _)) = ranges.iter().find(|&&(_, _, c)| c > 0) {
+                        self.bookmark_sel = start;
+                    }
+                }
+            }
             Action::ToggleBookmarksPane => {
                 self.config.panes.bookmarks.visible = !self.config.panes.bookmarks.visible;
                 // Don't leave focus stranded on a now-hidden pane, or j/k
@@ -1171,6 +1194,20 @@ mod tests {
         assert_eq!(a.focus, Pane::Bookmarks, "tree → bookmarks");
         a.apply(Action::FocusNext);
         assert_eq!(a.focus, Pane::Tree, "bookmarks → tree (no preview)");
+    }
+
+    #[test]
+    fn shift_tab_jumps_between_sidebar_sections() {
+        let mut a = app();
+        a.focus = Pane::Bookmarks;
+        a.well_known = vec![("Home".to_string(), PathBuf::from("/home/x"))];
+        a.state.pinned = vec![PathBuf::from("/a"), PathBuf::from("/b")];
+        // No disks -> that section is empty and must be skipped.
+        a.bookmark_sel = 0; // sitting on the (only) Bookmarks row
+        a.apply(Action::SidebarNextSection);
+        assert_eq!(a.bookmark_sel, 1, "jumps to first Pinned row");
+        a.apply(Action::SidebarNextSection);
+        assert_eq!(a.bookmark_sel, 0, "wraps back to Bookmarks, skipping empty Disks");
     }
 
     #[test]

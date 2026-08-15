@@ -310,18 +310,14 @@ pub fn render_frame(
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),
             Constraint::Min(0),
             Constraint::Length(1),
             Constraint::Length(1),
         ])
         .split(f.area());
-    let header_area = outer[0];
-    let body = outer[1];
-    let prompt_area = outer[2];
-    let keyhints_area = outer[3];
-
-    panes_render::render_header(f, header_area, app, &theme);
+    let body = outer[0];
+    let prompt_area = outer[1];
+    let keyhints_area = outer[2];
 
     // Split-pane mode: hide preview, render two equal tree panes side by
     // side (bookmarks pane still respects its visible flag). Re-derives

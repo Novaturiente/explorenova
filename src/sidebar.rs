@@ -97,6 +97,20 @@ pub fn build(app: &App) -> Vec<Row> {
     rows
 }
 
+/// (section, start index, row count) for each of the 3 sections, in the
+/// same flat-index order `build` produces. Used to jump the cursor to
+/// the next section's first row (Shift-Tab).
+pub fn section_ranges(rows: &[Row]) -> Vec<(Section, usize, usize)> {
+    let mut out = Vec::new();
+    let mut offset = 0usize;
+    for s in [Section::Bookmarks, Section::Pinned, Section::Disks] {
+        let count = rows.iter().filter(|r| r.section == s).count();
+        out.push((s, offset, count));
+        offset += count;
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

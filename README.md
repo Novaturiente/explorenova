@@ -115,7 +115,7 @@ A file whose extension has no rule opens with the OS default app. Same
 | Move | `j`/`k`/`↑`/`↓`, `gg`/`G`, `Ctrl-d`/`Ctrl-u` |
 | Expand / collapse | `l`/`→`, `h`/`←`, `Enter` toggle/open |
 | Open default / with | `o` / `O` |
-| Pane focus / toggle | `Tab`, `B` bookmarks, `P` preview |
+| Pane focus / toggle | `Tab`, `Shift-Tab` sidebar section, `B` bookmarks, `P` preview |
 | Pane resize | `<` / `>` |
 | Pane reorder | `[` / `]` (move focused pane left/right) |
 | Create | `a` (trailing `/` → directory) |

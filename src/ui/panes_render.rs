@@ -37,20 +37,20 @@ fn render_centered_hint(f: &mut Frame, area: Rect, theme: &Theme, lines: &[&str]
     f.render_widget(para, rect);
 }
 
-/// Render the top header bar showing the current arena root path.
-/// Left-truncates with an ellipsis when the path exceeds the area width.
-pub fn render_header(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
-    let root = &app.arena.nodes[app.arena.root].path;
+/// The tree pane's directory path, left-truncated with an ellipsis to fit
+/// `w` display cells. Used as the pane's title (replacing a separate top
+/// header bar) so the current directory is always visible without eating
+/// a full extra row.
+fn root_path_label(root: &std::path::Path, w: usize) -> String {
     // A gvfs SMB mount has an unreadable dir name
     // (smb-share:server=...,share=...); show "share on server" instead.
     let root_path = crate::ui::display_name(
         &crate::smb::gvfs_display_label(root).unwrap_or_else(|| root.display().to_string()),
     );
-    let w = area.width.max(1) as usize;
     // Truncate by display cells so wide (CJK/emoji) path components
-    // don't overflow the header line.
+    // don't overflow the title.
     use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
-    let shown = if root_path.width() > w {
+    if root_path.width() > w {
         let budget = w.saturating_sub(1); // room for the ellipsis
         let mut tail_rev: Vec<char> = Vec::new();
         let mut used = 0usize;
@@ -66,15 +66,7 @@ pub fn render_header(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
         format!("…{tail}")
     } else {
         root_path
-    };
-    f.render_widget(
-        Paragraph::new(shown).style(
-            Style::default()
-                .fg(theme.header)
-                .add_modifier(Modifier::BOLD),
-        ),
-        area,
-    );
+    }
 }
 
 /// Render the tree pane. In split mode both `tree` and `tree_other`
@@ -131,7 +123,15 @@ pub fn render_pane_tree(
         })
         .collect();
     let is_active = (split && app_here) || (!split && app.focus == crate::app::Pane::Tree);
-    let title_text = if is_active { " tree ● " } else { " tree " };
+    // Budget: border chars + padding spaces + room for the trailing "● "
+    // focus dot, kept constant so the title doesn't reflow on focus change.
+    let label_budget = area.width.saturating_sub(6) as usize;
+    let label = root_path_label(&arena_ref.nodes[arena_ref.root].path, label_budget);
+    let title_text = if is_active {
+        format!(" {label} ● ")
+    } else {
+        format!(" {label} ")
+    };
     let title_style = if is_active {
         Style::default().fg(theme.mark).add_modifier(Modifier::BOLD)
     } else {
