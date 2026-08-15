@@ -39,10 +39,12 @@ impl PreviewKind {
     }
 }
 
-/// Largest file we hand to an in-process heavy decoder (image crate,
-/// calamine). Images are further bounded by `decode_image_bounded`'s
-/// pixel limits.
-const HEAVY_FILE_MAX: u64 = 64 * 1024 * 1024;
+/// Default largest file handed to an in-process heavy decoder (image
+/// crate, calamine) when no config value is supplied (tests, and any
+/// caller that doesn't care). Images are further bounded by
+/// `decode_image_bounded`'s pixel limits. Configurable via
+/// `[preview] heavy_max_bytes` — see `config::PreviewConfig`.
+pub const HEAVY_FILE_MAX_DEFAULT: u64 = 64 * 1024 * 1024;
 
 /// Decode with explicit limits so a decompression-bomb PNG can't OOM
 /// the process. Returns None on unreadable/oversized images.
@@ -122,8 +124,10 @@ fn plain_text(s: String) -> PreviewKind {
     PreviewKind::Text(Text::from(lines))
 }
 
-/// Decide preview kind for `path` (no caching).
-pub fn render(path: &Path, max_bytes: u64) -> PreviewKind {
+/// Decide preview kind for `path` (no caching). `heavy_max_bytes` bounds
+/// raw image decode + xlsx parse (see `HEAVY_FILE_MAX_DEFAULT`);
+/// `max_bytes` bounds plain-text preview size.
+pub fn render(path: &Path, max_bytes: u64, heavy_max_bytes: u64) -> PreviewKind {
     let meta = match std::fs::metadata(path) {
         Ok(m) => m,
         Err(e) => return PreviewKind::Meta(format!("error: {e}")),
@@ -133,7 +137,7 @@ pub fn render(path: &Path, max_bytes: u64) -> PreviewKind {
     }
     let ext = ext_lower(path);
     if IMAGE_EXTS.contains(&ext.as_str()) {
-        if meta.len() > HEAVY_FILE_MAX {
+        if meta.len() > heavy_max_bytes {
             return PreviewKind::Meta(meta_string(path, &meta));
         }
         return image_preview(path.to_path_buf(), &meta);
@@ -158,7 +162,7 @@ pub fn render(path: &Path, max_bytes: u64) -> PreviewKind {
     }
     if xlsx::is_spreadsheet(&ext) {
         // calamine parses the whole workbook in memory — bound it.
-        if meta.len() > HEAVY_FILE_MAX {
+        if meta.len() > heavy_max_bytes {
             return PreviewKind::Meta(meta_string(path, &meta));
         }
         return match xlsx::text_from(path) {
@@ -250,7 +254,7 @@ pub struct PreviewCache {
     /// any real work so a fast-moving cursor doesn't backlog the single
     /// render thread with previews nobody is looking at anymore.
     want: Arc<Mutex<Option<PathBuf>>>,
-    req_tx: Sender<(PathBuf, u64)>,
+    req_tx: Sender<(PathBuf, u64, u64)>,
     res_rx: Receiver<(PathBuf, Option<PreviewKind>)>,
 }
 
@@ -267,12 +271,12 @@ impl PreviewCache {
 
     pub fn with_cap(cap: usize) -> Self {
         let cap = if cap == 0 { CACHE_CAP } else { cap };
-        let (req_tx, req_rx) = mpsc::channel::<(PathBuf, u64)>();
+        let (req_tx, req_rx) = mpsc::channel::<(PathBuf, u64, u64)>();
         let (res_tx, res_rx) = mpsc::channel::<(PathBuf, Option<PreviewKind>)>();
         let want: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(None));
         let want_worker = want.clone();
         std::thread::spawn(move || {
-            while let Ok((path, max_bytes)) = req_rx.recv() {
+            while let Ok((path, max_bytes, heavy_max_bytes)) = req_rx.recv() {
                 // Stale-skip: if the cursor moved on before we even got to
                 // this request, don't render it — but always reply so the
                 // caller's `in_flight` bookkeeping stays correct.
@@ -285,7 +289,7 @@ impl PreviewCache {
                     continue;
                 }
                 let kind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    render(&path, max_bytes)
+                    render(&path, max_bytes, heavy_max_bytes)
                 }))
                 .unwrap_or_else(|_| PreviewKind::Meta(format!(
                     "{}\n(preview failed)",
@@ -324,7 +328,9 @@ impl PreviewCache {
     /// Queue a render for `path` if it isn't already cached or in flight.
     /// Fire-and-forget: the worker does the stat and the render off
     /// thread; poll `drain()` and then `get()` to pick up the result.
-    pub fn request(&mut self, path: &Path, max_bytes: u64) {
+    /// `heavy_max_bytes` bounds raw image/xlsx decode size — pass
+    /// `HEAVY_FILE_MAX_DEFAULT` if the caller has no configured value.
+    pub fn request(&mut self, path: &Path, max_bytes: u64, heavy_max_bytes: u64) {
         if let Ok(mut w) = self.want.lock() {
             *w = Some(path.to_path_buf());
         }
@@ -332,7 +338,7 @@ impl PreviewCache {
             return;
         }
         self.in_flight.insert(path.to_path_buf());
-        let _ = self.req_tx.send((path.to_path_buf(), max_bytes));
+        let _ = self.req_tx.send((path.to_path_buf(), max_bytes, heavy_max_bytes));
     }
 
     /// Move any completed worker results into the cache. Returns `true` if
@@ -453,7 +459,7 @@ mod tests {
         let d = tempdir().unwrap();
         let f = d.path().join("a.txt");
         fs::write(&f, "hello").unwrap();
-        match render(&f, 1024) {
+        match render(&f, 1024, HEAVY_FILE_MAX_DEFAULT) {
             PreviewKind::Text(t) => {
                 let joined: String = t
                     .lines
@@ -471,7 +477,7 @@ mod tests {
         let d = tempdir().unwrap();
         let f = d.path().join("big.txt");
         fs::write(&f, vec![b'x'; 2048]).unwrap();
-        assert!(matches!(render(&f, 100), PreviewKind::Meta(_)));
+        assert!(matches!(render(&f, 100, HEAVY_FILE_MAX_DEFAULT), PreviewKind::Meta(_)));
     }
 
     #[test]
@@ -498,7 +504,19 @@ mod tests {
         let d = tempdir().unwrap();
         let f = d.path().join("p.png");
         image::RgbaImage::new(1, 1).save(&f).unwrap();
-        assert!(matches!(render(&f, 1024), PreviewKind::Image(..)));
+        assert!(matches!(render(&f, 1024, HEAVY_FILE_MAX_DEFAULT), PreviewKind::Image(..)));
+    }
+
+    #[test]
+    fn image_over_heavy_max_bytes_falls_back_to_meta() {
+        let d = tempdir().unwrap();
+        let f = d.path().join("p.png");
+        image::RgbaImage::new(1, 1).save(&f).unwrap();
+        // A tiny heavy_max_bytes forces the size-gate even for a 1x1 PNG,
+        // proving the threshold is the caller's value, not the hardcoded
+        // HEAVY_FILE_MAX_DEFAULT.
+        assert!(matches!(render(&f, 1024, 1), PreviewKind::Meta(_)));
+        assert!(matches!(render(&f, 1024, HEAVY_FILE_MAX_DEFAULT), PreviewKind::Image(..)));
     }
 
     #[test]
@@ -506,7 +524,7 @@ mod tests {
         let d = tempdir().unwrap();
         let f = d.path().join("bad.png");
         fs::write(&f, [0u8; 8]).unwrap();
-        assert!(matches!(render(&f, 1024), PreviewKind::Meta(_)));
+        assert!(matches!(render(&f, 1024, HEAVY_FILE_MAX_DEFAULT), PreviewKind::Meta(_)));
     }
 
     /// Poll `drain()` until `path` is cached (or a deadline passes).
@@ -526,7 +544,7 @@ mod tests {
         let mut c = PreviewCache::new();
         // First request: not cached, work dispatched off-thread. get()
         // returns nothing until drain() picks up the worker's reply.
-        c.request(&f, 1024);
+        c.request(&f, 1024, HEAVY_FILE_MAX_DEFAULT);
         assert!(c.get(&f).is_none());
         drain_until_cached(&mut c, &f);
         // Now cached — two consecutive get()s return the same value (an
@@ -542,7 +560,7 @@ mod tests {
         let f = d.path().join("a.txt");
         fs::write(&f, "hello").unwrap();
         let mut c = PreviewCache::new();
-        c.request(&f, 1024);
+        c.request(&f, 1024, HEAVY_FILE_MAX_DEFAULT);
         assert!(c.get(&f).is_none());
         drain_until_cached(&mut c, &f);
         assert!(matches!(c.get(&f).as_deref(), Some(PreviewKind::Text(_))));
@@ -555,7 +573,7 @@ mod tests {
         // produced by the worker, not by the caller stat-ing anything.
         let mut c = PreviewCache::with_cap(8);
         let missing = Path::new("/nonexistent/x");
-        c.request(missing, 1024);
+        c.request(missing, 1024, HEAVY_FILE_MAX_DEFAULT);
         drain_until_cached(&mut c, missing);
         assert!(c.contains(missing));
         assert!(matches!(c.get(missing).as_deref(), Some(PreviewKind::Meta(_))));
@@ -638,8 +656,8 @@ mod tests {
         fs::write(&a, "a").unwrap();
         fs::write(&b, "b").unwrap();
         let mut c = PreviewCache::with_cap(8);
-        c.request(&a, 1024);
-        c.request(&b, 1024); // moves `want` to b before the worker gets to a
+        c.request(&a, 1024, HEAVY_FILE_MAX_DEFAULT);
+        c.request(&b, 1024, HEAVY_FILE_MAX_DEFAULT); // moves `want` to b before the worker gets to a
         drain_until_cached(&mut c, &b);
         // Give the worker a moment to also process (and skip) a's request.
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);

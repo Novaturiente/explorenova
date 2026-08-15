@@ -236,7 +236,7 @@ fn sample_documents_every_option() {
     // The sample must mention every configurable surface so it is discoverable.
     for needle in [
         "icons", "confirm_trash", "preview_max_bytes", "fs_refresh_debounce_ms",
-        "[panes", "[preview]", "settle_cheap_ms", "settle_heavy_ms", "cache_cap",
+        "[panes", "[preview]", "settle_cheap_ms", "settle_heavy_ms", "cache_cap", "heavy_max_bytes",
         "[keys]", "[theme]", "preset", "dir", "git_modified", "selected_bg",
         "header", "dim",
     ] {

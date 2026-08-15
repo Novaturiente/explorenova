@@ -24,7 +24,7 @@ pub const SAMPLE_CONFIG: &str = r##"# explorenova configuration
 # --- Panes -------------------------------------------------------------
 # order = ["bookmarks", "tree", "preview"]
 # [panes.bookmarks]
-# visible = false
+# visible = true
 # width = 24
 # weight = 1
 # [panes.tree]
@@ -36,9 +36,10 @@ pub const SAMPLE_CONFIG: &str = r##"# explorenova configuration
 
 # --- Preview tuning ----------------------------------------------------
 # [preview]
-# settle_cheap_ms = 150   # delay before rendering text/dir/image previews
-# settle_heavy_ms = 400   # delay before pdf/video/xlsx/archive (>= cheap)
-# cache_cap = 128         # max cached previews before FIFO eviction
+# settle_cheap_ms = 150     # delay before rendering text/dir/image previews
+# settle_heavy_ms = 400     # delay before pdf/video/xlsx/archive (>= cheap)
+# cache_cap = 128           # max cached previews before FIFO eviction
+# heavy_max_bytes = 67108864 # max size for raw image/xlsx decode (64 MiB); bigger -> "(binary or oversized)"
 
 # --- Keybindings -------------------------------------------------------
 # action -> list of key chords, e.g.:
@@ -141,11 +142,21 @@ pub struct PreviewConfig {
     /// ponytail: bounds cached *entries*, not total preview memory —
     /// in-flight renders and worker backlog stay unbounded.
     pub cache_cap: usize,
+    /// Largest file (bytes) handed to an in-process heavy decoder (raw
+    /// image formats, xlsx). Above this, the preview pane shows
+    /// "(binary or oversized)" instead of decoding — raise it if your
+    /// photos/screenshots are routinely bigger than the default 64 MiB.
+    pub heavy_max_bytes: u64,
 }
 
 impl Default for PreviewConfig {
     fn default() -> Self {
-        Self { settle_cheap_ms: 150, settle_heavy_ms: 400, cache_cap: 128 }
+        Self {
+            settle_cheap_ms: 150,
+            settle_heavy_ms: 400,
+            cache_cap: 128,
+            heavy_max_bytes: crate::preview::HEAVY_FILE_MAX_DEFAULT,
+        }
     }
 }
 
@@ -224,6 +235,9 @@ impl Config {
                 }
                 if c.preview.cache_cap == 0 {
                     c.preview.cache_cap = 128;
+                }
+                if c.preview.heavy_max_bytes == 0 {
+                    c.preview.heavy_max_bytes = crate::preview::HEAVY_FILE_MAX_DEFAULT;
                 }
                 if c.fs_refresh_debounce_ms == 0 {
                     c.fs_refresh_debounce_ms = 150;

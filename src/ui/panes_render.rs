@@ -380,7 +380,7 @@ pub fn render_pane_preview(
     // Fire-and-forget: queues a render if needed (no-op if already cached
     // or in flight), then `get()` picks up whatever's there right now.
     // Both are pure map lookups — no filesystem access on this thread.
-    cache.request(&path, app.config.preview_max_bytes);
+    cache.request(&path, app.config.preview_max_bytes, app.config.preview.heavy_max_bytes);
     let Some(kind) = cache.get(&path) else {
         f.render_widget(Paragraph::new(spinner_line()), inner);
         return;
