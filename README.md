@@ -115,7 +115,7 @@ A file whose extension has no rule opens with the OS default app. Same
 | Move | `j`/`k`/`↑`/`↓`, `gg`/`G`, `Ctrl-d`/`Ctrl-u` |
 | Expand / collapse | `l`/`→`, `h`/`←`, `Enter` toggle/open |
 | Open default / with | `o` / `O` |
-| Pane focus / toggle | `Tab`, `Shift-Tab` sidebar section, `B` bookmarks, `P` preview |
+| Pane focus / toggle | `Tab`, `Shift-Tab` sidebar section, `B` bookmarks, `P` preview, `F` footer |
 | Pane resize | `<` / `>` |
 | Pane reorder | `[` / `]` (move focused pane left/right) |
 | Create | `a` (trailing `/` → directory) |
@@ -123,7 +123,7 @@ A file whose extension has no rule opens with the OS default app. Same
 | Rename | `r` |
 | Trash / permanent delete | `x` or `Del` (optional confirm via `confirm_trash`) / `X` (always y/N confirm) |
 | Toggle pin | `m` |
-| Fuzzy search | `/`, `n` / `N`, `Esc` clear |
+| Search | `/` names (live fuzzy), `Tab` in the prompt switches to file contents (`rg`), `n` / `N`, `Esc` clear |
 | Path navigation | `:` (Tab completion) |
 | Shell | `!` one-shot (with `{paths}`/`{file}`/… expansion), `S` drop to `$SHELL` |
 | Scripts | `\` pick a script from the scripts dir; `[commands]` keys run templates |
@@ -140,11 +140,21 @@ right. Transient status messages overlay the left segment for ~3 seconds.
 ### Power features
 
 - `f` — **filter** the tree to fuzzy matches (ancestors kept). Enter keeps it, Esc clears.
-- `F` — **content search** with ripgrep (`rg`); jumps to the first file containing the query, `n`/`N` cycle.
+- `/` then `Tab` — **content search** with ripgrep (`rg`); jumps to the first file containing the query, `n`/`N` cycle.
 - `z` — **zoxide jump**: type a query, jump to the best-ranked directory (needs `zoxide`).
 - `b` — **bulk rename** the marked files in `$EDITOR` (one name per line).
 - `L` — cycle the **linemode** column (none → size → mtime → perms).
-- During a copy/move, `esc` or `ctrl-c` **cancels** the op.
+- Copy, move, extract and trash run **in the background**: keep browsing while they work. `esc` or `ctrl-c` (in normal mode) cancels; `q` refuses to quit until the op ends.
+
+### Footer
+
+`F` toggles a superfile-style footer (shown by default, remembered in `state.toml`):
+
+- **processes** — the running op with a progress bar, then this session's finished, failed and cancelled ops.
+- **metadata** — the item under the cursor: size, permissions, owner, modified/changed time, MIME type, symlink target. Folders get their total size and item count (computed in the background, capped at 10 s). Images, media and PDFs get `exiftool` tags when it is installed (`metadata_exiftool = false` turns that off).
+- **clipboard** — what `yy` / `dd` holds, waiting for `p`.
+
+The footer hides itself on terminals too short to fit it.
 
 Sort settings (mode, reverse, dir-first) persist in `state.toml` under
 `[sort]` and apply to both tabs in split-pane mode.

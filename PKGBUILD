@@ -23,6 +23,8 @@ optdepends=(
   'ffmpegthumbnailer: video thumbnail preview'
   'udiskie: devices modal mount/unmount/list'
   'gvfs-smb: SMB network shares (gio mount)'
+  'perl-image-exiftool: EXIF tags in the footer metadata panel'
+  'ripgrep: content search (/ then Tab)'
   'unrar: extract .rar archives (non-free, not pulled by default)'
   'wl-clipboard: copy-paths under Wayland (wl-copy)'
   'xclip: copy-paths under X11'

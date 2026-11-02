@@ -12,6 +12,7 @@ pub mod help;
 pub mod icons;
 pub mod keymap;
 pub mod linemode;
+pub mod meta;
 pub mod nav;
 pub mod ops;
 pub mod preview;

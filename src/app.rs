@@ -141,9 +141,13 @@ pub struct App {
     /// Reset whenever the tree cursor moves. Images ignore it.
     pub preview_scroll: usize,
     /// In-flight long-running op (copy/move/extract). `None` when idle.
-    /// While `Some`, the modal overlay renders a progress bar / spinner
-    /// and conflicting dispatch arms are no-ops.
+    /// Runs in the background; the footer / status bar show its progress
+    /// and a second op is refused until it finishes.
     pub op: Option<crate::ops::OpState>,
+    /// Finished ops this session, newest last (footer processes panel).
+    pub op_history: Vec<crate::ops::OpRecord>,
+    /// Footer metadata panel cache + its folder-size / exiftool worker.
+    pub meta: crate::meta::MetaCache,
     /// Scroll offset (in lines) for the help overlay. Reset to 0 each
     /// time the user opens `?`.
     pub help_scroll: usize,
@@ -196,6 +200,7 @@ impl App {
     pub fn new(mut arena: Arena, config: Config, state: State) -> Self {
         let sort = state.sort;
         let line_mode = state.line_mode;
+        let meta = crate::meta::MetaCache::new(config.metadata_exiftool);
         arena.set_sort(sort);
         let visible = arena.flatten();
         let (theme, theme_warnings) = crate::ui::theme::Theme::from_config(&config.theme);
@@ -242,6 +247,8 @@ impl App {
             pending_chord: String::new(),
             preview_scroll: 0,
             op: None,
+            op_history: Vec::new(),
+            meta,
             help_scroll: 0,
             help_filter: String::new(),
             search_cands: None,
@@ -644,6 +651,7 @@ impl App {
             Action::TogglePreviewPane => {
                 self.config.panes.preview.visible = !self.config.panes.preview.visible;
             }
+            Action::ToggleFooter => self.state.hide_footer = !self.state.hide_footer,
             Action::TogglePin => {
                 if self.focus == Pane::Bookmarks {
                     // Only the Pinned section is user-editable — Bookmarks
@@ -670,6 +678,10 @@ impl App {
                         self.arena.nodes[id].path.clone(),
                     );
                 }
+            }
+            // Quitting kills the worker mid-write and leaves a partial copy.
+            Action::Quit if self.op.is_some() => {
+                self.set_err("operation running — Esc cancels it, then quit")
             }
             Action::Quit => self.should_quit = true,
             Action::Cancel => {

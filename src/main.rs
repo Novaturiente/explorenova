@@ -320,7 +320,7 @@ fn main() -> Result<()> {
     loop {
         // Pull in any preview that finished rendering off-thread; a fresh
         // one means the preview pane has new content to show.
-        let preview_ready = preview_cache.drain();
+        let preview_ready = preview_cache.drain() | app.meta.drain();
 
         while let Ok((scanned_root, map)) = git_res_rx.try_recv() {
             // A scan that started before a re-root describes a different
@@ -389,6 +389,7 @@ fn main() -> Result<()> {
             if t0.elapsed() >= Duration::from_millis(app.config.fs_refresh_debounce_ms) {
                 let dirs: Vec<PathBuf> = pending_dirs.drain().collect();
                 if !dirs.is_empty() {
+                    app.meta.invalidate();
                     refresh_dirs(&mut app, &dirs, &git_tx);
                 } else if git_dirty {
                     // Pure .git churn: rescan status only (refresh_dirs
@@ -410,6 +411,15 @@ fn main() -> Result<()> {
                 let reveal = state.reveal_hint.clone();
                 let kind = state.kind;
                 let res = state.finished.unwrap();
+                app.op_history.push(explorenova::ops::OpRecord {
+                    kind,
+                    label: state.label.clone(),
+                    result: res.clone(),
+                });
+                // shortcut: session history capped at 50, never persisted.
+                if app.op_history.len() > 50 {
+                    app.op_history.remove(0);
+                }
                 // A background mount or unmount changes what the sidebar's
                 // Disks section should say. `app.disks` was otherwise only
                 // assigned at startup and on the R key, so the share stayed
@@ -424,6 +434,7 @@ fn main() -> Result<()> {
                 for d in &dirs {
                     preview_cache.invalidate_dir(d);
                 }
+                app.meta.invalidate();
                 app.mark_self_write(dirs);
                 refresh_in_place(&mut app, &git_tx);
                 if let Some(target) = reveal {

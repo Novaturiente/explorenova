@@ -350,19 +350,15 @@ pub fn handle_key(
     start: &Path,
     git_tx: &mpsc::Sender<std::path::PathBuf>,
 ) -> Result<()> {
-    // While a long op runs, the only input accepted is cancel (Esc /
-    // Ctrl-c). Everything else is ignored so the user can't mutate the
-    // tree mid-op. Mirrors the op modal taking render precedence.
-    if app.op.is_some() {
+    // Long ops run in the background while the user keeps browsing. In
+    // Normal mode Esc / Ctrl-c cancel the running op before anything else.
+    if app.op.is_some() && app.mode == Mode::Normal && chord.is_empty() {
         let ctrl_c = k.code == KeyCode::Char('c')
             && k.modifiers.contains(KeyModifiers::CONTROL);
         if k.code == KeyCode::Esc || ctrl_c {
             app.cancel_op();
-        } else {
-            // Don't drop keys silently — tell the user why nothing happens.
-            app.set_status("operation running — Esc cancels");
+            return Ok(());
         }
-        return Ok(());
     }
 
     // Error statuses are sticky (no timer fade); the next keypress
@@ -895,6 +891,19 @@ fn handle_text_input_key(
             app.pending_targets.clear();
         }
         KeyCode::Enter => text_input_enter(app, start, git_tx),
+        // Tab flips the `/` prompt between live name search and ripgrep
+        // content search, keeping what was typed.
+        KeyCode::Tab if app.mode == Mode::Search => {
+            app.end_search();
+            app.mode = Mode::Input;
+            app.pending = Some(Action::ContentSearch);
+        }
+        KeyCode::Tab if app.pending == Some(Action::ContentSearch) => {
+            app.pending = None;
+            app.begin_search();
+            app.mode = Mode::Search;
+            app.live_search();
+        }
         KeyCode::Tab => {
             if app.mode == Mode::Input && app.pending == Some(Action::PathInput) {
                 let c = crate::nav::completions(&app.input.value());
@@ -1550,10 +1559,7 @@ fn trash_targets(app: &mut App) {
         app.set_status("nothing to trash");
         return;
     }
-    // Dead code in practice: handle_key already refuses all input but
-    // Esc/Ctrl-c while an op is in flight, so `handle` (and this fn)
-    // can't be reached with `app.op` set. Kept for defense-in-depth,
-    // matching the guard shape used at the other op-spawn sites.
+    // One background op at a time.
     if app.op.is_some() {
         app.set_status("another op in progress");
         return;
@@ -2243,5 +2249,77 @@ mod tests {
             .find(|&id| app.arena.nodes[id].path.ends_with("x"))
             .unwrap();
         assert!(app.arena.nodes[x2].expanded, "expansion must survive '.'");
+    }
+
+    /// A fake in-flight op whose worker never answers.
+    fn running_op() -> (crate::ops::OpState, mpsc::Sender<crate::ops::OpMsg>) {
+        let (tx, rx) = mpsc::channel();
+        let op = crate::ops::OpState {
+            kind: crate::ops::OpKind::Copy,
+            label: "1 item".into(),
+            done_bytes: 0,
+            total_bytes: 10,
+            indeterminate: false,
+            started_at: std::time::Instant::now(),
+            rx,
+            reveal_hint: None,
+            finished: None,
+            cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        };
+        (op, tx)
+    }
+
+    fn press(app: &mut App, code: KeyCode, tx: &mpsc::Sender<PathBuf>) {
+        use crossterm::event::{KeyEvent, KeyModifiers};
+        let km = Keymap::build(&Default::default());
+        let mut chord = String::new();
+        let start = app.arena.nodes[app.arena.root].path.clone();
+        handle_key(app, &KeyEvent::new(code, KeyModifiers::NONE), &km, &mut chord, &start, tx)
+            .unwrap();
+    }
+
+    #[test]
+    fn ops_run_in_background_and_esc_cancels() {
+        let d = tempdir().unwrap();
+        std::fs::write(d.path().join("a"), "1").unwrap();
+        std::fs::write(d.path().join("b"), "1").unwrap();
+        let (mut app, tx, _rx) = app_at(d.path());
+        let (op, _keep) = running_op();
+        let cancel = op.cancel.clone();
+        app.op = Some(op);
+        app.selected = 1;
+        press(&mut app, KeyCode::Char('j'), &tx);
+        assert_eq!(app.selected, 2, "navigation must work while an op runs");
+        press(&mut app, KeyCode::Char('q'), &tx);
+        assert!(!app.should_quit, "quit must refuse while an op runs");
+        press(&mut app, KeyCode::Esc, &tx);
+        assert!(cancel.load(std::sync::atomic::Ordering::Relaxed), "Esc cancels the op");
+    }
+
+    #[test]
+    fn tab_flips_search_between_names_and_contents() {
+        let d = tempdir().unwrap();
+        let (mut app, tx, _rx) = app_at(d.path());
+        press(&mut app, KeyCode::Char('/'), &tx);
+        assert_eq!(app.mode, Mode::Search);
+        press(&mut app, KeyCode::Char('x'), &tx);
+        press(&mut app, KeyCode::Tab, &tx);
+        assert_eq!(app.mode, Mode::Input);
+        assert_eq!(app.pending, Some(Action::ContentSearch));
+        assert_eq!(app.input.value(), "x", "typed text survives the switch");
+        press(&mut app, KeyCode::Tab, &tx);
+        assert_eq!(app.mode, Mode::Search);
+        assert_eq!(app.pending, None);
+    }
+
+    #[test]
+    fn f_toggles_footer_in_state() {
+        let d = tempdir().unwrap();
+        let (mut app, tx, _rx) = app_at(d.path());
+        assert!(!app.state.hide_footer, "footer shows by default");
+        press(&mut app, KeyCode::Char('F'), &tx);
+        assert!(app.state.hide_footer);
+        let back = State::parse(&app.state.to_toml().unwrap());
+        assert!(back.hide_footer, "footer choice persists");
     }
 }

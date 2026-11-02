@@ -1,102 +1,23 @@
-//! Modal-overlay renderers (op progress, sort menu, help, input, confirm,
+//! Modal-overlay renderers (sort menu, help, input, confirm,
 //! devices picker, app picker).
 //!
 //! [`render_overlay`] is the entry point — it inspects `(app.mode,
 //! app.dialog)` and dispatches to the right per-overlay function.
 //! Order matters: SortMenu and Help live on Mode (not Dialog) so they
 //! must be matched before the Dialog catch-all.
-//!
-//! [`render_op_modal`] is intentionally separate from [`render_overlay`]
-//! — it is rendered before other overlays and unconditionally takes
-//! precedence so a long-running op is always visible.
 
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Clear, Gauge, Paragraph};
+use ratatui::widgets::{Clear, Paragraph};
 use ratatui::Frame;
 
 use crate::app::{App, Dialog};
 use crate::keymap::{Action, Keymap, Mode};
-use crate::ops::OpState;
 use crate::ui::modal;
 use crate::ui::theme::Theme;
 use crate::ui::viewport_around;
 
-/// Render the in-flight long-op modal (copy/move/extract). Byte-tracked
-/// ops show a Gauge; indeterminate ops (extract) show a spinner.
-pub fn render_op_modal(f: &mut Frame, body: Rect, op: &OpState, theme: &Theme) {
-    let r = modal::adaptive_rect(64, 7, body);
-    f.render_widget(Clear, r);
-    let block = modal::modal_block(op.kind.verb(), theme);
-    let inner = modal::pad_inner(block.inner(r));
-    f.render_widget(block, r);
-
-    // Row 0: label + elapsed.
-    let elapsed = op.started_at.elapsed().as_secs();
-    let label_rect = modal::sub_rect(inner, 0, 1);
-    f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                op.label.clone(),
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("  ·  {elapsed}s elapsed"),
-                modal::dim_style(theme),
-            ),
-        ])),
-        label_rect,
-    );
-
-    // Row 2: gauge or spinner.
-    let bar_rect = modal::sub_rect(inner, 2, 1);
-    if op.indeterminate || op.total_bytes == 0 {
-        let frame = modal::spinner_char(op.started_at.elapsed().as_millis());
-        f.render_widget(
-            Paragraph::new(Line::from(vec![
-                Span::styled(
-                    format!("{frame} "),
-                    Style::default()
-                        .fg(theme.symlink)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled("working…", modal::dim_style(theme)),
-            ])),
-            bar_rect,
-        );
-    } else {
-        let pct = (op.done_bytes as f64 / op.total_bytes as f64 * 100.0)
-            .clamp(0.0, 100.0) as u16;
-        // Trash progress is an item count, not bytes — human_bytes on a
-        // count like "7" would misleadingly render "7 B".
-        let label = if op.kind == crate::ops::OpKind::Trash {
-            format!("{} / {} items  ·  {}%", op.done_bytes, op.total_bytes, pct)
-        } else {
-            format!(
-                "{} / {}  ·  {}%",
-                crate::status::human_bytes(op.done_bytes),
-                crate::status::human_bytes(op.total_bytes),
-                pct
-            )
-        };
-        let gauge = Gauge::default()
-            .gauge_style(Style::default().fg(theme.symlink).bg(theme.selected_bg))
-            .percent(pct)
-            .label(label);
-        f.render_widget(gauge, bar_rect);
-    }
-
-    // Footer hint.
-    let footer_rect = modal::sub_rect(inner, inner.height.saturating_sub(1), 1);
-    f.render_widget(
-        Paragraph::new(Span::styled(
-            " esc / ctrl-c cancel · runs in background · tree refreshes when done",
-            modal::dim_style(theme),
-        )),
-        footer_rect,
-    );
-}
 
 /// Dispatch the (mode, dialog) pair to the correct overlay renderer.
 /// SortMenu and Help precede the Dialog::None catch-all because they
@@ -439,7 +360,7 @@ fn render_devices(
 
 fn render_input(f: &mut Frame, body: Rect, app: &App, theme: &Theme) {
     let title = match app.mode {
-        Mode::Search => "Search",
+        Mode::Search => "Search names (Tab: contents)",
         _ => match app.pending {
             Some(Action::PathInput) => "Go to path",
             Some(Action::Create) => "Create",
@@ -448,7 +369,7 @@ fn render_input(f: &mut Frame, body: Rect, app: &App, theme: &Theme) {
             Some(Action::ShellOnce) => "Shell",
             Some(Action::AddSmb) => "Add SMB share (smb://user@host/share)",
             Some(Action::Filter) => "Filter",
-            Some(Action::ContentSearch) => "Search contents (rg)",
+            Some(Action::ContentSearch) => "Search contents, rg (Tab: names)",
             Some(Action::ZoxideJump) => "Jump (zoxide)",
             _ => "Input",
         },

@@ -96,12 +96,16 @@ fn cursor_meta(app: &App) -> (String, String, String, String) {
 
 #[cfg(unix)]
 fn format_perms(n: &crate::tree::node::Node) -> String {
-    let mode = n.mode;
     let kind = match n.kind {
         crate::tree::node::NodeKind::Dir => 'd',
         crate::tree::node::NodeKind::Symlink => 'l',
         _ => '-',
     };
+    perms_string(kind, n.mode)
+}
+
+/// `drwxr-xr-x`-style string from a type char and raw mode bits.
+pub fn perms_string(kind: char, mode: u32) -> String {
     let bits = |s: u32| {
         let r = if (mode >> s) & 0o4 != 0 { 'r' } else { '-' };
         let w = if (mode >> s) & 0o2 != 0 { 'w' } else { '-' };
@@ -133,6 +137,18 @@ fn local_offset_secs(secs: u64) -> i64 {
 #[cfg(not(unix))]
 fn local_offset_secs(_secs: u64) -> i64 {
     0
+}
+
+/// Local `YYYY-MM-DD HH:MM` for the metadata panel.
+pub fn format_datetime(t: std::time::SystemTime) -> String {
+    let secs = t
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let local = secs.saturating_add_signed(local_offset_secs(secs));
+    let (y, m, d) = days_to_ymd(local / 86400);
+    let day = local % 86400;
+    format!("{y:04}-{m:02}-{d:02} {:02}:{:02}", day / 3600, day % 3600 / 60)
 }
 
 fn format_mtime(t: std::time::SystemTime) -> String {
@@ -218,8 +234,12 @@ pub fn render(area: Rect, frame: &mut Frame, app: &App) {
     }
     frame.render_widget(Paragraph::new(Line::from(left_spans)), segs[0]);
 
-    // Center: marks summary (or blank)
-    let center = if app.marks.is_empty() {
+    // Center: running op (the footer may be hidden), else marks summary.
+    let center = if let Some(op) = &app.op {
+        let spin = crate::ui::modal::spinner_char(op.started_at.elapsed().as_millis());
+        let pct = op.progress().0.map(|p| format!(" {p}%")).unwrap_or_default();
+        format!("{spin} {}{pct}", op.kind.verb())
+    } else if app.marks.is_empty() {
         String::new()
     } else {
         format!("{} sel • {}", app.marks.len(), human_bytes(app.marks_bytes()))

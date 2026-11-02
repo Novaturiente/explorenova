@@ -1,3 +1,4 @@
+pub mod footer;
 pub mod keyhints;
 pub mod modal;
 pub mod overlays;
@@ -366,7 +367,15 @@ pub fn render_frame(
             Constraint::Length(1),
         ])
         .split(f.area());
-    let body = outer[0];
+    let (body, footer_area) = if crate::ui::footer::shown(app, outer[0].height) {
+        let v = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(0), Constraint::Length(crate::ui::footer::HEIGHT)])
+            .split(outer[0]);
+        (v[0], Some(v[1]))
+    } else {
+        (outer[0], None)
+    };
     let prompt_area = outer[1];
     let keyhints_area = outer[2];
 
@@ -412,18 +421,14 @@ pub fn render_frame(
         }
     }
 
+    if let Some(area) = footer_area {
+        crate::ui::footer::render(f, area, app, &theme);
+    }
+
     // 3-segment status bar (Left: cursor meta/status, Center: selection,
     // Right: items + free disk). VISUAL flag is folded into Left segment.
     crate::status::render(prompt_area, f, app);
     crate::ui::keyhints::render(keyhints_area, f, app, keymap, &theme);
-
-    // In-flight long op: render a floating progress modal on top of
-    // everything else and return early so other modal arms don't paint
-    // over it. The op completion is detected and cleared in main.rs.
-    if let Some(op) = &app.op {
-        overlays::render_op_modal(f, body, op, &theme);
-        return;
-    }
 
     overlays::render_overlay(f, body, app, &theme, keymap);
 }

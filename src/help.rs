@@ -34,6 +34,7 @@ const ACTION_META: &[(Action, &str, &str)] = &[
     (Action::SidebarNextSection, "Panes / Tabs", "Sidebar: jump to next section"),
     (Action::ToggleBookmarksPane, "Panes / Tabs", "Toggle bookmarks pane"),
     (Action::TogglePreviewPane, "Panes / Tabs", "Toggle preview pane"),
+    (Action::ToggleFooter, "Panes / Tabs", "Toggle footer (processes / metadata / clipboard)"),
     (Action::PreviewScrollDown, "Panes / Tabs", "Scroll preview down"),
     (Action::PreviewScrollUp, "Panes / Tabs", "Scroll preview up"),
     (Action::ResizeShrink, "Panes / Tabs", "Shrink pane"),
@@ -59,7 +60,7 @@ const ACTION_META: &[(Action, &str, &str)] = &[
     (Action::SelectAllVisible, "Selection", "Select all visible"),
     (Action::ToggleVisualMode, "Selection", "Visual mode"),
     // Search / Bookmarks
-    (Action::Search, "Search / Bookmarks", "Fuzzy search"),
+    (Action::Search, "Search / Bookmarks", "Search (Tab: names / contents)"),
     (Action::SearchNext, "Search / Bookmarks", "Next match"),
     (Action::SearchPrev, "Search / Bookmarks", "Prev match"),
     (Action::TogglePin, "Search / Bookmarks", "Toggle pin"),

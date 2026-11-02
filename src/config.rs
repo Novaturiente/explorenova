@@ -12,6 +12,9 @@ pub const SAMPLE_CONFIG: &str = r##"# explorenova configuration
 # Show Nerd Font filetype icons in the tree.
 # icons = true
 
+# Footer metadata panel: read image/media/PDF tags with exiftool (if installed).
+# metadata_exiftool = true
+
 # Prompt y/N before trashing (x/Del). Permanent delete (X) always confirms.
 # confirm_trash = false
 
@@ -196,6 +199,10 @@ pub struct Config {
     /// opening a file of that type (o / Enter). Same `{file}`/`{paths}`/…
     /// placeholders as `[commands]`. No rule -> the OS default app.
     pub openers: BTreeMap<String, String>,
+    /// Footer metadata panel runs `exiftool` on images/media/PDFs (when
+    /// installed) for camera, size and duration tags.
+    #[serde(default = "default_true")]
+    pub metadata_exiftool: bool,
 }
 
 /// `$XDG_CONFIG_HOME/explorenova/scripts` (or `~/.config/...`). Home of the
@@ -214,6 +221,7 @@ impl Config {
         let mut c = Config { preview_max_bytes: 1_048_576, ..Default::default() };
         c.panes = PanesConfig::default();
         c.icons = true;
+        c.metadata_exiftool = true;
         c.preview = PreviewConfig::default();
         c.fs_refresh_debounce_ms = 150;
         c

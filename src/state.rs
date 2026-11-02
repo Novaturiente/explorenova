@@ -22,6 +22,9 @@ pub struct State {
     pub preview_pane: PaneOverride,
     pub sort: SortState,
     pub line_mode: crate::linemode::LineMode,
+    /// Footer panels (processes / metadata / clipboard) hidden with `F`.
+    /// Stored inverted so a missing key means "shown".
+    pub hide_footer: bool,
 }
 
 impl State {

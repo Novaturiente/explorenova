@@ -61,7 +61,33 @@ pub struct OpState {
     pub cancel: Arc<AtomicBool>,
 }
 
+/// A finished op, kept for the footer's processes panel.
+pub struct OpRecord {
+    pub kind: OpKind,
+    pub label: String,
+    pub result: Result<String, String>,
+}
+
 impl OpState {
+    /// Progress as (percent, text). `None` percent = indeterminate (spinner).
+    /// Trash counts items, everything else bytes.
+    pub fn progress(&self) -> (Option<u16>, String) {
+        if self.indeterminate || self.total_bytes == 0 {
+            return (None, "working…".to_string());
+        }
+        let pct = (self.done_bytes as f64 / self.total_bytes as f64 * 100.0).clamp(0.0, 100.0) as u16;
+        let text = if self.kind == OpKind::Trash {
+            format!("{} / {} items · {pct}%", self.done_bytes, self.total_bytes)
+        } else {
+            format!(
+                "{} / {} · {pct}%",
+                crate::status::human_bytes(self.done_bytes),
+                crate::status::human_bytes(self.total_bytes)
+            )
+        };
+        (Some(pct), text)
+    }
+
     pub fn request_cancel(&self) {
         self.cancel.store(true, Ordering::Relaxed);
     }
