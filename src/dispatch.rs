@@ -425,7 +425,7 @@ pub fn handle_key(
         Mode::Search | Mode::Input
             if matches!(app.dialog, Dialog::Devices { .. }) =>
         {
-            handle_devices_key(app, k, keymap);
+            handle_devices_key(app, k, keymap, git_tx);
         }
         Mode::Search | Mode::Input
             if matches!(app.dialog, Dialog::AppPick { .. }) =>
@@ -493,7 +493,12 @@ fn handle_help_key(app: &mut App, k: &KeyEvent) {
     }
 }
 
-fn handle_devices_key(app: &mut App, k: &KeyEvent, keymap: &Keymap) {
+fn handle_devices_key(
+    app: &mut App,
+    k: &KeyEvent,
+    keymap: &Keymap,
+    git_tx: &mpsc::Sender<std::path::PathBuf>,
+) {
     // Close on whatever opens the modal rather than a hardcoded 'M', which
     // went stale the moment show_devices was rebound and made 'M' untypeable
     // inside the modal for anyone who had not rebound it. Checked before the
@@ -528,7 +533,7 @@ fn handle_devices_key(app: &mut App, k: &KeyEvent, keymap: &Keymap) {
         KeyCode::Char('u') => devices_unmount_selected(app),
         KeyCode::Char('a') => devices_begin_add(app),
         KeyCode::Char('d') => devices_delete_selected(app),
-        KeyCode::Enter => devices_enter_selected(app),
+        KeyCode::Enter => devices_enter_selected(app, git_tx),
         _ => {}
     }
 }
@@ -618,7 +623,7 @@ fn devices_unmount_selected(app: &mut App) {
     }
 }
 
-fn devices_enter_selected(app: &mut App) {
+fn devices_enter_selected(app: &mut App, git_tx: &mpsc::Sender<std::path::PathBuf>) {
     let dev = match &app.dialog {
         Dialog::Devices { items, sel } => items.get(*sel).cloned(),
         _ => None,
@@ -628,30 +633,12 @@ fn devices_enter_selected(app: &mut App) {
         // mounted → cd then close. Try reveal within current arena
         // first; if the mountpoint is outside (typical: /run/media/...)
         // re-root the arena at the mountpoint.
-        let cd_ok = if app.navigate_to(&mp) {
-            true
-        } else {
-            let prev_hidden = app.arena.show_hidden;
-            match Arena::new(&mp) {
-                Ok(mut na) => {
-                    if prev_hidden {
-                        na.show_hidden = true;
-                        na.nodes[na.root].children = None;
-                        let _ = na.load_children(na.root);
-                        na.nodes[na.root].expanded = true;
-                    }
-                    na.set_sort(app.sort);
-                    app.arena = na;
-                    app.visible = app.arena.flatten();
-                    app.selected = 0;
-                    app.set_status(format!("rooted at {}", mp.display()));
-                    true
-                }
-                Err(e) => {
-                    app.set_err(format!("cannot open {}: {e}", mp.display()));
-                    false
-                }
-            }
+        // `reroot` (not an inline Arena::new) so marks, visual mode and
+        // the filter from the old tree are cleared: a stale mark made `x`
+        // trash an off-screen file after entering a drive.
+        let cd_ok = app.navigate_to(&mp) || {
+            reroot(app, &mp, git_tx);
+            app.arena.nodes[app.arena.root].path == mp
         };
         // Confine subsequent `ascend` to this mountpoint (network share
         // or removable disk) — the user can't browse above the mount.
@@ -1320,7 +1307,12 @@ pub fn handle(
             let target = app
                 .visible
                 .get(app.selected)
+                .filter(|&&id| id != app.arena.root)
                 .map(|&id| app.arena.nodes[id].path.clone());
+            if target.is_none() {
+                app.set_status("nothing to rename");
+                return Ok(());
+            }
             let seed = target
                 .as_ref()
                 .and_then(|p| p.file_name().map(|s| s.to_string_lossy().to_string()))
@@ -1849,10 +1841,12 @@ mod tests {
         };
         let before = app.shares.len();
         let keymap = Keymap::build(&Default::default());
+        let (git_tx, _git_rx) = mpsc::channel();
         handle_devices_key(
             &mut app,
             &KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
             &keymap,
+            &git_tx,
         );
         assert_eq!(app.shares.len(), before, "Ctrl-d must not delete a share");
     }

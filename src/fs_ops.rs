@@ -481,8 +481,10 @@ pub fn plan_bulk_rename(
     let mut seen = std::collections::HashSet::new();
     for n in news {
         let t = n.trim();
+        // 255 bytes is the per-name limit on Linux filesystems; catching it
+        // here keeps a doomed name from failing halfway through phase 2.
         if t.is_empty() || t == "." || t == ".." || t.contains('/')
-            || t.contains(std::path::MAIN_SEPARATOR)
+            || t.contains(std::path::MAIN_SEPARATOR) || t.len() > 255
         {
             return Err(format!("invalid name: {n:?}"));
         }
@@ -524,11 +526,19 @@ pub fn execute_bulk_rename(dir: &Path, pairs: &[(String, String)]) -> Result<(),
             return Err(format!("target exists: {n}"));
         }
     }
-    // Put everything parked back where it came from, best-effort.
-    let rewind = |parked: &[(PathBuf, &String)]| {
+    // Put everything parked back where it came from, best-effort. An original
+    // name that a phase-2 rename already filled is skipped: `rename` would
+    // replace that file and lose its contents. Such a file stays parked and
+    // its temp name is reported so the user can recover it.
+    let rewind = |parked: &[(PathBuf, &String)]| -> String {
+        let mut stuck = Vec::new();
         for (tmp, o) in parked {
-            let _ = std::fs::rename(tmp, dir.join(o.as_str()));
+            let orig = dir.join(o.as_str());
+            if occupied(&orig) || std::fs::rename(tmp, &orig).is_err() {
+                stuck.push(format!("{o} left as {}", tmp.display()));
+            }
         }
+        if stuck.is_empty() { String::new() } else { format!(" ({})", stuck.join(", ")) }
     };
     // Phase 1: park sources under collision-free temp names.
     let pid = std::process::id();
@@ -536,16 +546,16 @@ pub fn execute_bulk_rename(dir: &Path, pairs: &[(String, String)]) -> Result<(),
     for (i, (o, _)) in pairs.iter().enumerate() {
         let tmp = dir.join(format!(".en-bulk-{pid}-{i}"));
         if let Err(e) = std::fs::rename(dir.join(o), &tmp) {
-            rewind(&temps);
-            return Err(format!("{o}: {e}"));
+            let stuck = rewind(&temps);
+            return Err(format!("{o}: {e}{stuck}"));
         }
         temps.push((tmp, o));
     }
     // Phase 2: temps → finals.
     for (idx, ((tmp, _), (_, n))) in temps.iter().zip(pairs).enumerate() {
         if let Err(e) = std::fs::rename(tmp, dir.join(n)) {
-            rewind(&temps[idx..]);
-            return Err(format!("{n}: {e}"));
+            let stuck = rewind(&temps[idx..]);
+            return Err(format!("{n}: {e}{stuck}"));
         }
     }
     Ok(())
@@ -614,23 +624,22 @@ mod tests {
 
     #[test]
     fn bulk_rename_rewinds_a_failed_phase_two() {
-        // A directory in the way of a final name makes phase 2 fail; the
-        // parked files must come back rather than stay hidden under dots.
+        // Phase 2 lands a->b, then b->(300-byte name) fails ENAMETOOLONG.
+        // The rewind must not move parked B back over the new b (= A).
         let d = tempdir().unwrap();
         std::fs::write(d.path().join("a"), "A").unwrap();
         std::fs::write(d.path().join("b"), "B").unwrap();
-        // "a" renames away, so phase 0 allows the collision; the directory
-        // at that path makes the actual rename fail with ENOTEMPTY.
-        std::fs::create_dir(d.path().join("c")).unwrap();
-        std::fs::write(d.path().join("c/keep"), "x").unwrap();
-        let pairs = vec![("a".to_string(), "b".to_string()), ("b".to_string(), "c".to_string())];
-        assert!(execute_bulk_rename(d.path(), &pairs).is_err());
-        let parked: Vec<_> = std::fs::read_dir(d.path())
+        let long = "x".repeat(300);
+        let pairs = vec![("a".to_string(), "b".to_string()), ("b".to_string(), long)];
+        let err = execute_bulk_rename(d.path(), &pairs).unwrap_err();
+        assert!(err.contains("left as"), "stuck file must be reported: {err}");
+        let mut contents: Vec<String> = std::fs::read_dir(d.path())
             .unwrap()
             .flatten()
-            .filter(|e| e.file_name().to_string_lossy().starts_with(".en-bulk-"))
+            .map(|e| std::fs::read_to_string(e.path()).unwrap())
             .collect();
-        assert!(parked.is_empty(), "nothing may be left parked");
+        contents.sort();
+        assert_eq!(contents, vec!["A", "B"], "no file content may be lost");
     }
 
     #[test]

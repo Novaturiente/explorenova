@@ -78,7 +78,9 @@ fn run_silent(cmd: &mut Command) -> Option<std::process::ExitStatus> {
 
 pub const VIDEO_EXTS: &[&str] = &[
     "mp4", "mkv", "webm", "mov", "avi", "wmv", "flv", "m4v", "mpg",
-    "mpeg", "3gp", "ts",
+    "mpeg", "3gp",
+    // No "ts": it is far more often TypeScript than MPEG-TS, and as video it
+    // never got a text preview.
 ];
 
 pub fn is_video(ext_lower: &str) -> bool {

@@ -41,10 +41,15 @@ pub fn highlighted(path: &Path, max_bytes: u64) -> Option<Text<'static>> {
         // ESC, or BEL inside the line reaches the terminal raw through
         // the Span and repaints other panes with file content (the
         // xlsx/archive path sanitizes; this path must too).
-        let line = super::sanitize_plain(line);
+        // The \n goes back on: the defaults are the newline-terminated
+        // grammars, where a `#` comment ends at \n. Without it the comment
+        // never closed and a whole .sh/.py file rendered as one comment.
+        let line = format!("{}\n", super::sanitize_plain(line));
         let ranges = h.highlight_line(&line, ss).ok()?;
         let spans: Vec<Span<'static>> = ranges
             .into_iter()
+            .map(|(st, s)| (st, s.trim_end_matches('\n')))
+            .filter(|(_, s)| !s.is_empty())
             .map(|(st, s)| {
                 let c = st.foreground;
                 Span::styled(
@@ -98,6 +103,17 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn hash_comment_ends_at_line_end() {
+        let d = tempdir().unwrap();
+        let f = d.path().join("s.sh");
+        fs::write(&f, "# c\necho hi\n").unwrap();
+        let t = highlighted(&f, 1024).unwrap();
+        let comment = t.lines[0].spans[0].style.fg;
+        let echo = t.lines[1].spans.iter().find(|s| s.content.contains("echo")).unwrap();
+        assert_ne!(echo.style.fg, comment, "line after a # comment must not stay comment-coloured");
     }
 
     #[test]

@@ -45,6 +45,21 @@ impl State {
         toml::to_string_pretty(&clean).ok()
     }
 
+    /// Drop pins whose path no longer exists. Only a definite `NotFound`
+    /// removes one: EACCES/ESTALE/EIO mean "can't tell right now". Pins under
+    /// removable-mount roots are kept: an unplugged drive or unmounted share
+    /// is absent, not gone, and would lose its pins on every launch without it.
+    pub fn prune_missing_pins(&mut self) {
+        const MOUNT_ROOTS: &[&str] = &["/run/media", "/media", "/mnt", "/run/user"];
+        self.pinned.retain(|p| {
+            MOUNT_ROOTS.iter().any(|r| p.starts_with(r))
+                || !matches!(
+                    std::fs::symlink_metadata(p),
+                    Err(e) if e.kind() == std::io::ErrorKind::NotFound
+                )
+        });
+    }
+
     pub fn toggle_pin(&mut self, p: PathBuf) {
         if let Some(i) = self.pinned.iter().position(|b| b == &p) {
             self.pinned.remove(i);
@@ -147,6 +162,24 @@ mod tests {
         let out = s.to_toml().expect("must still serialize");
         let back = State::parse(&out);
         assert_eq!(back.pinned, vec![PathBuf::from("/good")]);
+    }
+
+    #[test]
+    fn prune_drops_missing_keeps_existing_and_mounts() {
+        let d = tempfile::tempdir().unwrap();
+        let mut s = State {
+            pinned: vec![
+                d.path().to_path_buf(),
+                d.path().join("gone"),
+                PathBuf::from("/run/media/nova/USB/x"),
+            ],
+            ..State::default()
+        };
+        s.prune_missing_pins();
+        assert_eq!(
+            s.pinned,
+            vec![d.path().to_path_buf(), PathBuf::from("/run/media/nova/USB/x")]
+        );
     }
 
     #[test]

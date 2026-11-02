@@ -185,9 +185,10 @@ fn main() -> Result<()> {
     let args = Args::parse();
 
     let sp = state_path();
-    let state = std::fs::read_to_string(&sp)
+    let mut state = std::fs::read_to_string(&sp)
         .map(|s| State::parse(&s))
         .unwrap_or_default();
+    state.prune_missing_pins();
 
     let (mut config, config_err, pinned_panes) = load_config();
     state.apply_to(&mut config.panes, &pinned_panes);

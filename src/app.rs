@@ -907,7 +907,7 @@ impl App {
     }
 
     pub fn toggle_mark(&mut self) {
-        if let Some(&id) = self.visible.get(self.selected) {
+        if let Some(&id) = self.visible.get(self.selected).filter(|&&id| id != self.arena.root) {
             let p = self.arena.nodes[id].path.clone();
             if self.marks.contains(&p) {
                 self.marks.remove(&p);
@@ -922,7 +922,8 @@ impl App {
     }
 
     pub fn select_all_visible(&mut self) {
-        for &id in &self.visible {
+        // The root row is the open folder itself, never an operand.
+        for &id in self.visible.iter().filter(|&&id| id != self.arena.root) {
             let p = self.arena.nodes[id].path.clone();
             self.marks.insert(p);
         }
@@ -940,7 +941,7 @@ impl App {
     /// Insert the cursor row's path into `marks` (idempotent; never
     /// removes). Used by visual-mode auto-mark on movement.
     pub fn mark_cursor(&mut self) {
-        if let Some(&id) = self.visible.get(self.selected) {
+        if let Some(&id) = self.visible.get(self.selected).filter(|&&id| id != self.arena.root) {
             self.marks.insert(self.arena.nodes[id].path.clone());
         }
     }
@@ -950,7 +951,7 @@ impl App {
     pub fn mark_range(&mut self, lo: usize, hi: usize) {
         let hi = hi.min(self.visible.len().saturating_sub(1));
         for i in lo..=hi {
-            if let Some(&id) = self.visible.get(i) {
+            if let Some(&id) = self.visible.get(i).filter(|&&id| id != self.arena.root) {
                 self.marks.insert(self.arena.nodes[id].path.clone());
             }
         }
@@ -1006,10 +1007,13 @@ impl App {
     }
 
     /// Single chokepoint for the "selection-if-any-else-cursor" rule.
+    /// Never yields the root row: it is the open folder itself, and the
+    /// cursor starts on it, so `x` at startup trashed the whole folder.
     pub fn targets(&self) -> Vec<PathBuf> {
+        let root = &self.arena.nodes[self.arena.root].path;
         if !self.marks.is_empty() {
-            self.marks.iter().cloned().collect()
-        } else if let Some(&id) = self.visible.get(self.selected) {
+            self.marks.iter().filter(|p| *p != root).cloned().collect()
+        } else if let Some(&id) = self.visible.get(self.selected).filter(|&&id| id != self.arena.root) {
             vec![self.arena.nodes[id].path.clone()]
         } else {
             Vec::new()
@@ -1132,7 +1136,10 @@ mod tests {
         let arena = Arena::new(std::path::Path::new(".")).unwrap_or_else(|_| {
             Arena::new(std::env::temp_dir().as_path()).unwrap()
         });
-        App::new(arena, Config::with_defaults(), State::default())
+        let mut a = App::new(arena, Config::with_defaults(), State::default());
+        // Row 0 is the root, which can't be marked; start on a child.
+        a.selected = 1;
+        a
     }
 
     /// Build an App rooted at `path` (unlike `app()`, which always roots
@@ -1195,6 +1202,7 @@ mod tests {
     #[test]
     fn down_then_up_returns_to_zero() {
         let mut a = app();
+        a.selected = 0;
         a.apply(Action::Down);
         a.apply(Action::Up);
         assert_eq!(a.selected, 0);
@@ -1357,15 +1365,26 @@ mod tests {
     fn select_all_visible_marks_every_visible_path() {
         let mut a = app();
         a.select_all_visible();
-        assert_eq!(a.marks.len(), a.visible.len());
-        for &id in &a.visible {
+        assert_eq!(a.marks.len(), a.visible.len() - 1, "root is never marked");
+        for &id in a.visible.iter().filter(|&&id| id != a.arena.root) {
             assert!(a.marks.contains(&a.arena.nodes[id].path));
         }
     }
 
     #[test]
+    fn root_row_is_never_a_target() {
+        let mut a = app();
+        a.selected = 0;
+        assert_eq!(a.visible[0], a.arena.root);
+        assert!(a.targets().is_empty(), "x on the root row must not trash the open folder");
+        a.toggle_mark();
+        assert!(a.marks.is_empty());
+    }
+
+    #[test]
     fn targets_returns_marks_when_nonempty_else_cursor() {
         let mut a = app();
+        a.selected = 1;
         let cursor_path = a.arena.nodes[a.visible[a.selected]].path.clone();
         assert_eq!(a.targets(), vec![cursor_path.clone()]);
         a.toggle_mark();

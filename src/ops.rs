@@ -198,6 +198,14 @@ pub fn spawn_paste(srcs: Vec<PathBuf>, dst_dir: PathBuf, mode: PasteMode) -> OpS
             // Set when the bytes landed but the source could not be removed:
             // the destination is the good copy and must survive the error.
             let mut keep_dst_on_error = false;
+            // `claim_dest` picked a free name, but something can appear there
+            // before the write (another process, a flaky SMB stat). Never
+            // merge into, overwrite, or later clean up a path this op did
+            // not create.
+            if std::fs::symlink_metadata(&dst).is_ok() {
+                failed.push(format!("{}: destination appeared: {}", src.display(), dst.display()));
+                continue;
+            }
             let result: io::Result<()> = match mode {
                 // `copy_dir_recursive` classifies with `symlink_metadata` and
                 // dispatches to itself, `copy_file_chunked`, or a fresh
@@ -263,7 +271,8 @@ pub fn spawn_paste(srcs: Vec<PathBuf>, dst_dir: PathBuf, mode: PasteMode) -> OpS
                     // so a half-copied directory (or a file that failed on a
                     // full disk) would otherwise sit in the destination
                     // looking like a complete item.
-                    if !keep_dst_on_error {
+                    // AlreadyExists = someone else's file is at `dst`.
+                    if !keep_dst_on_error && e.kind() != io::ErrorKind::AlreadyExists {
                         let _ = if is_real_dir(&dst) {
                             std::fs::remove_dir_all(&dst)
                         } else {
