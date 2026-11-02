@@ -77,10 +77,38 @@ const ACTION_META: &[(Action, &str, &str)] = &[
     (Action::Quit, "Shell / Misc", "Quit"),
 ];
 
+/// Sort-menu keys. They live in `Keymap::resolve`'s `Mode::SortMenu` arm
+/// rather than in `defaults()`, so `keys_for` finds nothing for them and
+/// they were missing from the overlay entirely. Keep in sync with keymap.rs.
+const SORT_ROWS: &[(&str, &str)] = &[
+    ("Sort by name", "1 / n"),
+    ("Sort by size", "2 / s"),
+    ("Sort by mtime", "3 / m"),
+    ("Sort by extension", "4 / e"),
+    ("Toggle reverse order", "r"),
+    ("Toggle dirs first", "d"),
+];
+
+/// Printable name for a chord token. `" "` is a real binding (ToggleMark)
+/// but renders as a bold blank, so it needs a word; every other token is
+/// already a visible glyph or a name like `ctrl-d`.
+fn key_label(chord: &str) -> &str {
+    if chord.trim().is_empty() {
+        "Space"
+    } else {
+        chord
+    }
+}
+
 pub fn build_entries(km: &Keymap) -> Vec<HelpCategory> {
     let mut out: Vec<HelpCategory> = Vec::new();
     for &(action, cat, label) in ACTION_META {
-        let keys = km.keys_for(action).join(" / ");
+        let keys = km
+            .keys_for(action)
+            .iter()
+            .map(|k| key_label(k))
+            .collect::<Vec<_>>()
+            .join(" / ");
         if keys.is_empty() {
             continue;
         }
@@ -96,6 +124,13 @@ pub fn build_entries(km: &Keymap) -> Vec<HelpCategory> {
             rows: vec![row],
         });
     }
+    out.push(HelpCategory {
+        name: "Sort menu (after s)",
+        rows: SORT_ROWS
+            .iter()
+            .map(|(l, k)| (l.to_string(), k.to_string()))
+            .collect(),
+    });
     out
 }
 
@@ -186,7 +221,7 @@ pub fn render(
     frame: &mut Frame,
     entries: &[HelpCategory],
     theme: &Theme,
-    scroll: usize,
+    scroll: &mut usize,
     filter: &str,
 ) {
     use crate::ui::modal;
@@ -202,20 +237,11 @@ pub fn render(
         .height
         .saturating_sub(header_h + footer_h)
         .max(1) as usize;
-    let header_rect = ratatui::layout::Rect {
-        height: header_h,
-        ..inner
-    };
-    let body_rect = ratatui::layout::Rect {
-        y: inner.y + header_h,
-        height: body_h as u16,
-        ..inner
-    };
-    let footer_rect = ratatui::layout::Rect {
-        y: inner.y + inner.height.saturating_sub(footer_h),
-        height: footer_h,
-        ..inner
-    };
+    // Clamped: a fixed offset on a short terminal put the body and footer
+    // below the modal's own border, over the panes behind it.
+    let header_rect = modal::sub_rect(inner, 0, header_h);
+    let body_rect = modal::sub_rect(inner, header_h, body_h as u16);
+    let footer_rect = modal::sub_rect(inner, inner.height.saturating_sub(footer_h), footer_h);
 
     // Filter row + separator.
     let filter_line = if filter.is_empty() {
@@ -243,6 +269,12 @@ pub fn render(
 
     // Body (filtered + scrolled).
     let all = build_lines(entries, theme, inner.width as usize, filter);
+    // Clamp the CALLER's value, not a local copy. `End` sets help_scroll to
+    // a huge sentinel and the old code clamped only for display, so the
+    // stored number stayed near usize::MAX and `Up` spent the rest of the
+    // session decrementing from about 4.6 quintillion.
+    *scroll = (*scroll).min(all.len().saturating_sub(body_h));
+    let scroll = *scroll;
     if all.is_empty() {
         frame.render_widget(
             Paragraph::new(Span::styled(
@@ -277,6 +309,32 @@ pub fn render(
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn end_then_up_scrolls_back_one_row() {
+        // `End` sets help_scroll to a huge sentinel. render used to clamp a
+        // local copy for display only, so the stored value stayed near
+        // usize::MAX and every `Up` afterwards decremented from about 4.6
+        // quintillion — the overlay looked frozen at the bottom forever.
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let km = crate::keymap::Keymap::build(&Default::default());
+        let entries = build_entries(&km);
+        let theme = crate::ui::theme::Theme::default();
+        let mut term = Terminal::new(TestBackend::new(78, 30)).unwrap();
+
+        let mut scroll = usize::MAX / 2;
+        term.draw(|f| render(f.area(), f, &entries, &theme, &mut scroll, ""))
+            .unwrap();
+        let at_end = scroll;
+        assert!(at_end < 10_000, "End must land on a real row, got {at_end}");
+
+        scroll = scroll.saturating_sub(1);
+        term.draw(|f| render(f.area(), f, &entries, &theme, &mut scroll, ""))
+            .unwrap();
+        assert_eq!(scroll, at_end - 1, "Up must move exactly one row");
+    }
+
     use super::*;
     use std::collections::BTreeMap;
 
@@ -338,6 +396,38 @@ mod tests {
                 continue;
             }
             assert!(documented.contains(&action), "undocumented action: {action:?}");
+        }
+    }
+
+    #[test]
+    fn space_chord_renders_as_a_word() {
+        let km = Keymap::build(&BTreeMap::new());
+        let cats = build_entries(&km);
+        let row = cats
+            .iter()
+            .flat_map(|c| &c.rows)
+            .find(|(l, _)| l == "Toggle mark")
+            .expect("Toggle mark documented");
+        assert_eq!(row.1, "Space", "a bare space renders as a blank");
+    }
+
+    #[test]
+    fn sort_menu_keys_are_documented() {
+        let km = Keymap::build(&BTreeMap::new());
+        let cats = build_entries(&km);
+        let sort = cats
+            .iter()
+            .find(|c| c.name.starts_with("Sort menu"))
+            .expect("sort section present");
+        assert_eq!(sort.rows.len(), 6);
+        // The keys must match what Keymap::resolve actually accepts.
+        for (_, keys) in &sort.rows {
+            for k in keys.split(" / ") {
+                assert!(
+                    km.resolve(crate::keymap::Mode::SortMenu, k).is_some(),
+                    "help lists an unbound sort key: {k:?}"
+                );
+            }
         }
     }
 

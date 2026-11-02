@@ -1,7 +1,7 @@
 //! Background long-running file ops (copy/move/extract) with a
 //! progress channel back to the main loop.
 
-use crate::fs_ops::{copy_dir_recursive, copy_file_chunked, is_archive, unique_dest, CopyCtl, PasteMode};
+use crate::fs_ops::{copy_dir_recursive, is_archive, unique_dest, CopyCtl, PasteMode};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -70,24 +70,45 @@ impl OpState {
     /// op transitioned to finished during this poll.
     pub fn poll(&mut self) -> bool {
         let mut just_finished = false;
-        while let Ok(msg) = self.rx.try_recv() {
-            match msg {
-                OpMsg::Progress(d, t) => {
+        loop {
+            match self.rx.try_recv() {
+                Ok(OpMsg::Progress(d, t)) => {
                     self.done_bytes = d;
                     self.total_bytes = t;
                 }
-                OpMsg::Reveal(p) => {
+                Ok(OpMsg::Reveal(p)) => {
                     self.reveal_hint = Some(p);
                 }
-                OpMsg::Finished(r) => {
+                Ok(OpMsg::Finished(r)) => {
                     self.finished = Some(r);
                     just_finished = true;
+                    break;
+                }
+                Err(mpsc::TryRecvError::Empty) => break,
+                // The worker dropped its sender without ever sending
+                // Finished, which happens only if it panicked. Treating
+                // that as "nothing to read yet" left the spinner turning
+                // and the op modal up for the rest of the session.
+                Err(mpsc::TryRecvError::Disconnected) => {
+                    if self.finished.is_none() {
+                        self.finished = Some(Err("operation stopped unexpectedly".to_string()));
+                        just_finished = true;
+                    }
                     break;
                 }
             }
         }
         just_finished
     }
+}
+
+/// Directory test that does NOT follow symlinks. `Path::is_dir()` does, so
+/// a selected symlink-to-file used to take the plain-file copy branch and
+/// have its target's contents written into a regular file, destroying the
+/// link; a symlink-to-directory took the `remove_dir_all` branch on a
+/// cross-device move and failed with ENOTDIR after a successful copy.
+fn is_real_dir(p: &Path) -> bool {
+    std::fs::symlink_metadata(p).map(|m| m.is_dir()).unwrap_or(false)
 }
 
 /// Recursive byte total (best-effort; symlinks not followed).
@@ -174,14 +195,14 @@ pub fn spawn_paste(srcs: Vec<PathBuf>, dst_dir: PathBuf, mode: PasteMode) -> OpS
                 let _ = tx_progress.send(OpMsg::Progress(cur, total));
             };
             let ctl = CopyCtl { cancel: &cancel_worker, progress: &progress };
+            // Set when the bytes landed but the source could not be removed:
+            // the destination is the good copy and must survive the error.
+            let mut keep_dst_on_error = false;
             let result: io::Result<()> = match mode {
-                PasteMode::Copy => {
-                    if src.is_dir() {
-                        copy_dir_recursive(src, &dst, &ctl)
-                    } else {
-                        copy_file_chunked(src, &dst, &ctl)
-                    }
-                }
+                // `copy_dir_recursive` classifies with `symlink_metadata` and
+                // dispatches to itself, `copy_file_chunked`, or a fresh
+                // symlink, so it is the right entry point for all three.
+                PasteMode::Copy => copy_dir_recursive(src, &dst, &ctl),
                 PasteMode::Move => {
                     // Try rename first (instant on same filesystem).
                     match std::fs::rename(src, &dst) {
@@ -197,26 +218,25 @@ pub fn spawn_paste(srcs: Vec<PathBuf>, dst_dir: PathBuf, mode: PasteMode) -> OpS
                             // Cross-device → copy+remove, symlinks recreated
                             // (never dereferenced) by copy_dir_recursive.
                             // Remove the source ONLY on full copy success.
-                            let copy_result = if src.is_dir() {
-                                copy_dir_recursive(src, &dst, &ctl)
-                            } else {
-                                copy_file_chunked(src, &dst, &ctl)
-                            };
-                            copy_result.and_then(|_| {
-                                let rm = if src.is_dir() {
-                                    std::fs::remove_dir_all(src)
-                                } else {
-                                    std::fs::remove_file(src)
-                                };
-                                rm.map_err(|e| {
-                                    io::Error::new(
-                                        e.kind(),
-                                        format!(
-                                            "move partial — copied but source not removed: {e}"
-                                        ),
-                                    )
-                                })
-                            })
+                            match copy_dir_recursive(src, &dst, &ctl) {
+                                Err(e) => Err(e),
+                                Ok(()) => {
+                                    let rm = if is_real_dir(src) {
+                                        std::fs::remove_dir_all(src)
+                                    } else {
+                                        std::fs::remove_file(src)
+                                    };
+                                    rm.map_err(|e| {
+                                        keep_dst_on_error = true;
+                                        io::Error::new(
+                                            e.kind(),
+                                            format!(
+                                                "move partial — copied but source not removed: {e}"
+                                            ),
+                                        )
+                                    })
+                                }
+                            }
                         }
                     }
                 }
@@ -238,6 +258,18 @@ pub fn spawn_paste(srcs: Vec<PathBuf>, dst_dir: PathBuf, mode: PasteMode) -> OpS
                 }
                 Err(e) => {
                     done_shared.store(base_done, Ordering::Relaxed);
+                    // A failed copy leaves however much got written behind.
+                    // `copy_file_chunked` cleans up only its own cancel path,
+                    // so a half-copied directory (or a file that failed on a
+                    // full disk) would otherwise sit in the destination
+                    // looking like a complete item.
+                    if !keep_dst_on_error {
+                        let _ = if is_real_dir(&dst) {
+                            std::fs::remove_dir_all(&dst)
+                        } else {
+                            std::fs::remove_file(&dst)
+                        };
+                    }
                     failed.push(format!("{}: {e}", src.display()));
                     let _ = tx.send(OpMsg::Progress(base_done, total));
                 }
@@ -637,6 +669,67 @@ mod tests {
         std::fs::create_dir(d.path().join("sub")).unwrap();
         std::fs::write(d.path().join("sub/b"), b"abcdef").unwrap();
         assert_eq!(size_of(d.path()), 10);
+    }
+
+    #[test]
+    fn poll_reports_a_worker_that_died_without_finishing() {
+        // A dropped sender with no Finished means the worker panicked.
+        // Reading it as "nothing yet" left the op modal and its spinner up
+        // for the rest of the session with no way to dismiss them.
+        let (tx, rx) = mpsc::channel();
+        let mut op = OpState {
+            kind: OpKind::Copy,
+            label: "Copying 1 item".into(),
+            done_bytes: 0,
+            total_bytes: 1,
+            indeterminate: false,
+            started_at: Instant::now(),
+            rx,
+            reveal_hint: None,
+            finished: None,
+            cancel: Arc::new(AtomicBool::new(false)),
+        };
+        assert!(!op.poll(), "an open channel is not a finished op");
+        drop(tx);
+        assert!(op.poll(), "a dead worker must end the op");
+        assert!(op.finished.as_ref().unwrap().is_err());
+    }
+
+    #[test]
+    fn a_failed_copy_leaves_nothing_behind_in_the_destination() {
+        // copy_file_chunked cleans up only its own cancel path, so a
+        // directory copy that failed on its second file used to leave a
+        // half-populated directory in the destination, looking exactly
+        // like a complete one.
+        use std::os::unix::fs::PermissionsExt;
+        let src = tempfile::tempdir().unwrap();
+        let sub = src.path().join("tree");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("a"), b"1234").unwrap();
+        let unreadable = sub.join("b");
+        std::fs::write(&unreadable, b"5678").unwrap();
+        std::fs::set_permissions(&unreadable, std::fs::Permissions::from_mode(0o000)).unwrap();
+        if std::fs::File::open(&unreadable).is_ok() {
+            // Running as root, where mode 000 means nothing. Nothing to test.
+            return;
+        }
+        let dst = tempfile::tempdir().unwrap();
+
+        let mut op = spawn_paste(
+            vec![sub.clone()],
+            dst.path().to_path_buf(),
+            crate::fs_ops::PasteMode::Copy,
+        );
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        while op.finished.is_none() && Instant::now() < deadline {
+            op.poll();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(op.finished.is_some(), "paste never finished");
+        assert!(
+            !dst.path().join("tree").exists(),
+            "a half-copied directory must not survive the failure"
+        );
     }
 
     #[test]

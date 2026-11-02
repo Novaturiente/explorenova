@@ -31,6 +31,14 @@ impl TextInput {
         self.caret
     }
 
+    /// The char immediately before the caret, if any. Callers that want to
+    /// look backwards must go through this: `value()` returns a `String` and
+    /// `caret` is a CHAR index, so byte-slicing the two together panics on
+    /// any multi-byte character.
+    pub fn char_before(&self) -> Option<char> {
+        self.caret.checked_sub(1).and_then(|i| self.chars.get(i).copied())
+    }
+
     pub fn insert(&mut self, c: char) {
         self.chars.insert(self.caret, c);
         self.caret += 1;

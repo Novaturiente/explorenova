@@ -23,6 +23,13 @@ use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+/// How often the loop may rewrite `state.toml` when no key was pressed.
+/// Key-driven changes are saved right away (see the loop).
+const STATE_SAVE_INTERVAL: Duration = Duration::from_secs(5);
+
+/// How often a keyless (timeout) tick may reconcile the fs-watch set.
+const IDLE_WATCH_SYNC_INTERVAL: Duration = Duration::from_secs(1);
+
 /// RAII guard: always restores the terminal, even on panic/early return.
 struct TermGuard;
 impl TermGuard {
@@ -67,17 +74,44 @@ fn state_path() -> PathBuf {
     base.join("explorenova").join("state.toml")
 }
 
-/// Collect the dirs the fs-watcher should currently cover: the active
-/// arena root + every expanded directory node. Each is watched
+/// Capture the parts of `App` that belong in `state.toml` and serialize.
+/// Returns `None` when the state cannot be represented (see
+/// [`State::to_toml`]), in which case the caller must NOT write.
+fn state_snapshot(app: &mut App, tree_only: bool) -> Option<String> {
+    // Persist the directory the user is actually in, not the one we
+    // happened to start in.
+    app.state.last_cwd = Some(app.arena.nodes[app.arena.root].path.clone());
+    if !tree_only {
+        app.state.capture_panes(&app.config.panes);
+    }
+    app.state.to_toml()
+}
+
+/// Collect the dirs the fs-watcher should currently cover: every on-screen
+/// pane's root + its expanded directory nodes. Each is watched
 /// NonRecursive so events arrive only for direct children — which is
 /// what the visible tree actually shows.
 fn watch_targets(app: &App) -> HashSet<PathBuf> {
     let mut out: HashSet<PathBuf> = HashSet::new();
-    out.insert(app.arena.nodes[app.arena.root].path.clone());
-    for n in &app.arena.nodes {
-        if n.is_dir() && n.expanded {
-            out.insert(n.path.clone());
+    // Walk `visible`, the flattened reachable tree, not `arena.nodes`, the
+    // flat store. Nodes orphaned by `reload_dir` keep `expanded == true` in
+    // the store until a compaction, so the store version kept asking for
+    // watches on directories that are no longer in the tree at all.
+    let collect = |out: &mut HashSet<PathBuf>, arena: &explorenova::tree::Arena, visible: &[usize]| {
+        out.insert(arena.nodes[arena.root].path.clone());
+        for &id in visible {
+            let n = &arena.nodes[id];
+            if n.is_dir() && n.expanded {
+                out.insert(n.path.clone());
+            }
         }
+    };
+    collect(&mut out, &app.arena, &app.visible);
+    // In split mode the other pane is on screen too, so it needs watching
+    // as much as the focused one; without this it sat stale until you
+    // swapped to it and pressed R.
+    for snap in &app.tabs {
+        collect(&mut out, &snap.arena, &snap.visible);
     }
     // Watch the enclosing repo's .git dir so external `git commit/add/
     // checkout` refresh the status glyphs without a manual R. HEAD and
@@ -109,25 +143,40 @@ fn sync_watches(
     use notify::{RecursiveMode, Watcher};
     let to_add: Vec<PathBuf> = desired.difference(watched).cloned().collect();
     let to_drop: Vec<PathBuf> = watched.difference(&desired).cloned().collect();
+    // Record only what actually installed. Assigning `desired` wholesale
+    // marked a failed watch as present, and since `to_add` is computed as
+    // `desired - watched`, that path was never passed to `watch()` again:
+    // one EACCES, or one delete-and-recreate that made the kernel drop the
+    // inotify watch, left that directory blind for the rest of the session.
+    let mut installed: HashSet<PathBuf> = desired.intersection(watched).cloned().collect();
     for p in &to_add {
-        let _ = watcher.watch(p.as_path(), RecursiveMode::NonRecursive);
+        if watcher.watch(p.as_path(), RecursiveMode::NonRecursive).is_ok() {
+            installed.insert(p.clone());
+        }
     }
     for p in &to_drop {
         let _ = watcher.unwatch(p.as_path());
     }
-    *watched = desired;
+    *watched = installed;
 }
 
-fn load_config() -> (Config, Option<String>) {
+/// Returns the parsed config, any parse error, and the pane keys the user
+/// pinned explicitly (which `State::apply_to` must not override).
+fn load_config() -> (Config, Option<String>, HashSet<String>) {
     let p = config_path();
     match std::fs::read_to_string(&p) {
-        Ok(s) => Config::load_str(&s),
+        Ok(s) => {
+            let (c, err) = Config::load_str(&s);
+            (c, err, explorenova::config::pinned_pane_keys(&s))
+        }
         Err(_) => {
             if let Some(parent) = p.parent() {
                 let _ = std::fs::create_dir_all(parent);
             }
             let _ = std::fs::write(&p, explorenova::config::SAMPLE_CONFIG);
-            (Config::with_defaults(), None)
+            // Every line in the sample is commented out, so nothing is
+            // pinned on a first run — state persists the whole layout.
+            (Config::with_defaults(), None, HashSet::new())
         }
     }
 }
@@ -140,8 +189,8 @@ fn main() -> Result<()> {
         .map(|s| State::parse(&s))
         .unwrap_or_default();
 
-    let (mut config, config_err) = load_config();
-    state.apply_to(&mut config.panes);
+    let (mut config, config_err, pinned_panes) = load_config();
+    state.apply_to(&mut config.panes, &pinned_panes);
     if args.tree_only {
         config.panes.bookmarks.visible = false;
         config.panes.preview.visible = false;
@@ -149,19 +198,31 @@ fn main() -> Result<()> {
     }
 
     let pwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-    let start = resolve_start_dir(args.path.clone(), state.last_cwd.clone(), pwd);
+    let (start, start_warning) = resolve_start_dir(args.path.clone(), state.last_cwd.clone(), pwd);
 
     let default_hook = std::panic::take_hook();
+    let ui_thread = std::thread::current().id();
     std::panic::set_hook(Box::new(move |info| {
-        let _ = disable_raw_mode();
-        let _ = execute!(io::stdout(), LeaveAlternateScreen);
-        default_hook(info);
+        // Only the UI thread's panic ends the session. The preview worker
+        // wraps its render in `catch_unwind` and carries on, but a panic
+        // hook runs BEFORE unwinding, so tearing down unconditionally
+        // dropped a perfectly healthy app out of the alternate screen and
+        // painted a backtrace over it when syntect or `image` choked on a
+        // malformed file.
+        if std::thread::current().id() == ui_thread {
+            let _ = disable_raw_mode();
+            let _ = execute!(io::stdout(), LeaveAlternateScreen);
+            default_hook(info);
+        }
     }));
 
     let arena = Arena::new(&start)?;
     let mut app = App::new(arena, config, state.clone());
     if let Some(e) = config_err {
         app.set_err(format!("config error: {e} (using defaults)"));
+    }
+    if let Some(w) = start_warning {
+        app.set_err(format!("{w} — opened {} instead", start.display()));
     }
     let sharesp = shares_path();
     app.shares = explorenova::smb::load(&sharesp);
@@ -208,12 +269,16 @@ fn main() -> Result<()> {
     {
         let start_root = start.clone();
         std::thread::spawn(move || {
-            let send = |r| { let _ = git_res_tx.send(r); };
-            send(scan_status(&start_root).unwrap_or_default());
+            // Send the root each result describes, and send the failure as a
+            // failure. `unwrap_or_default()` turned any git2 error — an index
+            // lock held during a rebase, a permissions problem — into an empty
+            // map, which the consumer reads as "every file is clean".
+            let send = |root: PathBuf, r| { let _ = git_res_tx.send((root, r)); };
+            send(start_root.clone(), scan_status(&start_root).ok());
             while let Ok(root) = git_rx.recv() {
                 // Coalesce a burst of triggers into one scan of the latest root.
                 let root = explorenova::git::coalesce_latest(root, git_rx.try_iter());
-                send(scan_status(&root).unwrap_or_default());
+                send(root.clone(), scan_status(&root).ok());
             }
         });
     }
@@ -243,13 +308,29 @@ fn main() -> Result<()> {
     let mut fs_dirty_since: Option<Instant> = None;
     let mut pending_dirs: HashSet<PathBuf> = HashSet::new();
     let mut git_dirty = false;
+    // State used to be written once, after the loop, so a panic, a SIGTERM
+    // or a kill lost the session's pins, pane layout and sort settings
+    // outright. Now it is written whenever it actually changes, throttled
+    // so a held key cannot turn into a write per frame.
+    let mut last_saved: Option<String> = None;
+    let mut last_save_at = Instant::now();
+    let mut last_idle_sync = Instant::now();
 
     loop {
         // Pull in any preview that finished rendering off-thread; a fresh
         // one means the preview pane has new content to show.
         let preview_ready = preview_cache.drain();
 
-        while let Ok(map) = git_res_rx.try_recv() {
+        while let Ok((scanned_root, map)) = git_res_rx.try_recv() {
+            // A scan that started before a re-root describes a different
+            // tree; applying it would blank every glyph in the new one, and
+            // nothing would re-trigger a scan until the next fs event. The
+            // re-root already queued its own scan, so dropping this one
+            // costs nothing.
+            if scanned_root != app.arena.nodes[app.arena.root].path {
+                continue;
+            }
+            let Some(map) = map else { continue };
             // Absent-from-map means clean: resetting is what clears a
             // stale Modified/Added glyph after an external commit/stage.
             for n in app.arena.nodes.iter_mut() {
@@ -269,7 +350,12 @@ fn main() -> Result<()> {
                     git_dirty = true;
                     continue;
                 }
-                let dir = if watched.contains(&p) {
+                // `watched.contains` alone sent a deleted directory's own
+                // removal event to itself; `reload_dir` then hit its
+                // `Err(_) => return true` arm, reported success, and left
+                // the gone directory on screen as a ghost row. A path that
+                // is no longer a directory belongs to its parent.
+                let dir = if watched.contains(&p) && p.is_dir() {
                     p.clone()
                 } else {
                     p.parent().map(Path::to_path_buf).unwrap_or(p.clone())
@@ -321,7 +407,15 @@ fn main() -> Result<()> {
             if op.finished.is_some() {
                 let state = app.op.take().unwrap();
                 let reveal = state.reveal_hint.clone();
+                let kind = state.kind;
                 let res = state.finished.unwrap();
+                // A background mount or unmount changes what the sidebar's
+                // Disks section should say. `app.disks` was otherwise only
+                // assigned at startup and on the R key, so the share stayed
+                // listed as unmounted until the user noticed and refreshed.
+                if matches!(kind, explorenova::ops::OpKind::Mount | explorenova::ops::OpKind::Unmount) {
+                    app.disks = explorenova::devices::build_rows(&app.shares);
+                }
                 let mut dirs = vec![app.arena.nodes[app.arena.root].path.clone()];
                 if let Some(dst) = reveal.as_ref().and_then(|p| p.parent()) {
                     dirs.push(dst.to_path_buf());
@@ -340,10 +434,20 @@ fn main() -> Result<()> {
                         app.set_status(s);
                     }
                     Err(e) => {
-                        // Move failed — sources still exist; restore the cut
-                        // clipboard so the user can retry.
-                        if let Some(c) = app.cut_restore.take() {
-                            app.clipboard = Some(c);
+                        // Move failed — restore the cut clipboard so the user
+                        // can retry, but only for sources that are still
+                        // there. Restoring the whole stash meant a five-item
+                        // cut where four moved handed back all five, and the
+                        // retry reported four spurious failures for files
+                        // that had already arrived.
+                        if let Some((paths, is_cut)) = app.cut_restore.take() {
+                            let remaining: Vec<PathBuf> = paths
+                                .into_iter()
+                                .filter(|p| std::fs::symlink_metadata(p).is_ok())
+                                .collect();
+                            if !remaining.is_empty() {
+                                app.clipboard = Some((remaining, is_cut));
+                            }
                         }
                         app.set_err(format!("op failed: {e}"));
                     }
@@ -407,12 +511,24 @@ fn main() -> Result<()> {
             if app.op.is_some() { base.min(80) } else if preview_ready { 0 } else { base }
         };
         if !event::poll(Duration::from_millis(poll_ms))? {
+            // A timeout tick still has to reconcile: an op completion
+            // expands every ancestor of its destination with no key event
+            // involved, and those directories stayed unwatched until the
+            // user next pressed something. Throttled, because the expansions
+            // that reach here are rare and `watch_targets` stats every
+            // ancestor looking for a .git dir.
+            if last_idle_sync.elapsed() >= IDLE_WATCH_SYNC_INTERVAL {
+                last_idle_sync = Instant::now();
+                sync_watches(&mut watcher, &mut watched, watch_targets(&app));
+            }
             continue;
         }
+        let mut key_handled = false;
         if let Event::Key(k) = event::read()? {
             if k.kind == crossterm::event::KeyEventKind::Release {
                 continue;
             }
+            key_handled = true;
             let prev_selected_outer = app.selected;
             // `key_token` only maps chord-relevant keys; it returns None for
             // Backspace/Home/End/etc. That gate belongs to Normal-mode chord
@@ -463,21 +579,34 @@ fn main() -> Result<()> {
         // the next render.
         sync_watches(&mut watcher, &mut watched, watch_targets(&app));
 
+        // Save right after a key that changed state: closing the terminal
+        // window kills the process with SIGHUP, so waiting for the interval
+        // (or for `q`) lost a sort/pin change made just before closing.
+        // The snapshot compare below keeps unchanged keys write-free.
+        if key_handled || last_save_at.elapsed() >= STATE_SAVE_INTERVAL {
+            last_save_at = Instant::now();
+            if let Some(toml) = state_snapshot(&mut app, args.tree_only) {
+                if last_saved.as_deref() != Some(toml.as_str()) {
+                    if let Some(parent) = sp.parent() {
+                        let _ = std::fs::create_dir_all(parent);
+                    }
+                    let _ = explorenova::fs_ops::write_atomic(&sp, &toml);
+                    last_saved = Some(toml);
+                }
+            }
+        }
+
         if app.should_quit {
             break;
         }
     }
 
-    // Persist the directory the user is actually in at quit, so the next
-    // launch resumes there — not the directory we happened to start in.
-    app.state.last_cwd = Some(app.arena.nodes[app.arena.root].path.clone());
-    if !args.tree_only {
-        app.state.capture_panes(&app.config.panes);
+    if let Some(toml) = state_snapshot(&mut app, args.tree_only) {
+        if let Some(parent) = sp.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = explorenova::fs_ops::write_atomic(&sp, &toml);
     }
-    if let Some(parent) = sp.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    let _ = explorenova::fs_ops::write_atomic(&sp, &app.state.to_toml());
     // Shell-integration: drop the final directory so a wrapper can cd there.
     if let Some(cwd_file) = args.cwd_file.as_ref() {
         let _ = std::fs::write(

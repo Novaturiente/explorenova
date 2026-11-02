@@ -138,10 +138,14 @@ pub fn apps_for(path: &Path) -> Vec<AppEntry> {
 /// Resolve a real terminal-emulator binary: `$TERMINAL` if set, else the
 /// first known emulator found on `$PATH`. (`$TERM` is a terminfo name, not
 /// an executable, so it must NOT be used here.)
-fn terminal_cmd() -> Option<String> {
+/// Resolved as an argv, not a single string: `TERMINAL="kitty --detach"` is
+/// a perfectly ordinary setting and used to be handed to `Command::new`
+/// whole, which looks for a binary with a space in its name.
+fn terminal_cmd() -> Option<Vec<String>> {
     if let Ok(t) = std::env::var("TERMINAL") {
-        if !t.is_empty() {
-            return Some(t);
+        let argv: Vec<String> = t.split_whitespace().map(str::to_string).collect();
+        if !argv.is_empty() {
+            return Some(argv);
         }
     }
     let path = std::env::var("PATH").unwrap_or_default();
@@ -159,7 +163,7 @@ fn terminal_cmd() -> Option<String> {
     for cand in candidates {
         for dir in path.split(':').filter(|s| !s.is_empty()) {
             if std::path::Path::new(dir).join(cand).is_file() {
-                return Some(cand.to_string());
+                return Some(vec![cand.to_string()]);
             }
         }
     }
@@ -222,11 +226,26 @@ pub fn argv_bare(app: &AppEntry, file: &Path) -> Vec<String> {
     out
 }
 
+/// The argument that introduces "…and run this command" for a given
+/// emulator. `-e` is not universal: gnome-terminal dropped it in 3.x in
+/// favour of `--`, wezterm wants `start --`, and kitty and foot take the
+/// command straight after their own options.
+fn terminal_exec_args(bin: &str) -> Vec<String> {
+    let name = Path::new(bin).file_name().and_then(|s| s.to_str()).unwrap_or(bin);
+    match name {
+        "gnome-terminal" | "tilix" | "ptyxis" => vec!["--".to_string()],
+        "wezterm" => vec!["start".to_string(), "--".to_string()],
+        "kitty" | "foot" => Vec::new(),
+        _ => vec!["-e".to_string()],
+    }
+}
+
 pub fn argv(app: &AppEntry, file: &Path) -> Vec<String> {
     let out = argv_bare(app, file);
     if app.terminal {
         if let Some(term) = terminal_cmd() {
-            let mut wrapped = vec![term, "-e".to_string()];
+            let mut wrapped = term.clone();
+            wrapped.extend(terminal_exec_args(&term[0]));
             wrapped.extend(out);
             return wrapped;
         }
@@ -344,6 +363,15 @@ mod tests {
         };
         let v = argv(&a, Path::new("/tmp/x.rs"));
         assert_eq!(v, vec!["fake_term", "-e", "vim", "/tmp/x.rs"]);
+
+        // `TERMINAL="kitty --detach"` used to go to Command::new whole,
+        // which looks for a binary literally named "kitty --detach"; and
+        // kitty takes the command directly, with no `-e` in between.
+        std::env::set_var("TERMINAL", "kitty --detach");
+        let v = argv(&a, Path::new("/tmp/x.rs"));
+        assert_eq!(v, vec!["kitty", "--detach", "vim", "/tmp/x.rs"]);
+
         std::env::remove_var("TERMINAL");
     }
 }
+

@@ -208,12 +208,12 @@ impl Keymap {
     pub fn resolve(&self, mode: Mode, buffer: &str) -> Option<Action> {
         match mode {
             Mode::Normal => self.normal.get(buffer).copied(),
-            Mode::Search | Mode::Input => match buffer {
-                "esc" => Some(Action::Cancel),
-                "enter" => Some(Action::Toggle),
-                _ => None,
-            },
-            Mode::Confirm => None,
+            // Search, Input, Confirm and Help never arrive here: `handle_key`
+            // routes each of them to its own handler, which reads `KeyCode`
+            // directly so it can see the Backspace/Home/End keys that
+            // `key_token` drops. The mappings that used to sit here were
+            // dead code that looked authoritative.
+            Mode::Search | Mode::Input | Mode::Confirm | Mode::Help => None,
             Mode::SortMenu => match buffer {
                 "esc" => Some(Action::Cancel),
                 "1" | "n" => Some(Action::SortByName),
@@ -224,14 +224,22 @@ impl Keymap {
                 "d" => Some(Action::SortToggleDirFirst),
                 _ => None,
             },
-            // Help: any key dismisses (Cancel). Esc included.
-            Mode::Help => Some(Action::Cancel),
         }
     }
 
     /// Could `buffer` still grow into a binding (e.g. "g" -> "gg")?
+    ///
+    /// The match has to land on a token boundary. A plain `starts_with` made
+    /// `c` look like a prefix of `ctrl-d` and `e` like a prefix of `esc`,
+    /// even though both of those arrive from [`key_token`] whole and are
+    /// never typed letter by letter. Pressing such a key twice then left the
+    /// chord buffer showing a pending `c` in the status bar indefinitely,
+    /// because the dead-prefix retry re-pushed the token and the guard that
+    /// should have cleared it asked this same question again.
     pub fn is_prefix(&self, buffer: &str) -> bool {
-        self.normal.keys().any(|k| k.len() > buffer.len() && k.starts_with(buffer))
+        self.normal.keys().any(|k| {
+            k.len() > buffer.len() && k.starts_with(buffer) && on_token_boundary(k, buffer.len())
+        })
     }
 
     /// Would a single-token `[commands]` key shadow a builtin binding?
@@ -239,25 +247,77 @@ impl Keymap {
     /// modifier-free multi-key builtin chord (e.g. `g` begins `gg`) — pressing
     /// the command on `g` would prevent `gg` from ever resolving.
     ///
-    /// ponytail: modifier tokens (`ctrl-d`, `alt-x`) arrive whole and are never
-    /// grown key-by-key, so a command `c` is NOT a real prefix of `ctrl-d`. The
-    /// `!k.contains('-')` guard excludes those atomic chords from the prefix test.
+    /// Atomic tokens (`ctrl-d`, `esc`) arrive whole and are never grown
+    /// key-by-key, so a command on `c` is NOT a real prefix of `ctrl-d`;
+    /// [`on_token_boundary`] is what draws that line.
     pub fn would_shadow(&self, token: &str) -> bool {
         self.normal.contains_key(token)
             || self.normal.keys().any(|k| {
-                k.len() > token.len() && k.starts_with(token) && !k.contains('-')
+                k.len() > token.len() && k.starts_with(token) && on_token_boundary(k, token.len())
             })
     }
 
-    /// Reverse-lookup: all chords currently bound to `action`, sorted.
+    /// Reverse-lookup: all chords currently bound to `action`, most typeable
+    /// first.
+    ///
+    /// A plain `sort()` put `down` ahead of `j` and `del` ahead of `x`, and
+    /// the key-hint bar takes the first entry — so it advertised the arrow
+    /// key for movement and Delete for trash. Shortest first, alphabetical
+    /// within a length, puts the vim chord back in front.
     pub fn keys_for(&self, action: Action) -> Vec<String> {
         let mut v: Vec<String> = self.normal.iter()
             .filter(|(_, &a)| a == action)
             .map(|(k, _)| k.clone())
             .collect();
-        v.sort();
+        v.sort_by(|a, b| a.len().cmp(&b.len()).then_with(|| a.cmp(b)));
         v
     }
+}
+
+/// The multi-character bases [`key_token`] can produce. Longest first so
+/// `backtab` is not read as `tab`.
+const NAMED_BASES: [&str; 9] =
+    ["backtab", "enter", "right", "left", "down", "esc", "tab", "del", "up"];
+
+/// Split a chord back into the tokens it was concatenated from.
+fn chord_tokens(chord: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut rest = chord;
+    while !rest.is_empty() {
+        let mut len = 0;
+        for m in ["ctrl-", "alt-"] {
+            if rest[len..].starts_with(m) {
+                len += m.len();
+            }
+        }
+        let base = &rest[len..];
+        let base_len = NAMED_BASES
+            .iter()
+            .find(|n| base.starts_with(**n))
+            .map(|n| n.len())
+            .or_else(|| base.chars().next().map(char::len_utf8))
+            .unwrap_or(0);
+        if base_len == 0 {
+            break;
+        }
+        len += base_len;
+        out.push(&rest[..len]);
+        rest = &rest[len..];
+    }
+    out
+}
+
+/// Does byte offset `at` fall between two tokens of `chord`? Only there can
+/// a chord buffer legitimately still be growing.
+fn on_token_boundary(chord: &str, at: usize) -> bool {
+    let mut off = 0;
+    for t in chord_tokens(chord) {
+        if off == at {
+            return true;
+        }
+        off += t.len();
+    }
+    off == at
 }
 
 /// Reduce a crossterm KeyEvent to a chord token.
@@ -287,6 +347,25 @@ pub fn key_token(ev: &KeyEvent) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn atomic_tokens_are_not_growable_prefixes() {
+        let km = Keymap::build(&Default::default());
+        // `gg` is genuinely built one `g` at a time.
+        assert!(km.is_prefix("g"), "g must still wait for a second g");
+        // These only ever arrive whole from key_token, so an unbound `c`
+        // or `e` must resolve immediately instead of parking the buffer.
+        assert!(!km.is_prefix("c"), "c is not a prefix of ctrl-d");
+        assert!(!km.is_prefix("e"), "e is not a prefix of esc/enter");
+        assert!(!km.is_prefix("u"), "u is not a prefix of up");
+    }
+
+    #[test]
+    fn keys_for_puts_the_vim_chord_first() {
+        let km = Keymap::build(&Default::default());
+        assert_eq!(km.keys_for(Action::Down).first().map(String::as_str), Some("j"));
+    }
+
     use super::*;
     use std::collections::BTreeMap;
 

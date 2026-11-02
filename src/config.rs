@@ -22,6 +22,7 @@ pub const SAMPLE_CONFIG: &str = r##"# explorenova configuration
 # fs_refresh_debounce_ms = 150
 
 # --- Panes -------------------------------------------------------------
+# [panes]
 # order = ["bookmarks", "tree", "preview"]
 # [panes.bookmarks]
 # visible = true
@@ -88,6 +89,7 @@ pub const SAMPLE_CONFIG: &str = r##"# explorenova configuration
 # git_conflict = "red"
 # match_hl = "magenta"
 # mark = "light_yellow"
+# accent = "#cba6f7"
 # executable = "light_green"
 # symlink = "light_cyan"
 # media = "magenta"
@@ -250,8 +252,62 @@ impl Config {
     }
 }
 
+/// Pane keys the user wrote explicitly in `config.toml`, as dotted paths
+/// (`"order"`, `"bookmarks.visible"`, `"tree.weight"`, …).
+///
+/// `State::apply_to` skips these, so a hand-written config always beats the
+/// layout captured on the last quit. Without it, `capture_panes` writes
+/// `Some` for every field on each clean exit, and from the second run
+/// onward `state.toml` silently overrode whatever the user had configured.
+/// Only keys the user never pinned keep persisting across sessions.
+///
+/// A malformed file yields an empty set — `load_str` already fell back to
+/// defaults in that case, so there is nothing to pin.
+pub fn pinned_pane_keys(toml_src: &str) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    let Ok(v) = toml_src.parse::<toml::Value>() else { return out };
+    let Some(panes) = v.get("panes").and_then(|p| p.as_table()) else { return out };
+    if panes.contains_key("order") {
+        out.insert("order".to_string());
+    }
+    for pane in ["bookmarks", "tree", "preview"] {
+        let Some(t) = panes.get(pane).and_then(|p| p.as_table()) else { continue };
+        for field in ["visible", "width", "weight"] {
+            if t.contains_key(field) {
+                out.insert(format!("{pane}.{field}"));
+            }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn documented_pane_order_actually_binds() {
+        // `order` is a field of `PanesConfig`, so it belongs under
+        // `[panes]`. The sample used to document it at the top level,
+        // where `Config` ignores it in silence — and where the
+        // config-beats-state pinning would never see it either.
+        let src = "[panes]\norder = [\"preview\", \"tree\", \"bookmarks\"]\n";
+        let (cfg, err) = Config::load_str(src);
+        assert!(err.is_none(), "{err:?}");
+        assert_eq!(cfg.panes.order[0], "preview");
+        assert!(pinned_pane_keys(src).contains("order"));
+
+        let block = SAMPLE_CONFIG.split("--- Panes").nth(1).expect("panes section");
+        let header = block
+            .lines()
+            .position(|l| l.trim() == "# [panes]")
+            .expect("the sample must carry a [panes] header");
+        let order = block
+            .lines()
+            .position(|l| l.contains("order ="))
+            .expect("the sample must document `order`");
+        assert!(header < order, "the sample must show `order` under [panes]");
+    }
+
     use super::*;
 
     #[test]

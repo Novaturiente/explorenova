@@ -91,7 +91,13 @@ impl Arena {
                 // Follow the link (metadata, not symlink_metadata) to learn
                 // whether the target is a directory.
                 let link_to_dir = fs::metadata(p).map(|t| t.is_dir()).unwrap_or(false);
-                (NodeKind::Symlink, false, m.len(), mt, mode, link_to_dir)
+                // A link to a directory gets 0 like a real directory does.
+                // `m.len()` is the byte length of the target string, which
+                // the tree and status bar both render as blank for a dir —
+                // so in size-sort mode the row was ordered by a number
+                // nothing on screen showed.
+                let size = if link_to_dir { 0 } else { m.len() };
+                (NodeKind::Symlink, false, size, mt, mode, link_to_dir)
             }
             Ok(m) if m.is_dir() => {
                 let mt = m.modified().unwrap_or(SystemTime::UNIX_EPOCH);

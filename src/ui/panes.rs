@@ -2,7 +2,7 @@ use crate::tree::{Arena, NodeId};
 use crate::ui::theme::Theme;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 /// Build a styled line for one visible tree row. `width` is the inner
 /// width of the tree pane (i.e. `area.width - 2`); the git glyph is
@@ -64,18 +64,25 @@ pub fn tree_row<'a>(
         crate::tree::GitStatus::Added => theme.git_added,
         crate::tree::GitStatus::Untracked => theme.git_untracked,
         crate::tree::GitStatus::Conflicted => theme.git_conflict,
-        _ => theme.dim,
+        crate::tree::GitStatus::Deleted => theme.git_deleted,
+        crate::tree::GitStatus::Renamed => theme.git_renamed,
+        crate::tree::GitStatus::Ignored => theme.git_ignored,
+        crate::tree::GitStatus::Clean => theme.dim,
     };
 
     let mut spans: Vec<Span> = Vec::new();
     // Track displayed width so we can right-align the git glyph.
     let mut used: usize = 0;
-    if marked {
-        spans.push(Span::styled("* ", Style::default().fg(theme.mark)));
-        used += 2;
-    }
-    spans.push(Span::raw(indent.clone()));
+    // Fixed-width mark gutter. Pushing "* " only when marked shifted the
+    // whole row two cells right of its unmarked siblings, breaking the
+    // indent guides; reserve the two cells unconditionally instead.
+    spans.push(Span::styled(
+        if marked { "* " } else { "  " },
+        Style::default().fg(theme.mark),
+    ));
+    used += 2;
     used += indent.chars().count();
+    spans.push(Span::raw(indent));
     let marker_style = if selected {
         Style::default()
     } else {
@@ -84,39 +91,41 @@ pub fn tree_row<'a>(
     spans.push(Span::styled(marker.to_string(), marker_style));
     used += marker.chars().count();
     if icons {
-        let ic = crate::icons::icon_for(n.kind, n.expanded, &name);
-        spans.push(Span::styled(
-            format!("{ic} "),
-            Style::default().fg(type_color),
-        ));
+        let (ic, ic_color) = crate::icons::icon_for(n.kind, n.expanded, &name);
+        // A marked row keeps the mark colour on its icon too.
+        let ic_color = if marked { type_color } else { ic_color.unwrap_or(type_color) };
+        spans.push(Span::styled(format!("{ic} "), Style::default().fg(ic_color)));
         // Most Nerd Font glyphs occupy 1 cell; plus the trailing space.
         used += 2;
     }
-    // Display width, not char count: CJK/emoji names occupy 2 cells per
-    // glyph and would otherwise push the git glyph past the pane edge.
-    let name_cells = name.width();
     let name_style = if cut {
         Style::default().fg(type_color).add_modifier(Modifier::DIM)
     } else {
         Style::default().fg(type_color)
     };
-    spans.push(Span::styled(name.clone(), name_style));
-    used += name_cells;
 
     // Right side: optional linemode cell + 2-cell git glyph, right-aligned.
+    // The git column is reserved BEFORE the name is laid out — it is the
+    // row's only status signal, so a name too long for the pane gets
+    // truncated rather than pushing the glyph past the border, where the
+    // pane's own frame clipped it away.
     let lm = line_mode.cell(n);
-    let lm_cells = if lm.is_empty() { 0 } else { lm.width() + 1 };
     let total = width as usize;
     let git_cells = 2usize;
-    if used + git_cells + lm_cells < total {
-        let pad = total - used - git_cells - lm_cells;
-        spans.push(Span::raw(" ".repeat(pad)));
-        if !lm.is_empty() {
-            spans.push(Span::styled(format!("{lm} "), Style::default().fg(theme.dim)));
-        }
+    // One cell always separates the name from whatever follows it.
+    let mut avail = total.saturating_sub(used + git_cells + 1);
+    // Linemode is the droppable one: skip it when the name needs the room.
+    let lm_cells = if lm.is_empty() || lm.width() + 1 >= avail {
+        0
     } else {
-        // No room for the linemode cell — skip it; the git glyph still follows.
-        spans.push(Span::raw(" "));
+        lm.width() + 1
+    };
+    avail -= lm_cells;
+    let (shown, shown_cells) = truncate_cells(&name, avail);
+    spans.push(Span::styled(shown, name_style));
+    spans.push(Span::raw(" ".repeat(avail - shown_cells + 1)));
+    if lm_cells > 0 {
+        spans.push(Span::styled(format!("{lm} "), Style::default().fg(theme.dim)));
     }
     let git_style = if git_clean && !selected {
         Style::default().fg(theme.dim)
@@ -127,10 +136,80 @@ pub fn tree_row<'a>(
     Line::from(spans)
 }
 
+/// Truncate `s` to at most `max` display cells, marking the cut with `…`.
+/// Returns the string plus its width so the caller can pad exactly —
+/// `.len()` would be wrong for CJK/emoji, which occupy two cells each.
+fn truncate_cells(s: &str, max: usize) -> (String, usize) {
+    let w = s.width();
+    if w <= max {
+        return (s.to_string(), w);
+    }
+    if max == 0 {
+        return (String::new(), 0);
+    }
+    let budget = max - 1; // the ellipsis costs one cell
+    let mut out = String::new();
+    let mut used = 0usize;
+    for c in s.chars() {
+        let cw = c.width().unwrap_or(0);
+        if used + cw > budget {
+            break;
+        }
+        out.push(c);
+        used += cw;
+    }
+    out.push('…');
+    (out, used + 1)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::tempdir;
+
+    fn row_text(line: &Line) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn long_name_is_truncated_so_the_git_glyph_survives() {
+        let d = tempdir().unwrap();
+        let name = "a".repeat(200);
+        std::fs::write(d.path().join(&name), "x").unwrap();
+        let mut a = Arena::new(d.path()).unwrap();
+        let child = a.nodes[a.root].children.as_ref().unwrap()[0];
+        a.nodes[child].git = crate::tree::GitStatus::Modified;
+        let line = tree_row(&a, child, false, &Theme::default(), false, false, false, 30,
+            crate::linemode::LineMode::None);
+        let text = row_text(&line);
+        assert_eq!(text.width(), 30, "row must fill exactly the pane width: {text:?}");
+        assert!(text.ends_with("M "), "git glyph clipped off: {text:?}");
+        assert!(text.contains('…'), "name should be ellipsised: {text:?}");
+    }
+
+    #[test]
+    fn mark_does_not_shift_the_row() {
+        let d = tempdir().unwrap();
+        std::fs::write(d.path().join("z.txt"), "x").unwrap();
+        let a = Arena::new(d.path()).unwrap();
+        let child = a.nodes[a.root].children.as_ref().unwrap()[0];
+        let plain = row_text(&tree_row(&a, child, false, &Theme::default(), false, false,
+            false, 40, crate::linemode::LineMode::None));
+        let marked = row_text(&tree_row(&a, child, false, &Theme::default(), false, true,
+            false, 40, crate::linemode::LineMode::None));
+        assert_eq!(plain.find("z.txt"), marked.find("z.txt"),
+            "marking must not move the name");
+        assert!(marked.starts_with("* "));
+    }
+
+    #[test]
+    fn truncate_cells_counts_wide_glyphs() {
+        // 4 CJK chars = 8 cells; budget 5 keeps 2 chars (4 cells) + ellipsis.
+        let (s, w) = truncate_cells("日本語版", 5);
+        assert_eq!(w, 5);
+        assert_eq!(s, "日本…");
+        assert_eq!(truncate_cells("abc", 10), ("abc".to_string(), 3));
+    }
 
     #[test]
     fn row_renders_name() {

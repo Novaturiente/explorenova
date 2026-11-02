@@ -37,7 +37,7 @@ pub fn display_name(s: &str) -> String {
 }
 
 /// Build (pane_name, Constraint) pairs in display order from config,
-/// skipping hidden panes. Fixed `width` -> Length; else Ratio via weight.
+/// skipping hidden panes. Fixed `width` -> Length; else `Fill(weight)`.
 pub fn layout_constraints(p: &PanesConfig) -> Vec<(String, Constraint)> {
     let mut visible: Vec<(&str, &crate::config::PaneConfig)> = Vec::new();
     for name in &p.order {
@@ -57,18 +57,17 @@ pub fn layout_constraints(p: &PanesConfig) -> Vec<(String, Constraint)> {
     if visible.is_empty() {
         return vec![("tree".to_string(), Constraint::Ratio(1, 1))];
     }
-    let weight_sum: u32 = visible
-        .iter()
-        .filter(|(_, c)| c.width.is_none())
-        .map(|(_, c)| c.weight.max(1) as u32)
-        .sum::<u32>()
-        .max(1);
+    // Fill, not Ratio: a Ratio is a fraction of the WHOLE body, so with a
+    // fixed-width bookmarks pane also claiming columns the proportional
+    // panes over-subscribe and ratatui flattens them to equal widths (a
+    // configured 2:3 rendered 1:1, making `<`/`>` look inert). Fill hands
+    // out what is LEFT after the Length panes, weighted.
     visible
         .iter()
         .map(|(name, c)| {
             let con = match c.width {
                 Some(w) => Constraint::Length(w),
-                None => Constraint::Ratio(c.weight.max(1) as u32, weight_sum),
+                None => Constraint::Fill(c.weight.max(1)),
             };
             (name.to_string(), con)
         })
@@ -103,8 +102,10 @@ mod tests {
 
     #[test]
     fn bad_pane_names_fall_back_to_tree() {
-        let mut p = PanesConfig::default();
-        p.order = vec!["x".into(), "y".into(), "z".into()];
+        let p = PanesConfig {
+            order: vec!["x".into(), "y".into(), "z".into()],
+            ..PanesConfig::default()
+        };
         let cons = layout_constraints(&p);
         assert_eq!(cons.len(), 1);
         assert_eq!(cons[0].0, "tree");
@@ -120,12 +121,38 @@ mod tests {
 
     #[test]
     fn order_is_respected() {
-        let mut p = PanesConfig::default();
+        let mut p = PanesConfig {
+            order: vec!["preview".into(), "tree".into(), "bookmarks".into()],
+            ..PanesConfig::default()
+        };
         p.bookmarks.visible = true;
-        p.order = vec!["preview".into(), "tree".into(), "bookmarks".into()];
         let cons = layout_constraints(&p);
         assert_eq!(cons[0].0, "preview");
         assert_eq!(cons[2].0, "bookmarks");
+    }
+
+    #[test]
+    fn weights_split_the_space_left_by_fixed_panes() {
+        // 120 cols, bookmarks fixed at 24 -> 96 remain; a 2:3 tree/preview
+        // weight must land ~38/58, not the 48/48 that Ratio produced.
+        let mut p = PanesConfig::default();
+        p.bookmarks.visible = true;
+        p.bookmarks.width = Some(24);
+        p.tree.width = None;
+        p.tree.weight = 2;
+        p.preview.width = None;
+        p.preview.weight = 3;
+        let cons = layout_constraints(&p);
+        let areas = ratatui::layout::Layout::default()
+            .direction(ratatui::layout::Direction::Horizontal)
+            .constraints(cons.iter().map(|(_, c)| *c).collect::<Vec<_>>())
+            .split(ratatui::layout::Rect { x: 0, y: 0, width: 120, height: 10 });
+        let by = |n: &str| areas[cons.iter().position(|(k, _)| k == n).unwrap()].width;
+        assert_eq!(by("bookmarks"), 24);
+        assert_eq!(by("tree") + by("preview"), 96);
+        // 96 * 2/5 = 38.4, 96 * 3/5 = 57.6 — allow the rounding slop.
+        assert!((by("tree") as i32 - 38).abs() <= 1, "tree = {}", by("tree"));
+        assert!((by("preview") as i32 - 58).abs() <= 1, "preview = {}", by("preview"));
     }
 
     #[test]
@@ -176,6 +203,19 @@ mod tests {
         let label = short_bookmark_label(path);
         let sanitized = display_name(&label);
         assert_eq!(sanitized, "bad?[31mdir?name");
+    }
+
+    #[test]
+    fn image_cache_clear_releases_the_decoded_buffer() {
+        let picker = Picker::from_fontsize((8, 16));
+        let img = std::sync::Arc::new(image::DynamicImage::new_rgb8(4, 4));
+        let mut c = ImageCache {
+            key: Some((std::path::PathBuf::from("/x.png"), img.clone())),
+            proto: Some(picker.new_resize_protocol((*img).clone())),
+        };
+        c.clear();
+        assert!(c.key.is_none());
+        assert!(c.proto.is_none(), "the pixel buffer must go too, not just the key");
     }
 
     #[test]
@@ -230,6 +270,17 @@ pub fn make_picker() -> Picker {
 pub struct ImageCache {
     pub key: Option<(std::path::PathBuf, std::sync::Arc<image::DynamicImage>)>,
     proto: Option<StatefulProtocol>,
+}
+
+impl ImageCache {
+    /// Drop the decoded buffer. The protocol owns a full-resolution copy
+    /// of the image — tens of MB for a 4K photo — and it was only ever
+    /// replaced by the *next* image, so moving the cursor onto a text file
+    /// or a directory left it resident for the rest of the session.
+    pub fn clear(&mut self) {
+        self.key = None;
+        self.proto = None;
+    }
 }
 
 /// Render an already-decoded image into `area`, caching the protocol by
@@ -335,8 +386,10 @@ pub fn render_frame(
                 },
             ));
         }
-        v.push(("tree".to_string(), Constraint::Ratio(1, 2)));
-        v.push(("tree_other".to_string(), Constraint::Ratio(1, 2)));
+        // Fill so the two trees split whatever the bookmarks pane leaves,
+        // rather than each claiming half of the full body width.
+        v.push(("tree".to_string(), Constraint::Fill(1)));
+        v.push(("tree_other".to_string(), Constraint::Fill(1)));
         v
     } else {
         layout_constraints(&app.config.panes)

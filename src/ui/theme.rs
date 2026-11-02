@@ -11,8 +11,15 @@ pub struct Theme {
     pub git_added: Color,
     pub git_untracked: Color,
     pub git_conflict: Color,
+    /// Deleted / Renamed / Ignored used to share `dim`, leaving the three
+    /// indistinguishable from a clean row except for the letter.
+    pub git_deleted: Color,
+    pub git_renamed: Color,
+    pub git_ignored: Color,
     pub match_hl: Color,
     pub mark: Color,
+    /// Focus colour: active pane border + title, key hints.
+    pub accent: Color,
     pub executable: Color,
     pub symlink: Color,
     pub media: Color,
@@ -35,8 +42,12 @@ impl Default for Theme {
             git_added: Color::Rgb(166, 227, 161),   // Green  #a6e3a1
             git_untracked: Color::Rgb(137, 220, 235), // Sky    #89dceb
             git_conflict: Color::Rgb(243, 139, 168), // Red    #f38ba8
+            git_deleted: Color::Rgb(235, 160, 172),  // Maroon #eba0ac
+            git_renamed: Color::Rgb(203, 166, 247),  // Mauve  #cba6f7
+            git_ignored: Color::Rgb(127, 132, 156),  // Overlay1 #7f849c
             match_hl: Color::Rgb(245, 194, 231),    // Pink   #f5c2e7
             mark: Color::Rgb(250, 179, 135),        // Peach  #fab387
+            accent: Color::Rgb(203, 166, 247),      // Mauve  #cba6f7
             executable: Color::Rgb(148, 226, 213),  // Teal   #94e2d5
             symlink: Color::Rgb(116, 199, 236),     // Sapphire #74c7ec
             media: Color::Rgb(203, 166, 247),       // Mauve  #cba6f7
@@ -49,7 +60,7 @@ impl Default for Theme {
 
 impl Theme {
     /// ANSI-named palette: colors follow the user's terminal theme.
-    /// ponytail: 15 semantic roles mapped onto 16 ANSI colors — a few
+    /// ponytail: 18 semantic roles mapped onto 16 ANSI colors — a few
     /// near-collisions are unavoidable (header/selected_bg share Blue,
     /// but one is fg and one is bg). Opt-in via `[theme] preset = "terminal"`.
     pub fn terminal() -> Self {
@@ -61,8 +72,12 @@ impl Theme {
             git_added: Color::Green,
             git_untracked: Color::LightBlue,
             git_conflict: Color::Red,
+            git_deleted: Color::LightRed,
+            git_renamed: Color::LightMagenta,
+            git_ignored: Color::Gray,
             match_hl: Color::Magenta,
             mark: Color::LightYellow,
+            accent: Color::LightYellow,
             executable: Color::LightGreen,
             symlink: Color::LightCyan,
             media: Color::LightMagenta,
@@ -84,8 +99,12 @@ impl Theme {
             git_added: Color::Rgb(64, 160, 43),     // Green  #40a02b
             git_untracked: Color::Rgb(4, 165, 229), // Sky    #04a5e5
             git_conflict: Color::Rgb(210, 15, 57),  // Red    #d20f39
+            git_deleted: Color::Rgb(230, 69, 83),   // Maroon #e64553
+            git_renamed: Color::Rgb(136, 57, 239),  // Mauve  #8839ef
+            git_ignored: Color::Rgb(140, 143, 161), // Overlay1 #8c8fa1
             match_hl: Color::Rgb(234, 118, 203),    // Pink   #ea76cb
             mark: Color::Rgb(254, 100, 11),         // Peach  #fe640b
+            accent: Color::Rgb(136, 57, 239),       // Mauve  #8839ef
             executable: Color::Rgb(23, 146, 153),   // Teal   #179299
             symlink: Color::Rgb(32, 159, 181),      // Sapphire #209fb5
             media: Color::Rgb(136, 57, 239),        // Mauve  #8839ef
@@ -107,8 +126,12 @@ impl Theme {
             git_added: Color::Rgb(74, 222, 128),    // green
             git_untracked: Color::Rgb(56, 189, 248), // sky
             git_conflict: Color::Rgb(248, 113, 113), // red
+            git_deleted: Color::Rgb(251, 113, 133),  // rose
+            git_renamed: Color::Rgb(192, 132, 252),  // purple
+            git_ignored: Color::Rgb(130, 138, 156),  // muted slate
             match_hl: Color::Rgb(232, 121, 249),    // fuchsia
             mark: Color::Rgb(244, 114, 182),        // pink
+            accent: Color::Rgb(244, 114, 182),      // pink
             executable: Color::Rgb(52, 211, 153),   // emerald
             symlink: Color::Rgb(34, 211, 238),      // cyan
             media: Color::Rgb(167, 139, 250),       // violet
@@ -129,8 +152,12 @@ impl Theme {
             "git_added" => self.git_added = color,
             "git_untracked" => self.git_untracked = color,
             "git_conflict" => self.git_conflict = color,
+            "git_deleted" => self.git_deleted = color,
+            "git_renamed" => self.git_renamed = color,
+            "git_ignored" => self.git_ignored = color,
             "match_hl" => self.match_hl = color,
             "mark" => self.mark = color,
+            "accent" => self.accent = color,
             "executable" => self.executable = color,
             "symlink" => self.symlink = color,
             "media" => self.media = color,
@@ -248,6 +275,20 @@ mod tests {
         let (t, w) = Theme::from_config(&map(&[("preset", "superfile")]));
         assert_eq!(t.header, Theme::superfile().header);
         assert!(w.is_empty());
+    }
+
+    #[test]
+    fn git_states_are_visually_distinct() {
+        // Deleted/Renamed/Ignored fell through to `dim`, so the only cue
+        // was the glyph letter. Every preset must separate them.
+        for t in [Theme::default(), Theme::terminal(), Theme::light(), Theme::superfile()] {
+            for c in [t.git_deleted, t.git_renamed, t.git_ignored] {
+                assert_ne!(c, t.dim);
+            }
+            assert_ne!(t.git_deleted, t.git_renamed);
+            assert_ne!(t.git_deleted, t.git_ignored);
+            assert_ne!(t.git_renamed, t.git_ignored);
+        }
     }
 
     #[test]

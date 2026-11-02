@@ -18,26 +18,36 @@ pub struct Args {
 /// Resolve start dir. Precedence: explicit arg (with `~`/`$VAR` expansion),
 /// then the launch directory (`$PWD`), then persisted `last_cwd` (last
 /// resort, only when `$PWD` is not a usable directory).
+///
+/// The second element is a message for the status bar. An unusable path
+/// argument used to fall through in silence, so `explorenova /typo` opened
+/// the current directory and looked like it had simply ignored you.
 pub fn resolve_start_dir(
     arg: Option<PathBuf>,
     last_cwd: Option<PathBuf>,
     pwd: PathBuf,
-) -> PathBuf {
+) -> (PathBuf, Option<String>) {
+    let mut warning = None;
     if let Some(p) = arg {
         let expanded = PathBuf::from(crate::nav::expand(&p.to_string_lossy()));
         if expanded.is_dir() {
-            return expanded;
+            return (expanded, None);
         }
+        warning = Some(if expanded.is_file() {
+            format!("{} is a file, not a directory", expanded.display())
+        } else {
+            format!("{} not found", expanded.display())
+        });
     }
     if pwd.is_dir() {
-        return pwd;
+        return (pwd, warning);
     }
     if let Some(p) = last_cwd {
         if p.is_dir() {
-            return p;
+            return (p, warning);
         }
     }
-    pwd
+    (pwd, warning)
 }
 
 #[cfg(test)]
@@ -47,19 +57,21 @@ mod tests {
     #[test]
     fn arg_wins_when_dir_exists() {
         let d = std::env::temp_dir();
-        let got = resolve_start_dir(Some(d.clone()), None, PathBuf::from("/nope"));
+        let (got, warn) = resolve_start_dir(Some(d.clone()), None, PathBuf::from("/nope"));
         assert_eq!(got, d);
+        assert!(warn.is_none());
     }
 
     #[test]
     fn falls_back_to_pwd_when_nothing_valid() {
         let pwd = std::env::temp_dir();
-        let got = resolve_start_dir(
+        let (got, warn) = resolve_start_dir(
             Some(PathBuf::from("/does/not/exist")),
             Some(PathBuf::from("/also/not")),
             pwd.clone(),
         );
         assert_eq!(got, pwd);
+        assert!(warn.unwrap().contains("not found"), "a bad path must say so");
     }
 
     #[test]
@@ -67,7 +79,7 @@ mod tests {
         // Regression: launching `cd ~/X && explorenova` must open X,
         // not the persisted last_cwd.
         let pwd = std::env::temp_dir();
-        let got = resolve_start_dir(None, Some(PathBuf::from("/")), pwd.clone());
+        let (got, _) = resolve_start_dir(None, Some(PathBuf::from("/")), pwd.clone());
         assert_eq!(got, pwd);
     }
 
@@ -75,7 +87,7 @@ mod tests {
     fn tilde_arg_is_expanded() {
         let home = std::env::temp_dir();
         std::env::set_var("HOME", &home);
-        let got = resolve_start_dir(Some(PathBuf::from("~")), None, PathBuf::from("/nope"));
+        let (got, _) = resolve_start_dir(Some(PathBuf::from("~")), None, PathBuf::from("/nope"));
         assert_eq!(got, home);
     }
 

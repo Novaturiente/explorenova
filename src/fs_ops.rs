@@ -18,7 +18,16 @@ pub fn write_atomic(path: &Path, contents: &str) -> io::Result<()> {
     let tmp = PathBuf::from(tmp);
     {
         use std::io::Write;
-        let mut f = fs::File::create(&tmp)?;
+        use std::os::unix::fs::OpenOptionsExt;
+        // 0600: shares.toml can hold an SMB URL with a password in it, and
+        // state.toml leaks every path you have visited. `File::create` would
+        // apply the umask, which is 0644 on most desktops.
+        let mut f = fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(0o600)
+            .open(&tmp)?;
         f.write_all(contents.as_bytes())?;
         f.sync_all()?; // data hits disk BEFORE the rename can be journaled
     }
@@ -51,17 +60,28 @@ pub fn create(path: &Path) -> io::Result<()> {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        if !path.exists() {
-            fs::File::create(path)?;
+        // `create_new` refuses to follow a symlink sitting at `path`, and
+        // reports the already-exists case the plain `exists()` check used to.
+        match fs::OpenOptions::new().write(true).create_new(true).open(path) {
+            Ok(_) => Ok(()),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => Ok(()),
+            Err(e) => Err(e),
         }
-        Ok(())
     }
+}
+
+/// Existence test that does NOT follow symlinks. `Path::exists()` reports
+/// false for a dangling link, so a collision check built on it hands back a
+/// name that is already taken; opening it then follows the link and writes
+/// the payload to the link's target, outside the destination directory.
+fn occupied(p: &Path) -> bool {
+    fs::symlink_metadata(p).is_ok()
 }
 
 /// Non-colliding destination: `name.ext` -> `name (1).ext`, `(2)`, ...
 pub fn unique_dest(dir: &Path, file_name: &std::ffi::OsStr) -> PathBuf {
     let candidate = dir.join(file_name);
-    if !candidate.exists() {
+    if !occupied(&candidate) {
         return candidate;
     }
     let name = Path::new(file_name);
@@ -73,7 +93,7 @@ pub fn unique_dest(dir: &Path, file_name: &std::ffi::OsStr) -> PathBuf {
             None => format!("{stem} ({i})"),
         };
         let c = dir.join(fname);
-        if !c.exists() {
+        if !occupied(&c) {
             return c;
         }
     }
@@ -88,7 +108,7 @@ pub fn claim_dest(
     file_name: &std::ffi::OsStr,
     claimed: &mut std::collections::HashSet<PathBuf>,
 ) -> PathBuf {
-    let taken = |p: &Path| p.exists() || claimed.contains(p);
+    let taken = |p: &Path| occupied(p) || claimed.contains(p);
     let direct = dir.join(file_name);
     let chosen = if !taken(&direct) {
         direct
@@ -130,7 +150,7 @@ pub fn rename(path: &Path, new_name: &str) -> io::Result<PathBuf> {
     }
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let np = parent.join(new_name);
-    if np.exists() {
+    if occupied(&np) {
         return Err(io::Error::new(
             io::ErrorKind::AlreadyExists,
             "a file with that name already exists",
@@ -167,7 +187,10 @@ pub struct CopyCtl<'a> {
 pub fn copy_file_chunked(src: &Path, dst: &Path, ctl: &CopyCtl) -> io::Result<()> {
     use std::io::{Read, Write};
     let mut r = fs::File::open(src)?;
-    let mut w = fs::File::create(dst)?;
+    // `create_new`, not `create`: every caller reaches here with a name that
+    // `claim_dest` already found free, so a file at `dst` means either a race
+    // or a symlink planted to redirect the write. Both should fail loudly.
+    let mut w = fs::OpenOptions::new().write(true).create_new(true).open(dst)?;
     let mut buf = vec![0u8; 1024 * 1024];
     loop {
         if ctl.cancel.load(std::sync::atomic::Ordering::Relaxed) {
@@ -483,27 +506,47 @@ pub fn plan_bulk_rename(
 /// `pairs` are same-dir names (no separators — `plan_bulk_rename` already
 /// validates that).
 ///
-/// ponytail: phase-1 failure leaves earlier files parked under
-/// `.en-bulk-*` names — visible, recoverable, not silently lost; full
-/// rollback on partial failure is the upgrade path if this ever bites.
+/// Every failure rewinds: whatever is still parked goes back to its original
+/// name before the error returns. The parking name is a fixed-length
+/// `.en-bulk-<pid>-<i>` rather than one built from the original filename,
+/// which used to push long names past the 255-byte limit and so made the
+/// failure deterministic for exactly the files most worth renaming in bulk.
+///
+/// ponytail: a phase-2 failure leaves the renames that already landed in
+/// place and only rewinds the rest; undoing a successful `rename` needs a
+/// second pass that can itself fail, and the phase-0 check makes phase 2
+/// fail only on a genuine filesystem error.
 pub fn execute_bulk_rename(dir: &Path, pairs: &[(String, String)]) -> Result<(), String> {
     let olds: std::collections::HashSet<&str> = pairs.iter().map(|(o, _)| o.as_str()).collect();
     // Phase 0: a target may not collide with a file that is NOT being renamed away.
     for (_, n) in pairs {
-        if dir.join(n).exists() && !olds.contains(n.as_str()) {
+        if occupied(&dir.join(n)) && !olds.contains(n.as_str()) {
             return Err(format!("target exists: {n}"));
         }
     }
+    // Put everything parked back where it came from, best-effort.
+    let rewind = |parked: &[(PathBuf, &String)]| {
+        for (tmp, o) in parked {
+            let _ = std::fs::rename(tmp, dir.join(o.as_str()));
+        }
+    };
     // Phase 1: park sources under collision-free temp names.
-    let mut temps = Vec::new();
+    let pid = std::process::id();
+    let mut temps: Vec<(PathBuf, &String)> = Vec::new();
     for (i, (o, _)) in pairs.iter().enumerate() {
-        let tmp = dir.join(format!(".en-bulk-{i}-{o}"));
-        std::fs::rename(dir.join(o), &tmp).map_err(|e| format!("{o}: {e}"))?;
-        temps.push(tmp);
+        let tmp = dir.join(format!(".en-bulk-{pid}-{i}"));
+        if let Err(e) = std::fs::rename(dir.join(o), &tmp) {
+            rewind(&temps);
+            return Err(format!("{o}: {e}"));
+        }
+        temps.push((tmp, o));
     }
     // Phase 2: temps → finals.
-    for (tmp, (_, n)) in temps.iter().zip(pairs) {
-        std::fs::rename(tmp, dir.join(n)).map_err(|e| format!("{n}: {e}"))?;
+    for (idx, ((tmp, _), (_, n))) in temps.iter().zip(pairs).enumerate() {
+        if let Err(e) = std::fs::rename(tmp, dir.join(n)) {
+            rewind(&temps[idx..]);
+            return Err(format!("{n}: {e}"));
+        }
     }
     Ok(())
 }
@@ -529,6 +572,65 @@ mod tests {
         assert!(entries_escape("a/b/../../../evil"));
         assert!(!entries_escape("a.txt\nsub/dir/b.txt\nweird..name"));
         assert!(!entries_escape(""));
+    }
+
+    #[test]
+    fn unique_dest_skips_a_dangling_symlink() {
+        // `exists()` says false for a broken link, so the old code handed
+        // this name back as free and the copy followed the link out of `d`.
+        let d = tempdir().unwrap();
+        std::os::unix::fs::symlink("nowhere", d.path().join("a.txt")).unwrap();
+        let u = unique_dest(d.path(), std::ffi::OsStr::new("a.txt"));
+        assert_eq!(u.file_name().unwrap(), "a (1).txt");
+    }
+
+    #[test]
+    fn copy_refuses_to_write_through_a_planted_symlink() {
+        let d = tempdir().unwrap();
+        let src = d.path().join("payload");
+        std::fs::write(&src, "secret").unwrap();
+        let outside = d.path().join("outside.txt");
+        std::fs::write(&outside, "original").unwrap();
+        let dst = d.path().join("dst");
+        std::os::unix::fs::symlink(&outside, &dst).unwrap();
+        let cancel = AtomicBool::new(false);
+        let ctl = CopyCtl { cancel: &cancel, progress: &|_| {} };
+        assert!(copy_file_chunked(&src, &dst, &ctl).is_err());
+        assert_eq!(std::fs::read_to_string(&outside).unwrap(), "original");
+    }
+
+    #[test]
+    fn bulk_rename_handles_names_too_long_to_park() {
+        // The parking name used to be `.en-bulk-{i}-{original}`, which for a
+        // long name overflowed the 255-byte limit and failed every time.
+        let d = tempdir().unwrap();
+        let long = "l".repeat(250);
+        std::fs::write(d.path().join(&long), "x").unwrap();
+        let pairs = vec![(long.clone(), "short".to_string())];
+        execute_bulk_rename(d.path(), &pairs).unwrap();
+        assert!(d.path().join("short").is_file());
+        assert!(!d.path().join(&long).exists());
+    }
+
+    #[test]
+    fn bulk_rename_rewinds_a_failed_phase_two() {
+        // A directory in the way of a final name makes phase 2 fail; the
+        // parked files must come back rather than stay hidden under dots.
+        let d = tempdir().unwrap();
+        std::fs::write(d.path().join("a"), "A").unwrap();
+        std::fs::write(d.path().join("b"), "B").unwrap();
+        // "a" renames away, so phase 0 allows the collision; the directory
+        // at that path makes the actual rename fail with ENOTEMPTY.
+        std::fs::create_dir(d.path().join("c")).unwrap();
+        std::fs::write(d.path().join("c/keep"), "x").unwrap();
+        let pairs = vec![("a".to_string(), "b".to_string()), ("b".to_string(), "c".to_string())];
+        assert!(execute_bulk_rename(d.path(), &pairs).is_err());
+        let parked: Vec<_> = std::fs::read_dir(d.path())
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().starts_with(".en-bulk-"))
+            .collect();
+        assert!(parked.is_empty(), "nothing may be left parked");
     }
 
     #[test]

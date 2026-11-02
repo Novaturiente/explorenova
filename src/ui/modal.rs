@@ -42,6 +42,19 @@ pub fn pad_inner(inner: Rect) -> Rect {
     }
 }
 
+/// A `h`-row slice of `inner` starting `dy` rows down, clamped so it can
+/// never leave `inner`. Modals used to place their body and footer at
+/// fixed offsets, which on a ~8-row terminal painted them below the
+/// modal's own border, on top of the panes behind it.
+pub fn sub_rect(inner: Rect, dy: u16, h: u16) -> Rect {
+    let dy = dy.min(inner.height);
+    Rect {
+        y: inner.y + dy,
+        height: h.min(inner.height - dy),
+        ..inner
+    }
+}
+
 /// Consistent modal Block: rounded border + title, both in the theme
 /// header accent so popups stand out from the dimmed tree behind them.
 pub fn modal_block(title: &str, theme: &Theme) -> Block<'static> {
@@ -135,6 +148,20 @@ mod tests {
         assert!(r.height <= area.height);
         assert!(r.x + r.width <= area.x + area.width);
         assert!(r.y + r.height <= area.y + area.height);
+    }
+
+    #[test]
+    fn sub_rect_never_escapes_inner() {
+        let inner = Rect { x: 2, y: 5, width: 30, height: 3 };
+        // Footer placed at a fixed offset past the bottom.
+        let r = sub_rect(inner, 4, 2);
+        assert!(r.y + r.height <= inner.y + inner.height, "{r:?}");
+        assert_eq!(r.height, 0);
+        // Body taller than what is left.
+        let b = sub_rect(inner, 2, 10);
+        assert_eq!((b.y, b.height), (7, 1));
+        // Normal case is untouched.
+        assert_eq!(sub_rect(inner, 0, 2), Rect { y: 5, height: 2, ..inner });
     }
 
     #[test]

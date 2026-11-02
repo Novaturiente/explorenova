@@ -1,7 +1,7 @@
 # Maintainer: Nova <eecglobal.dev@gmail.com>
 
 pkgname=explorenova
-pkgver=0.1.0.r150.98bc772a
+pkgver=0.1.0.r273.f7035544
 pkgrel=1
 pkgdesc='Daily-driver Rust TUI file manager (ratatui + crossterm)'
 arch=('x86_64')
@@ -12,17 +12,17 @@ depends=(
   # Native C libraries linked dynamically (vendored builds fail under
   # makepkg's CachyOS toolchain — force system libs via env in build()).
   'libgit2' 'libssh2' 'oniguruma' 'openssl' 'zlib'
-  # Archive extraction (Enter on .tar/.zip/.7z/.gz/.bz2/.xz/.zst).
-  'tar' 'gzip' 'bzip2' 'xz' 'zstd' 'unzip' 'p7zip'
-  # Preview pipeline (PDF/AVIF/video thumbnails).
-  'poppler' 'libavif' 'ffmpegthumbnailer'
-  # Devices modal mount/unmount/list.
-  'udiskie'
-  # SMB network shares (gio mount smb://...).
-  'gvfs' 'gvfs-smb'
+  # Archive extraction (Enter on .tar/.zip/.gz/.bz2/.xz/.zst).
+  'tar' 'gzip' 'bzip2' 'xz' 'zstd' 'unzip'
 )
 makedepends=('cargo' 'git' 'pkgconf')
 optdepends=(
+  '7zip: extract .7z archives'
+  'poppler: PDF preview (pdftoppm)'
+  'libavif: AVIF image preview (avifdec)'
+  'ffmpegthumbnailer: video thumbnail preview'
+  'udiskie: devices modal mount/unmount/list'
+  'gvfs-smb: SMB network shares (gio mount)'
   'unrar: extract .rar archives (non-free, not pulled by default)'
   'wl-clipboard: copy-paths under Wayland (wl-copy)'
   'xclip: copy-paths under X11'

@@ -47,26 +47,8 @@ fn root_path_label(root: &std::path::Path, w: usize) -> String {
     let root_path = crate::ui::display_name(
         &crate::smb::gvfs_display_label(root).unwrap_or_else(|| root.display().to_string()),
     );
-    // Truncate by display cells so wide (CJK/emoji) path components
-    // don't overflow the title.
-    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
-    if root_path.width() > w {
-        let budget = w.saturating_sub(1); // room for the ellipsis
-        let mut tail_rev: Vec<char> = Vec::new();
-        let mut used = 0usize;
-        for c in root_path.chars().rev() {
-            let cw = c.width().unwrap_or(0);
-            if used + cw > budget {
-                break;
-            }
-            tail_rev.push(c);
-            used += cw;
-        }
-        let tail: String = tail_rev.into_iter().rev().collect();
-        format!("…{tail}")
-    } else {
-        root_path
-    }
+    // One shared cell-counting truncator; this used to carry its own copy.
+    crate::status::truncate_left(&root_path, w)
 }
 
 /// Render the tree pane. In split mode both `tree` and `tree_other`
@@ -133,14 +115,14 @@ pub fn render_pane_tree(
         format!(" {label} ")
     };
     let title_style = if is_active {
-        Style::default().fg(theme.mark).add_modifier(Modifier::BOLD)
+        Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
     } else {
         Style::default()
             .fg(theme.header)
             .add_modifier(Modifier::BOLD)
     };
     let border_style = if is_active {
-        Style::default().fg(theme.mark)
+        Style::default().fg(theme.accent)
     } else {
         Style::default().fg(theme.dim)
     };
@@ -169,15 +151,25 @@ pub fn render_pane_tree(
     f.render_stateful_widget(list, area, &mut st);
 }
 
-/// Icon + color span pair for a sidebar row's path (dir/file/etc, same
-/// classification the tree pane uses).
-fn path_icon_spans(path: &std::path::Path, label: &str, theme: &Theme) -> (String, ratatui::style::Color) {
-    let kind = if path.is_dir() {
-        crate::tree::NodeKind::Dir
-    } else {
-        crate::tree::NodeKind::File
-    };
-    let color = match crate::icons::classify(kind, false, label) {
+/// Icon + colour for a sidebar row, from the kind captured when the row
+/// was built. No filesystem access: this runs inside the draw path.
+/// Returns (glyph, icon colour, label colour).
+fn row_icon_spans(
+    row: &crate::sidebar::Row,
+    theme: &Theme,
+) -> (String, ratatui::style::Color, ratatui::style::Color) {
+    let kind = row.node_kind;
+    // Classify on the file name, not the row label: a pinned file's label
+    // is "parent/name", and a parent like "v1.2" would hand `ext()` the
+    // wrong suffix.
+    let name = row
+        .path
+        .as_deref()
+        .and_then(|p| p.file_name())
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| row.label.clone());
+    let label = name.as_str();
+    let color = match crate::icons::classify(kind, row.exec, label) {
         crate::icons::Kind::Dir => theme.dir,
         crate::icons::Kind::Symlink => theme.symlink,
         crate::icons::Kind::Exec => theme.executable,
@@ -185,7 +177,8 @@ fn path_icon_spans(path: &std::path::Path, label: &str, theme: &Theme) -> (Strin
         crate::icons::Kind::Archive => theme.archive,
         crate::icons::Kind::File => theme.file,
     };
-    (crate::icons::icon_for(kind, false, label).to_string(), color)
+    let (ic, ic_color) = crate::icons::icon_for(kind, false, label);
+    (ic.to_string(), ic_color.unwrap_or(color), color)
 }
 
 fn sidebar_row_item(row: &crate::sidebar::Row, app: &App, theme: &Theme) -> ListItem<'static> {
@@ -207,10 +200,10 @@ fn sidebar_row_item(row: &crate::sidebar::Row, app: &App, theme: &Theme) -> List
                 Span::styled(label, Style::default().fg(theme.file)),
             ]))
         }
-        (Some(p), None) => {
-            let (ic, color) = path_icon_spans(p, &label, theme);
+        (Some(_), None) => {
+            let (ic, ic_color, color) = row_icon_spans(row, theme);
             ListItem::new(Line::from(vec![
-                Span::styled(format!("{ic} "), Style::default().fg(color)),
+                Span::styled(format!("{ic} "), Style::default().fg(ic_color)),
                 Span::styled(label, Style::default().fg(color)),
             ]))
         }
@@ -240,14 +233,14 @@ fn render_sidebar_section(
         format!(" {} ", section.title())
     };
     let title_style = if active {
-        Style::default().fg(theme.mark).add_modifier(Modifier::BOLD)
+        Style::default().fg(theme.accent).add_modifier(Modifier::BOLD)
     } else {
         Style::default()
             .fg(theme.header)
             .add_modifier(Modifier::BOLD)
     };
     let border_style = if active {
-        Style::default().fg(theme.mark)
+        Style::default().fg(theme.accent)
     } else {
         Style::default().fg(theme.dim)
     };
@@ -289,7 +282,9 @@ fn render_sidebar_section(
 /// [`crate::sidebar::build`].
 pub fn render_pane_bookmarks(f: &mut Frame, area: Rect, app: &App, theme: &Theme) {
     let focused = app.focus == crate::app::Pane::Bookmarks;
-    let rows = crate::sidebar::build(app);
+    // Cached: `build` stats every pinned path, and doing that per frame
+    // stalls the loop on a dead network mount.
+    let rows = crate::sidebar::build_cached(app);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Ratio(1, 3); 3])
@@ -399,6 +394,9 @@ pub fn render_pane_preview(
             }
         }
         PreviewKind::Text(t) => {
+            // Selection is not an image any more — release the decoded
+            // pixel buffer instead of holding it until the next image.
+            img_cache.clear();
             // ctrl-j/ctrl-k scroll; clamp so the last line stays on screen.
             let max = t.lines.len().saturating_sub(1);
             let off = app.preview_scroll.min(max) as u16;
@@ -410,6 +408,9 @@ pub fn render_pane_preview(
                 inner,
             )
         }
-        PreviewKind::Meta(t) => f.render_widget(Paragraph::new(t.as_str()), inner),
+        PreviewKind::Meta(t) => {
+            img_cache.clear();
+            f.render_widget(Paragraph::new(t.as_str()), inner)
+        }
     }
 }

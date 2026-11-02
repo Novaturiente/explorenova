@@ -33,7 +33,7 @@ pub fn render(area: Rect, f: &mut Frame, app: &App, keymap: &Keymap, theme: &The
     if app.mode != Mode::Normal {
         return;
     }
-    let key_style = Style::default().fg(theme.mark).add_modifier(Modifier::BOLD);
+    let key_style = Style::default().fg(theme.accent).add_modifier(Modifier::BOLD);
     let label_style = Style::default().fg(theme.dim);
     let sep_style = Style::default().fg(theme.dim);
 

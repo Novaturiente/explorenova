@@ -58,6 +58,7 @@ pub fn reroot(app: &mut App, path: &Path, git_tx: &mpsc::Sender<std::path::PathB
                 let _ = na.load_children(na.root);
                 na.nodes[na.root].expanded = true;
             }
+            na.set_sort(app.sort);
             app.arena = na;
             app.filter_query.clear();
             app.filter_cands = None;
@@ -67,6 +68,10 @@ pub fn reroot(app: &mut App, path: &Path, git_tx: &mpsc::Sender<std::path::PathB
             // marks every row between the old and new cursor positions,
             // which would mark unrelated rows in the NEW tree.
             app.visual_mode = false;
+            // Marks are absolute paths with no root check in `targets()`,
+            // so a mark left over from the old tree would make trash /
+            // delete / copy act on a file that isn't on screen any more.
+            app.marks.clear();
             // Keep the mount boundary when rerooting deeper INTO the
             // mounted storage (Enter cd-in stays inside the mount); drop
             // it only when leaving the mount (Home/Trash/bookmark away).
@@ -168,6 +173,7 @@ fn rebuild(
             let _ = na.load_children(na.root);
         }
         na.nodes[na.root].expanded = true;
+        na.set_sort(app.sort);
         app.arena = na;
         // Replay expansions. `arena.reveal` only expands ANCESTORS of
         // the target — the target node itself stays collapsed. So we
@@ -209,6 +215,31 @@ pub fn refresh_in_place(app: &mut App, git_tx: &mpsc::Sender<std::path::PathBuf>
 /// Falls back to a full `refresh_in_place` if any changed dir isn't in
 /// the arena (e.g. a change above the current root).
 pub fn refresh_dirs(app: &mut App, dirs: &[std::path::PathBuf], git_tx: &mpsc::Sender<std::path::PathBuf>) {
+    // The inactive split pane is on screen next to this one, so an external
+    // change has to land there too. It used to sit stale until you swapped
+    // to it and pressed R, because the watch set and this refresh both read
+    // the active arena only. Dirs the other tab doesn't hold are no-ops.
+    for snap in app.tabs.iter_mut() {
+        let sel_path = snap
+            .visible
+            .get(snap.selected)
+            .map(|&id| snap.arena.nodes[id].path.clone());
+        // `reload_dir` returns false only for a dir this arena has never
+        // held, so this is "the other tab knows at least one of these".
+        let mut touched = false;
+        for d in dirs {
+            touched |= snap.arena.reload_dir(d);
+        }
+        if touched {
+            snap.visible = snap.arena.flatten();
+            if let Some(i) = sel_path.and_then(|p| {
+                snap.visible.iter().position(|&id| snap.arena.nodes[id].path == p)
+            }) {
+                snap.selected = i;
+            }
+            snap.selected = snap.selected.min(snap.visible.len().saturating_sub(1));
+        }
+    }
     // ponytail: filter doesn't survive an external-change refresh; re-press f.
     if app.filter_active() {
         app.arena.filter = None;
@@ -252,7 +283,7 @@ pub fn refresh_dirs(app: &mut App, dirs: &[std::path::PathBuf], git_tx: &mpsc::S
 
 /// Re-root to the parent of the current arena root, leaving the cursor
 /// on the directory we just ascended out of. No-op at filesystem root.
-pub fn ascend(app: &mut App) {
+pub fn ascend(app: &mut App, git_tx: &mpsc::Sender<std::path::PathBuf>) {
     let root_path = app.arena.nodes[app.arena.root].path.clone();
     let parent = match root_path.parent() {
         Some(p) if p != root_path => p.to_path_buf(),
@@ -280,6 +311,7 @@ pub fn ascend(app: &mut App) {
                 let _ = na.load_children(na.root);
                 na.nodes[na.root].expanded = true;
             }
+            na.set_sort(app.sort);
             app.arena = na;
             app.filter_query.clear();
             app.filter_cands = None;
@@ -288,7 +320,15 @@ pub fn ascend(app: &mut App) {
             // Same rationale as reroot: don't let the outer visual-mode
             // range-mark span the root change.
             app.visual_mode = false;
+            // Same rationale as reroot: stale marks would target files
+            // that are no longer anywhere in the visible tree.
+            app.marks.clear();
             app.navigate_to(&root_path);
+            // Every other re-root path queues a scan; this one could not,
+            // because it had no sender. Without it the new arena's nodes
+            // keep the `Clean` they were born with and every git glyph
+            // vanishes until an unrelated .git event or a manual R.
+            let _ = git_tx.send(app.arena.nodes[app.arena.root].path.clone());
         }
         Err(_) => {
             app.set_err(format!("cannot open {}", parent.display()));
@@ -385,7 +425,7 @@ pub fn handle_key(
         Mode::Search | Mode::Input
             if matches!(app.dialog, Dialog::Devices { .. }) =>
         {
-            handle_devices_key(app, k);
+            handle_devices_key(app, k, keymap);
         }
         Mode::Search | Mode::Input
             if matches!(app.dialog, Dialog::AppPick { .. }) =>
@@ -453,13 +493,32 @@ fn handle_help_key(app: &mut App, k: &KeyEvent) {
     }
 }
 
-fn handle_devices_key(app: &mut App, k: &KeyEvent) {
+fn handle_devices_key(app: &mut App, k: &KeyEvent, keymap: &Keymap) {
+    // Close on whatever opens the modal rather than a hardcoded 'M', which
+    // went stale the moment show_devices was rebound and made 'M' untypeable
+    // inside the modal for anyone who had not rebound it. Checked before the
+    // modifier guard below so a ctrl-chord binding still closes.
+    let closes = crate::keymap::key_token(k)
+        .map(|t| keymap.keys_for(Action::ShowDevices).contains(&t))
+        .unwrap_or(false);
+    if closes {
+        app.mode = Mode::Normal;
+        app.dialog = Dialog::None;
+        return;
+    }
+    // Matching on `k.code` alone ignored modifiers, so Ctrl-d reached the
+    // 'd' arm and unmounted the selected share and dropped it from
+    // shares.toml. Ctrl-d and Ctrl-u are the Normal-mode half-page scroll
+    // keys, which makes reaching for them inside a list the natural reflex.
+    if k.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+        return;
+    }
     let len = match &app.dialog {
         Dialog::Devices { items, .. } => items.len(),
         _ => 0,
     };
     match k.code {
-        KeyCode::Esc | KeyCode::Char('M') => {
+        KeyCode::Esc => {
             app.mode = Mode::Normal;
             app.dialog = Dialog::None;
         }
@@ -517,6 +576,11 @@ fn devices_delete_selected(app: &mut App) {
 fn refresh_devices(app: &mut App) {
     let items = crate::devices::build_rows(&app.shares);
     let new_len = items.len();
+    // The sidebar's Disks section reads `app.disks`, which used to be
+    // assigned only at startup and on the R key — so mounting a share from
+    // this modal updated the modal while the sidebar behind it went on
+    // showing the share as unmounted.
+    app.disks = items.clone();
     if let Dialog::Devices { items: it, sel } = &mut app.dialog {
         *it = items;
         if *sel >= new_len {
@@ -576,6 +640,7 @@ fn devices_enter_selected(app: &mut App) {
                         let _ = na.load_children(na.root);
                         na.nodes[na.root].expanded = true;
                     }
+                    na.set_sort(app.sort);
                     app.arena = na;
                     app.visible = app.arena.flatten();
                     app.selected = 0;
@@ -663,7 +728,8 @@ fn handle_appick_key(app: &mut App, k: &KeyEvent) {
                 *sel = 0;
             }
         }
-        KeyCode::Char(c) => {
+        // Unmodified only: Ctrl-c used to type a literal `c` into the filter.
+        KeyCode::Char(c) if !k.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
             if let Dialog::AppPick { sel, filter, .. } = &mut app.dialog {
                 filter.push(c);
                 *sel = 0;
@@ -754,7 +820,8 @@ fn handle_scriptpick_key(app: &mut App, k: &KeyEvent) {
                 *sel = 0;
             }
         }
-        KeyCode::Char(c) => {
+        // Unmodified only: see the same guard in `handle_appick_key`.
+        KeyCode::Char(c) if !k.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) => {
             if let Dialog::ScriptPick { sel, filter, .. } = &mut app.dialog {
                 filter.push(c);
                 *sel = 0;
@@ -786,6 +853,47 @@ fn handle_text_input_key(
     start: &Path,
     git_tx: &mpsc::Sender<std::path::PathBuf>,
 ) {
+    // Ctrl/Alt combinations arrive as `KeyCode::Char` with the modifier in
+    // `k.modifiers`, and the insert arm below only tested `is_control()` on
+    // the char — so Ctrl-C in the rename prompt typed a literal `c` and the
+    // usual line-editing keys did nothing at all.
+    if k.modifiers.contains(KeyModifiers::CONTROL) {
+        match k.code {
+            // Ctrl-C aborts the prompt, like Esc.
+            KeyCode::Char('c') => {
+                if app.mode == Mode::Search {
+                    app.end_search();
+                }
+                if app.pending == Some(Action::Filter) {
+                    app.clear_filter();
+                }
+                app.mode = Mode::Normal;
+                app.input.clear();
+                app.pending = None;
+                app.pending_targets.clear();
+            }
+            // Ctrl-U clears the line, Ctrl-W rubs out the word behind the
+            // caret — both what every other readline-style prompt does.
+            KeyCode::Char('u') => app.input.clear(),
+            KeyCode::Char('w') => {
+                while app.input.char_before().is_some_and(char::is_whitespace) {
+                    app.input.backspace();
+                }
+                while app.input.char_before().is_some_and(|c| !c.is_whitespace()) {
+                    app.input.backspace();
+                }
+            }
+            // Backspace reaches some terminals as Ctrl-H; keep that working.
+            KeyCode::Char('h') | KeyCode::Backspace => app.input.backspace(),
+            _ => {}
+        }
+        if app.mode == Mode::Search {
+            app.live_search();
+        } else if app.pending == Some(Action::Filter) {
+            app.live_filter();
+        }
+        return;
+    }
     match k.code {
         KeyCode::Esc => {
             if app.mode == Mode::Search {
@@ -797,6 +905,7 @@ fn handle_text_input_key(
             app.mode = Mode::Normal;
             app.input.clear();
             app.pending = None;
+            app.pending_targets.clear();
         }
         KeyCode::Enter => text_input_enter(app, start, git_tx),
         KeyCode::Tab => {
@@ -1051,7 +1160,9 @@ fn handle_confirm_key(app: &mut App, k: &KeyEvent, git_tx: &mpsc::Sender<std::pa
                 app.pending = None;
                 app.mode = Mode::Normal;
                 app.status.clear();
-                let targets = app.targets();
+                // What the prompt named, not the live cursor — see
+                // `App::pending_targets`.
+                let targets = std::mem::take(&mut app.pending_targets);
                 if targets.is_empty() {
                     app.set_status("nothing to trash");
                     return;
@@ -1064,11 +1175,11 @@ fn handle_confirm_key(app: &mut App, k: &KeyEvent, git_tx: &mpsc::Sender<std::pa
                 app.op = Some(crate::ops::spawn_trash(targets));
                 return;
             }
-            // Targets (and their parent dirs) before confirm_yes clears
-            // marks/pending — a delete can span multiple dirs, so
-            // mark and reload exactly those instead of the whole root.
+            // Parent dirs of the captured targets, read before confirm_yes
+            // consumes them — a delete can span multiple dirs, so mark and
+            // reload exactly those instead of the whole root.
             let dirs: std::collections::HashSet<std::path::PathBuf> = app
-                .targets()
+                .pending_targets
                 .iter()
                 .filter_map(|p| p.parent().map(|x| x.to_path_buf()))
                 .collect();
@@ -1087,6 +1198,7 @@ fn handle_confirm_key(app: &mut App, k: &KeyEvent, git_tx: &mpsc::Sender<std::pa
         }
         _ => {
             app.pending = None;
+            app.pending_targets.clear();
             app.mode = Mode::Normal;
             app.status.clear();
         }
@@ -1202,17 +1314,18 @@ pub fn handle(
             app.enter_mode(Mode::Input, "");
         }
         Action::Rename => {
-            let seed = app
+            // Capture the path the seed came from: the user spends seconds
+            // in this prompt and the fs-refresh can move the cursor under
+            // them, which would rename whatever row it landed on instead.
+            let target = app
                 .visible
                 .get(app.selected)
-                .map(|&id| {
-                    app.arena.nodes[id]
-                        .path
-                        .file_name()
-                        .map(|s| s.to_string_lossy().to_string())
-                        .unwrap_or_default()
-                })
+                .map(|&id| app.arena.nodes[id].path.clone());
+            let seed = target
+                .as_ref()
+                .and_then(|p| p.file_name().map(|s| s.to_string_lossy().to_string()))
                 .unwrap_or_default();
+            app.pending_targets = target.into_iter().collect();
             app.pending = Some(Action::Rename);
             app.enter_mode(Mode::Input, &seed);
         }
@@ -1278,13 +1391,13 @@ pub fn handle(
             }
         }
         Action::Toggle => toggle_action(app, git_tx),
-        Action::Parent => ascend(app),
+        Action::Parent => ascend(app, git_tx),
         Action::ToggleMark => app.toggle_mark(),
         Action::SelectAllVisible => app.select_all_visible(),
         Action::ToggleVisualMode => app.toggle_visual_mode(),
         Action::Collapse => {
             if app.visible.get(app.selected).copied() == Some(app.arena.root) {
-                ascend(app);
+                ascend(app, git_tx);
             } else {
                 app.apply(Action::Collapse);
             }
@@ -1466,7 +1579,10 @@ fn toggle_hidden(app: &mut App, git_tx: &mpsc::Sender<std::path::PathBuf>) {
 }
 
 fn prompt_trash(app: &mut App) {
-    let n = app.targets().len();
+    // Capture once, here: the fs-refresh can move the cursor while the
+    // prompt is open, so the message and the commit must read the same list.
+    app.pending_targets = app.targets();
+    let n = app.pending_targets.len();
     if n == 0 {
         app.set_status("nothing to trash");
         return;
@@ -1475,9 +1591,8 @@ fn prompt_trash(app: &mut App) {
     app.mode = Mode::Confirm;
     let msg = if n == 1 {
         let name = app
-            .targets()
-            .into_iter()
-            .next()
+            .pending_targets
+            .first()
             .and_then(|p| p.file_name().map(|s| s.to_string_lossy().to_string()))
             .unwrap_or_default();
         format!("move {name} to trash? y/N")
@@ -1488,7 +1603,9 @@ fn prompt_trash(app: &mut App) {
 }
 
 fn prompt_permanent_delete(app: &mut App) {
-    let n = app.targets().len();
+    // Capture once — see `prompt_trash`.
+    app.pending_targets = app.targets();
+    let n = app.pending_targets.len();
     if n == 0 {
         app.set_status("nothing to delete");
         return;
@@ -1497,9 +1614,8 @@ fn prompt_permanent_delete(app: &mut App) {
     app.mode = Mode::Confirm;
     let msg = if n == 1 {
         let name = app
-            .targets()
-            .into_iter()
-            .next()
+            .pending_targets
+            .first()
             .and_then(|p| p.file_name().map(|s| s.to_string_lossy().to_string()))
             .unwrap_or_default();
         format!("permanently delete {name}? y/N")
@@ -1671,6 +1787,175 @@ mod tests {
     }
 
     #[test]
+    fn ascend_queues_a_git_rescan() {
+        // Every other re-root path sends on git_tx; ascend had no sender,
+        // so `-` blanked every git glyph until an unrelated event.
+        let d = tempdir().unwrap();
+        let sub = d.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        let (mut app, tx, rx) = app_at(&sub);
+        ascend(&mut app, &tx);
+        assert_eq!(rx.try_recv().ok().as_deref(), Some(d.path()));
+    }
+
+    #[test]
+    fn refresh_dirs_also_refreshes_the_inactive_split_pane() {
+        // The other pane is on screen in split mode; it used to sit stale
+        // until the user swapped to it and pressed R.
+        let d = tempdir().unwrap();
+        std::fs::write(d.path().join("a.txt"), "a").unwrap();
+        let (mut app, tx, _rx) = app_at(d.path());
+        app.open_tab().unwrap();
+        assert!(app.is_split());
+
+        std::fs::write(d.path().join("b.txt"), "b").unwrap();
+        refresh_dirs(&mut app, &[d.path().to_path_buf()], &tx);
+
+        let snap = app.tabs.first().expect("split pane");
+        let seen: Vec<String> = snap
+            .visible
+            .iter()
+            .map(|&id| {
+                snap.arena.nodes[id]
+                    .path
+                    .file_name()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default()
+            })
+            .collect();
+        assert!(seen.contains(&"b.txt".to_string()), "inactive pane missed the new file: {seen:?}");
+    }
+
+    #[test]
+    fn devices_modal_ignores_ctrl_modified_keys() {
+        // Matching on k.code alone let Ctrl-d (half-page scroll) reach the
+        // 'd' arm and delete the selected share.
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let d = tempdir().unwrap();
+        let (mut app, _tx, _rx) = app_at(d.path());
+        app.shares = vec![crate::smb::SmbShare {
+            name: "media".into(),
+            url: "smb://nas/media".into(),
+        }];
+        // A real path, or the save fails and the delete rolls itself back,
+        // which would make this test pass for the wrong reason.
+        app.shares_path = d.path().join("shares.toml");
+        app.mode = Mode::Input;
+        // Only the share, so row 0 is definitely the deletable one —
+        // `build_rows` would put this machine's real disks in front of it.
+        app.dialog = Dialog::Devices {
+            items: crate::smb::to_device_rows(&app.shares),
+            sel: 0,
+        };
+        let before = app.shares.len();
+        let keymap = Keymap::build(&Default::default());
+        handle_devices_key(
+            &mut app,
+            &KeyEvent::new(KeyCode::Char('d'), KeyModifiers::CONTROL),
+            &keymap,
+        );
+        assert_eq!(app.shares.len(), before, "Ctrl-d must not delete a share");
+    }
+
+    #[test]
+    fn ctrl_w_rubs_out_a_word_instead_of_typing_one() {
+        // The insert arm only tested `is_control()` on the char, so Ctrl-W
+        // typed a literal `w` and Ctrl-C typed a `c`.
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        let d = tempdir().unwrap();
+        let (mut app, tx, _rx) = app_at(d.path());
+        app.mode = Mode::Input;
+        app.input.set("one two");
+        handle_text_input_key(
+            &mut app,
+            &KeyEvent::new(KeyCode::Char('w'), KeyModifiers::CONTROL),
+            d.path(),
+            &tx,
+        );
+        assert_eq!(app.input.value(), "one ");
+        handle_text_input_key(
+            &mut app,
+            &KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL),
+            d.path(),
+            &tx,
+        );
+        assert_eq!(app.mode, Mode::Normal, "Ctrl-C must abort the prompt");
+    }
+
+    #[test]
+    fn reroot_and_rebuild_keep_the_active_sort() {
+        // Arena::new starts at SortState::default(), so every path that
+        // installs a fresh arena has to push app.sort into it — otherwise
+        // the tree silently reverts to name-ascending while the sort menu
+        // still shows the mode the user picked.
+        let d = tempdir().unwrap();
+        let sub = d.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        std::fs::write(sub.join("x.txt"), "x").unwrap();
+        let (mut app, tx, _rx) = app_at(d.path());
+        app.sort = crate::sort::SortState {
+            mode: crate::sort::SortMode::Size,
+            reverse: true,
+            dir_first: false,
+        };
+        app.apply_sort();
+
+        reroot(&mut app, &sub, &tx);
+        assert_eq!(app.arena.sort, app.sort, "reroot must carry the sort over");
+
+        refresh_in_place(&mut app, &tx);
+        assert_eq!(app.arena.sort, app.sort, "refresh must carry the sort over");
+
+        ascend(&mut app, &tx);
+        assert_eq!(app.arena.sort, app.sort, "ascend must carry the sort over");
+    }
+
+    #[test]
+    fn reroot_clears_marks_so_deletes_cant_hit_offscreen_files() {
+        // targets() returns marked paths with no root check, so a mark that
+        // survived a re-root would make trash/delete act on a file that is
+        // nowhere in the visible tree.
+        let d = tempdir().unwrap();
+        std::fs::write(d.path().join("a.txt"), "a").unwrap();
+        let sub = d.path().join("sub");
+        std::fs::create_dir(&sub).unwrap();
+        let (mut app, tx, _rx) = app_at(d.path());
+        app.marks.insert(d.path().join("a.txt"));
+
+        reroot(&mut app, &sub, &tx);
+        assert!(app.marks.is_empty(), "marks must not survive a re-root");
+        assert!(
+            !app.targets().iter().any(|p| p.ends_with("a.txt")),
+            "targets() must not name a file outside the new root"
+        );
+    }
+
+    #[test]
+    fn confirm_commits_against_the_file_the_prompt_named() {
+        // The fs-refresh runs while a prompt is open and moves the cursor to
+        // the next sibling when the selected entry disappears. The commit
+        // must act on what the prompt named, not on wherever the cursor
+        // ended up.
+        let d = tempdir().unwrap();
+        std::fs::write(d.path().join("b.txt"), "b").unwrap();
+        std::fs::write(d.path().join("c.txt"), "c").unwrap();
+        let (mut app, _tx, _rx) = app_at(d.path());
+        let b = d.path().join("b.txt");
+        app.selected = app.visible.iter().position(|&id| app.arena.nodes[id].path == b).unwrap();
+
+        prompt_permanent_delete(&mut app);
+        assert_eq!(app.pending_targets, vec![b.clone()]);
+
+        // Simulate the refresh landing the cursor on c.txt after b.txt went away.
+        let c = d.path().join("c.txt");
+        app.selected = app.visible.iter().position(|&id| app.arena.nodes[id].path == c).unwrap();
+
+        app.confirm_yes();
+        assert!(!b.exists(), "the named file must be the one deleted");
+        assert!(c.exists(), "the file the cursor drifted onto must survive");
+    }
+
+    #[test]
     fn refresh_in_place_picks_up_external_file() {
         let d = tempdir().unwrap();
         std::fs::write(d.path().join("a.txt"), "1").unwrap();
@@ -1721,6 +2006,8 @@ mod tests {
             .find(|&id| app.arena.nodes[id].path == dir_a.join("old.txt")).unwrap();
         app.selected = app.visible.iter().position(|&id| id == id_old).unwrap();
         app.input.set("new.txt");
+        // Mirror what the Rename prompt does: capture the target up front.
+        app.pending_targets = vec![app.arena.nodes[id_old].path.clone()];
         app.pending = Some(Action::Rename);
         app.mode = Mode::Input;
         text_input_enter(&mut app, d.path(), &tx);
@@ -1755,7 +2042,7 @@ mod tests {
         std::fs::write(sub.join("inner.txt"), "1").unwrap();
         let (mut app, _tx, _rx) = app_at(&sub);
         let root_before = app.arena.nodes[app.arena.root].path.clone();
-        ascend(&mut app);
+        ascend(&mut app, &_tx);
         let root_after = app.arena.nodes[app.arena.root].path.clone();
         assert_eq!(root_after, root_before.parent().unwrap());
         assert!(names(&app).contains(&"sub".to_string()));

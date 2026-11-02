@@ -34,10 +34,7 @@ pub fn render_op_modal(f: &mut Frame, body: Rect, op: &OpState, theme: &Theme) {
 
     // Row 0: label + elapsed.
     let elapsed = op.started_at.elapsed().as_secs();
-    let label_rect = Rect {
-        height: 1,
-        ..inner
-    };
+    let label_rect = modal::sub_rect(inner, 0, 1);
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(
@@ -53,11 +50,7 @@ pub fn render_op_modal(f: &mut Frame, body: Rect, op: &OpState, theme: &Theme) {
     );
 
     // Row 2: gauge or spinner.
-    let bar_rect = Rect {
-        y: inner.y + 2,
-        height: 1,
-        ..inner
-    };
+    let bar_rect = modal::sub_rect(inner, 2, 1);
     if op.indeterminate || op.total_bytes == 0 {
         let frame = modal::spinner_char(op.started_at.elapsed().as_millis());
         f.render_widget(
@@ -95,11 +88,7 @@ pub fn render_op_modal(f: &mut Frame, body: Rect, op: &OpState, theme: &Theme) {
     }
 
     // Footer hint.
-    let footer_rect = Rect {
-        y: inner.y + inner.height.saturating_sub(1),
-        height: 1,
-        ..inner
-    };
+    let footer_rect = modal::sub_rect(inner, inner.height.saturating_sub(1), 1);
     f.render_widget(
         Paragraph::new(Span::styled(
             " esc / ctrl-c cancel · runs in background · tree refreshes when done",
@@ -115,7 +104,10 @@ pub fn render_op_modal(f: &mut Frame, body: Rect, op: &OpState, theme: &Theme) {
 pub fn render_overlay(
     f: &mut Frame,
     body: Rect,
-    app: &App,
+    // `&mut` for one reason: the help overlay clamps `help_scroll` against
+    // the content height it alone knows, and has to store the clamped value
+    // back or `End` leaves the overlay unscrollable.
+    app: &mut App,
     theme: &Theme,
     keymap: &Keymap,
 ) {
@@ -129,7 +121,7 @@ pub fn render_overlay(
             // Always request a large rect; adaptive_rect clamps it to
             // 80% of the terminal. Scrolling handles tall content.
             let r = modal::adaptive_rect(78, 40, body);
-            crate::help::render(r, f, &entries, theme, app.help_scroll, &app.help_filter);
+            crate::help::render(r, f, &entries, theme, &mut app.help_scroll, &app.help_filter);
         }
         (_, Dialog::None) => {}
         (_, Dialog::AppPick { items, sel, filter }) => {
@@ -186,10 +178,7 @@ fn render_appick(
     f.render_widget(block, r);
 
     // Header: filter line + separator row.
-    let header_rect = Rect {
-        height: 2,
-        ..inner
-    };
+    let header_rect = modal::sub_rect(inner, 0, 2);
     let filter_line = if filter.is_empty() {
         Line::from(vec![
             Span::styled("/ ", Style::default().fg(theme.match_hl)),
@@ -216,11 +205,7 @@ fn render_appick(
     // List body: scrollable, selection-highlighted rows.
     let footer_rows: u16 = 2;
     let list_h = inner.height.saturating_sub(2 + footer_rows).max(1);
-    let list_rect = Rect {
-        y: inner.y + 2,
-        height: list_h,
-        ..inner
-    };
+    let list_rect = modal::sub_rect(inner, 2, list_h);
     let mut lines: Vec<Line> = Vec::with_capacity(list_len);
     for (i, &orig) in filtered.iter().enumerate() {
         let style = if i == sel {
@@ -254,11 +239,7 @@ fn render_appick(
     f.render_widget(Paragraph::new(view), list_rect);
 
     // Footer hints.
-    let footer_rect = Rect {
-        y: inner.y + inner.height.saturating_sub(footer_rows),
-        height: footer_rows,
-        ..inner
-    };
+    let footer_rect = modal::sub_rect(inner, inner.height.saturating_sub(footer_rows), footer_rows);
     let hints = vec![
         Line::from(""),
         Line::from(Span::styled(
@@ -294,7 +275,7 @@ fn render_scriptpick(
     f.render_widget(block, r);
 
     // Header: filter line + separator.
-    let header_rect = Rect { height: 2, ..inner };
+    let header_rect = modal::sub_rect(inner, 0, 2);
     let filter_line = if filter.is_empty() {
         Line::from(vec![
             Span::styled("/ ", Style::default().fg(theme.match_hl)),
@@ -319,7 +300,7 @@ fn render_scriptpick(
     // List body.
     let footer_rows: u16 = 2;
     let list_h = inner.height.saturating_sub(2 + footer_rows).max(1);
-    let list_rect = Rect { y: inner.y + 2, height: list_h, ..inner };
+    let list_rect = modal::sub_rect(inner, 2, list_h);
     let mut lines: Vec<Line> = Vec::with_capacity(list_len);
     for (i, &orig) in filtered.iter().enumerate() {
         let style = if i == sel {
@@ -337,11 +318,7 @@ fn render_scriptpick(
     f.render_widget(Paragraph::new(view), list_rect);
 
     // Footer hints.
-    let footer_rect = Rect {
-        y: inner.y + inner.height.saturating_sub(footer_rows),
-        height: footer_rows,
-        ..inner
-    };
+    let footer_rect = modal::sub_rect(inner, inner.height.saturating_sub(footer_rows), footer_rows);
     let hints = vec![
         Line::from(""),
         Line::from(Span::styled(
@@ -369,10 +346,7 @@ fn render_devices(
     f.render_widget(block, r);
 
     // Header row: column titles.
-    let header_rect = Rect {
-        height: 2,
-        ..inner
-    };
+    let header_rect = modal::sub_rect(inner, 0, 2);
     let cols = format!(
         "      {:<14} {:<8} {:<8} {:<14} {}",
         "DEVICE", "SIZE", "FS", "LABEL", "MOUNTPOINT"
@@ -394,11 +368,7 @@ fn render_devices(
     // Body
     let footer_rows: u16 = 2;
     let body_h = inner.height.saturating_sub(2 + footer_rows).max(1);
-    let body_rect = Rect {
-        y: inner.y + 2,
-        height: body_h,
-        ..inner
-    };
+    let body_rect = modal::sub_rect(inner, 2, body_h);
     let mut body_lines: Vec<Line> = Vec::new();
     if items.is_empty() {
         body_lines.push(Line::from(Span::styled(
@@ -456,11 +426,7 @@ fn render_devices(
     f.render_widget(Paragraph::new(view), body_rect);
 
     // Footer hints.
-    let footer_rect = Rect {
-        y: inner.y + inner.height.saturating_sub(footer_rows),
-        height: footer_rows,
-        ..inner
-    };
+    let footer_rect = modal::sub_rect(inner, inner.height.saturating_sub(footer_rows), footer_rows);
     let footer = vec![
         Line::from(""),
         Line::from(Span::styled(
@@ -495,15 +461,8 @@ fn render_input(f: &mut Frame, body: Rect, app: &App, theme: &Theme) {
     f.render_widget(block, r);
 
     // Compute prompt window. Reserve last row for the hint line.
-    let input_rect = Rect {
-        height: 1,
-        ..inner
-    };
-    let hint_rect = Rect {
-        y: inner.y + inner.height.saturating_sub(1),
-        height: 1,
-        ..inner
-    };
+    let input_rect = modal::sub_rect(inner, 0, 1);
+    let hint_rect = modal::sub_rect(inner, inner.height.saturating_sub(1), 1);
     let val = app.input.value();
     let w = input_rect.width.max(1) as usize;
     // Account for the 2-col "❯ " prefix in the rendered prompt.

@@ -100,3 +100,34 @@ fn rename_refuses_path_separator() {
     assert!(rename(&p, "").is_err());
     assert!(rename(&p, "..").is_err());
 }
+
+#[cfg(unix)]
+#[test]
+fn pasting_a_symlink_to_a_file_keeps_it_a_symlink() {
+    // `src.is_dir()` follows links, so a selected symlink-to-file used to
+    // take the plain-file branch: the copy opened the TARGET and wrote its
+    // contents into a regular file, and on a cross-device move the source
+    // link was then deleted.
+    use explorenova::fs_ops::PasteMode;
+    use std::os::unix::fs::symlink;
+    let d = tempdir().unwrap();
+    let target = d.path().join("target.txt");
+    fs::write(&target, "payload").unwrap();
+    let link = d.path().join("link.txt");
+    symlink(&target, &link).unwrap();
+    let dst_dir = d.path().join("dst");
+    fs::create_dir(&dst_dir).unwrap();
+
+    let mut op = explorenova::ops::spawn_paste(vec![link], dst_dir.clone(), PasteMode::Copy);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while op.finished.is_none() && std::time::Instant::now() < deadline {
+        op.poll();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(op.finished.is_some(), "paste never finished");
+
+    let copied = dst_dir.join("link.txt");
+    let meta = fs::symlink_metadata(&copied).expect("destination entry");
+    assert!(meta.file_type().is_symlink(), "the copy must still be a symlink");
+    assert_eq!(fs::read_link(&copied).unwrap(), target);
+}

@@ -22,9 +22,21 @@ pub fn load(path: &Path) -> Vec<SmbShare> {
     let Ok(s) = std::fs::read_to_string(path) else {
         return Vec::new();
     };
-    toml::from_str::<SharesFile>(&s)
+    let mut shares = toml::from_str::<SharesFile>(&s)
         .map(|f| f.shares)
-        .unwrap_or_default()
+        .unwrap_or_default();
+    // Strip on the way in, not just in the `AddSmb` handler. A file
+    // hand-edited or carried over from another tool can still hold
+    // `smb://user:pass@host/share`, and that string went straight into the
+    // devices-modal row label and into gio's argv, where `ps` shows it to
+    // every local user.
+    for sh in shares.iter_mut() {
+        let (clean, had) = strip_url_password(&sh.url);
+        if had {
+            sh.url = clean;
+        }
+    }
+    shares
 }
 
 /// Persist shares as TOML, creating the parent directory if needed.
@@ -476,6 +488,18 @@ mod tests {
         save(&path, &shares).unwrap();
         let loaded = load(&path);
         assert_eq!(loaded, shares);
+    }
+
+    #[test]
+    fn load_strips_a_hand_written_inline_password() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("shares.toml");
+        std::fs::write(
+            &path,
+            "[[share]]\nname = \"media\"\nurl = \"smb://alice:s3cret@nas/media\"\n",
+        )
+        .unwrap();
+        assert_eq!(load(&path)[0].url, "smb://alice@nas/media");
     }
 
     #[test]

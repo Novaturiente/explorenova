@@ -140,8 +140,29 @@ pub fn render(path: &Path, max_bytes: u64, heavy_max_bytes: u64) -> PreviewKind 
         Ok(m) => m,
         Err(e) => return PreviewKind::Meta(format!("error: {e}")),
     };
-    if meta.is_dir() {
+    let ft = meta.file_type();
+    if ft.is_dir() {
         return PreviewKind::Meta(format!("directory\n{} entries", count_entries(path)));
+    }
+    // Anything that isn't a regular file must never reach a reader: a
+    // FIFO blocks `std::fs::read` until someone writes, and /dev/zero
+    // never ends. There is ONE preview worker thread, so a single one of
+    // these (just arrowing through /dev or /run) kills every later
+    // preview for the rest of the session.
+    if !ft.is_file() {
+        use std::os::unix::fs::FileTypeExt;
+        let what = if ft.is_fifo() {
+            "fifo"
+        } else if ft.is_socket() {
+            "socket"
+        } else if ft.is_block_device() {
+            "block device"
+        } else if ft.is_char_device() {
+            "character device"
+        } else {
+            "special file"
+        };
+        return PreviewKind::Meta(format!("{}\n({what})", path.display()));
     }
     let ext = ext_lower(path);
     if IMAGE_EXTS.contains(&ext.as_str()) {
@@ -244,11 +265,24 @@ const BYTE_BUDGET: usize = 128 * 1024 * 1024;
 
 /// Path-keyed preview cache backed by a single worker thread. No
 /// filesystem access happens on the caller (render) thread — the worker
-/// stats the file itself when it dequeues a request. Freshness comes from
-/// external invalidation (`invalidate_dir`/`clear`) driven by fs-watch
-/// events and op/shell-out completions, not per-frame mtime checks.
+/// stats the file itself when it dequeues a request.
+///
+/// Freshness is the worker's job too. External invalidation
+/// (`invalidate_path`/`invalidate_dir`/`clear`) only covers what the
+/// fs-watcher sees, and watches are dropped when a directory is
+/// collapsed — so a file edited while its directory was collapsed used
+/// to serve its pre-edit preview forever. Every `request` therefore
+/// carries the mtime the cached entry was rendered at, and the worker
+/// re-renders when the file's current mtime differs. The caller still
+/// never stats.
+///
+/// ponytail: the revalidation stat rides the existing per-frame
+/// `request` (so ~5/s while idle, on the worker thread). If that ever
+/// shows up in a profile, gate it on a minimum age per entry.
 pub struct PreviewCache {
-    map: HashMap<PathBuf, Arc<PreviewKind>>,
+    /// Value is the preview plus the mtime it was rendered at
+    /// (`UNIX_EPOCH` when the file could not be stat'd).
+    map: HashMap<PathBuf, (Arc<PreviewKind>, std::time::SystemTime)>,
     in_flight: HashSet<PathBuf>,
     /// Insertion order, for FIFO eviction once `cap`/`byte_budget` is hit.
     order: VecDeque<PathBuf>,
@@ -262,8 +296,17 @@ pub struct PreviewCache {
     /// any real work so a fast-moving cursor doesn't backlog the single
     /// render thread with previews nobody is looking at anymore.
     want: Arc<Mutex<Option<PathBuf>>>,
-    req_tx: Sender<(PathBuf, u64, u64)>,
-    res_rx: Receiver<(PathBuf, Option<PreviewKind>)>,
+    req_tx: Sender<(PathBuf, u64, u64, Option<std::time::SystemTime>)>,
+    res_rx: Receiver<(PathBuf, Option<(PreviewKind, std::time::SystemTime)>)>,
+}
+
+/// mtime of `p`, or `UNIX_EPOCH` when it can't be read (missing file,
+/// permission denied). A sentinel rather than an `Option` so "still
+/// unreadable" compares equal and doesn't re-render on every frame.
+fn mtime_of(p: &Path) -> std::time::SystemTime {
+    std::fs::metadata(p)
+        .and_then(|m| m.modified())
+        .unwrap_or(std::time::UNIX_EPOCH)
 }
 
 impl Default for PreviewCache {
@@ -279,12 +322,14 @@ impl PreviewCache {
 
     pub fn with_cap(cap: usize) -> Self {
         let cap = if cap == 0 { CACHE_CAP } else { cap };
-        let (req_tx, req_rx) = mpsc::channel::<(PathBuf, u64, u64)>();
-        let (res_tx, res_rx) = mpsc::channel::<(PathBuf, Option<PreviewKind>)>();
+        let (req_tx, req_rx) =
+            mpsc::channel::<(PathBuf, u64, u64, Option<std::time::SystemTime>)>();
+        let (res_tx, res_rx) =
+            mpsc::channel::<(PathBuf, Option<(PreviewKind, std::time::SystemTime)>)>();
         let want: Arc<Mutex<Option<PathBuf>>> = Arc::new(Mutex::new(None));
         let want_worker = want.clone();
         std::thread::spawn(move || {
-            while let Ok((path, max_bytes, heavy_max_bytes)) = req_rx.recv() {
+            while let Ok((path, max_bytes, heavy_max_bytes, known_mtime)) = req_rx.recv() {
                 // Stale-skip: if the cursor moved on before we even got to
                 // this request, don't render it — but always reply so the
                 // caller's `in_flight` bookkeeping stays correct.
@@ -296,6 +341,13 @@ impl PreviewCache {
                     let _ = res_tx.send((path, None));
                     continue;
                 }
+                // Revalidate: the caller already has a preview for this
+                // path and only wants a new one if the file moved on.
+                let mtime = mtime_of(&path);
+                if known_mtime == Some(mtime) {
+                    let _ = res_tx.send((path, None));
+                    continue;
+                }
                 let kind = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     render(&path, max_bytes, heavy_max_bytes)
                 }))
@@ -303,7 +355,7 @@ impl PreviewCache {
                     "{}\n(preview failed)",
                     path.display()
                 )));
-                let _ = res_tx.send((path, Some(kind)));
+                let _ = res_tx.send((path, Some((kind, mtime))));
             }
         });
         Self {
@@ -330,7 +382,7 @@ impl PreviewCache {
     /// just an `Arc` clone (cheap refcount bump, not a deep copy of the
     /// underlying `Text`/`Image`).
     pub fn get(&self, path: &Path) -> Option<Arc<PreviewKind>> {
-        self.map.get(path).cloned()
+        self.map.get(path).map(|(k, _)| k.clone())
     }
 
     /// Queue a render for `path` if it isn't already cached or in flight.
@@ -342,11 +394,17 @@ impl PreviewCache {
         if let Ok(mut w) = self.want.lock() {
             *w = Some(path.to_path_buf());
         }
-        if self.map.contains_key(path) || self.in_flight.contains(path) {
+        if self.in_flight.contains(path) {
             return;
         }
+        // A cached entry still gets queued, but as a revalidation: the
+        // worker compares `known` against the file's current mtime and
+        // only re-renders on a mismatch.
+        let known = self.map.get(path).map(|(_, t)| *t);
         self.in_flight.insert(path.to_path_buf());
-        let _ = self.req_tx.send((path.to_path_buf(), max_bytes, heavy_max_bytes));
+        let _ = self
+            .req_tx
+            .send((path.to_path_buf(), max_bytes, heavy_max_bytes, known));
     }
 
     /// Move any completed worker results into the cache. Returns `true` if
@@ -356,8 +414,8 @@ impl PreviewCache {
         let mut got = false;
         while let Ok((path, res)) = self.res_rx.try_recv() {
             self.in_flight.remove(&path);
-            if let Some(kind) = res {
-                self.insert_result(path, kind);
+            if let Some((kind, mtime)) = res {
+                self.insert_result(path, kind, mtime);
                 got = true;
             }
         }
@@ -367,7 +425,7 @@ impl PreviewCache {
     /// Drop the entry for exactly `path`. What an fs-watch event actually
     /// justifies: one file changed, so only that file's preview is stale.
     pub fn invalidate_path(&mut self, path: &Path) {
-        if let Some(k) = self.map.remove(path) {
+        if let Some((k, _)) = self.map.remove(path) {
             self.total_bytes = self.total_bytes.saturating_sub(k.approx_bytes());
             self.order.retain(|p| p != path);
         }
@@ -377,7 +435,7 @@ impl PreviewCache {
     /// Cheap: a filtered retain over the map, no I/O.
     pub fn invalidate_dir(&mut self, dir: &Path) {
         let mut freed = 0usize;
-        self.map.retain(|p, kind| {
+        self.map.retain(|p, (kind, _)| {
             let keep = p.parent() != Some(dir);
             if !keep {
                 freed += kind.approx_bytes();
@@ -399,11 +457,16 @@ impl PreviewCache {
 
     /// Insert a freshly-rendered result and enforce the cap/byte budget.
     /// Shared by `drain()` and (in tests) direct injection.
-    fn insert_result(&mut self, path: PathBuf, kind: PreviewKind) {
+    fn insert_result(
+        &mut self,
+        path: PathBuf,
+        kind: PreviewKind,
+        mtime: std::time::SystemTime,
+    ) {
         let kind = Arc::new(kind);
         let bytes = kind.approx_bytes();
-        match self.map.insert(path.clone(), kind) {
-            Some(old) => {
+        match self.map.insert(path.clone(), (kind, mtime)) {
+            Some((old, _)) => {
                 self.total_bytes = (self.total_bytes + bytes).saturating_sub(old.approx_bytes());
             }
             None => {
@@ -418,7 +481,7 @@ impl PreviewCache {
             && self.order.len() > 1
         {
             if let Some(old) = self.order.pop_front() {
-                if let Some(k) = self.map.remove(&old) {
+                if let Some((k, _)) = self.map.remove(&old) {
                     self.total_bytes = self.total_bytes.saturating_sub(k.approx_bytes());
                 }
             }
@@ -440,7 +503,7 @@ impl PreviewCache {
     /// byte-budget eviction can be exercised with synthetic sizes instead
     /// of real (multi-hundred-MiB) files.
     fn insert_for_test(&mut self, path: PathBuf, kind: PreviewKind) {
-        self.insert_result(path, kind);
+        self.insert_result(path, kind, std::time::UNIX_EPOCH);
     }
 }
 
@@ -536,6 +599,29 @@ mod tests {
         let f = d.path().join("mislabeled.jpg");
         image::RgbaImage::new(4, 4).save_with_format(&f, image::ImageFormat::Png).unwrap();
         assert!(matches!(render(&f, 1024, HEAVY_FILE_MAX_DEFAULT), PreviewKind::Image(..)));
+    }
+
+    #[test]
+    fn fifo_returns_promptly_instead_of_blocking_the_worker() {
+        // Regression guard: `render` used to fall through to
+        // `std::fs::read`, which blocks forever on a FIFO with no writer
+        // and takes the single preview worker thread down with it. Run
+        // it on a side thread so a regression FAILS here rather than
+        // hanging the test binary.
+        let d = tempdir().unwrap();
+        let f = d.path().join("pipe");
+        let c = std::ffi::CString::new(f.as_os_str().as_encoded_bytes()).unwrap();
+        assert_eq!(unsafe { libc::mkfifo(c.as_ptr(), 0o644) }, 0, "mkfifo failed");
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = tx.send(render(&f, 1024, HEAVY_FILE_MAX_DEFAULT));
+        });
+        match rx.recv_timeout(std::time::Duration::from_secs(2)) {
+            Ok(PreviewKind::Meta(m)) => assert!(m.contains("fifo"), "got {m:?}"),
+            Ok(other) => panic!("expected Meta, got {other:?}"),
+            Err(_) => panic!("render() blocked on a FIFO"),
+        }
     }
 
     #[test]
@@ -662,6 +748,55 @@ mod tests {
         assert!(!c.contains(Path::new("/tmp/a")));
         assert!(!c.contains(Path::new("/tmp/b")));
         assert_eq!(c.total_bytes, 0);
+    }
+
+    /// Flatten a cached Text preview back to a plain string.
+    fn cached_text(c: &PreviewCache, p: &Path) -> String {
+        match c.get(p).as_deref() {
+            Some(PreviewKind::Text(t)) => t
+                .lines
+                .iter()
+                .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
+                .collect(),
+            other => panic!("expected Text, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn edit_missed_by_the_watcher_still_refreshes() {
+        // A file edited while its directory was collapsed gets no
+        // fs-watch event, so no invalidate_* call ever arrives. The
+        // mtime carried on the cache entry is the only thing that can
+        // catch it — without it the pre-edit preview is served forever.
+        let d = tempdir().unwrap();
+        let f = d.path().join("watched.txt");
+        fs::write(&f, "before").unwrap();
+        let mut c = PreviewCache::with_cap(8);
+        c.request(&f, 1024, HEAVY_FILE_MAX_DEFAULT);
+        drain_until_cached(&mut c, &f);
+        assert!(cached_text(&c, &f).contains("before"));
+
+        fs::write(&f, "after").unwrap();
+        // Force a visibly different mtime — the write above may land in
+        // the same filesystem timestamp tick as the first one.
+        fs::File::options()
+            .write(true)
+            .open(&f)
+            .unwrap()
+            .set_modified(
+                std::time::SystemTime::now() + std::time::Duration::from_secs(5),
+            )
+            .unwrap();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !cached_text(&c, &f).contains("after")
+            && std::time::Instant::now() < deadline
+        {
+            c.request(&f, 1024, HEAVY_FILE_MAX_DEFAULT);
+            c.drain();
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        assert!(cached_text(&c, &f).contains("after"), "stale preview served");
     }
 
     #[test]

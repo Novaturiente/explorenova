@@ -69,7 +69,7 @@ pub fn rank(
             scored.push((p.clone(), score, indices));
         }
     }
-    scored.sort_by(|a, b| b.1.cmp(&a.1));
+    scored.sort_by_key(|s| std::cmp::Reverse(s.1));
     scored
 }
 

@@ -8,12 +8,14 @@ const SUBPROCESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1
 
 /// Spawn `cmd` (stdin null, stderr null, stdout piped + captured) and
 /// wait at most `timeout`, killing the child on expiry. Returns the
-/// exit status and captured stdout, or None on timeout/spawn failure.
-/// stderr stays silenced — rasterizer progress lines would otherwise
-/// leak into the ratatui alt-screen as phantom text.
+/// exit status and stdout truncated to `max_out` bytes, or None on
+/// timeout/spawn failure. stderr stays silenced — rasterizer progress
+/// lines would otherwise leak into the ratatui alt-screen as phantom
+/// text.
 pub(crate) fn capture_with_timeout(
     cmd: &mut Command,
     timeout: std::time::Duration,
+    max_out: usize,
 ) -> Option<(std::process::ExitStatus, Vec<u8>)> {
     use std::io::Read;
     let mut child = cmd
@@ -24,10 +26,25 @@ pub(crate) fn capture_with_timeout(
         .ok()?;
     let mut pipe = child.stdout.take()?;
     // Drain stdout concurrently so a chatty child can't fill the pipe
-    // and deadlock against our wait loop.
+    // and deadlock against our wait loop — but only KEEP `max_out`
+    // bytes. A pathological archive lists gigabytes of filenames, and
+    // `read_to_end` used to hold all of them in memory before the
+    // caller's entry cap threw them away. Overflow is still read (and
+    // dropped) so the child never blocks on a full pipe.
     let reader = std::thread::spawn(move || {
         let mut buf = Vec::new();
-        let _ = pipe.read_to_end(&mut buf);
+        let mut chunk = [0u8; 8192];
+        loop {
+            match pipe.read(&mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(n) => {
+                    let room = max_out.saturating_sub(buf.len());
+                    if room > 0 {
+                        buf.extend_from_slice(&chunk[..n.min(room)]);
+                    }
+                }
+            }
+        }
         buf
     });
     let t0 = std::time::Instant::now();
@@ -54,7 +71,9 @@ pub(crate) fn capture_with_timeout(
 
 /// Run `cmd` silenced with the standard timeout; status only.
 fn run_silent(cmd: &mut Command) -> Option<std::process::ExitStatus> {
-    capture_with_timeout(cmd, SUBPROCESS_TIMEOUT).map(|(st, _)| st)
+    // Status only — these write their real output to a file, so keep
+    // nothing from the pipe.
+    capture_with_timeout(cmd, SUBPROCESS_TIMEOUT, 0).map(|(st, _)| st)
 }
 
 pub const VIDEO_EXTS: &[&str] = &[
@@ -66,7 +85,38 @@ pub fn is_video(ext_lower: &str) -> bool {
     VIDEO_EXTS.contains(&ext_lower)
 }
 
-/// Temp-cache path for a rasterized variant of `src`. Keyed by the FULL
+/// Private per-user directory for rasterized previews:
+/// `$XDG_CACHE_HOME/explorenova/preview` (or `~/.cache/...`), created
+/// 0700.
+///
+/// These used to live in a world-writable `/tmp`. The names are
+/// derived from an unkeyed hash of the path plus a second-granularity
+/// mtime, so on a shared host another local user could precompute one
+/// and plant a symlink at it — and the rasterizers below create their
+/// own output file, so we cannot defend with `create_new`. A directory
+/// nobody else can traverse is what closes that.
+///
+/// ponytail: per-user, not per-process — a hostile process running as
+/// the same user is out of scope. Add a per-PID subdirectory (and teach
+/// `cleanup_stale_temps` about it) only if that ever matters.
+fn cache_dir() -> Option<PathBuf> {
+    use std::os::unix::fs::DirBuilderExt;
+    let base = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .filter(|p| p.is_absolute())
+        .or_else(|| {
+            std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache"))
+        })?;
+    let dir = base.join("explorenova").join("preview");
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(&dir)
+        .ok()?;
+    Some(dir)
+}
+
+/// Cache path for a rasterized variant of `src`. Keyed by the FULL
 /// path (hashed) + mtime: stem+mtime alone collides for two same-named
 /// files touched in the same second (e.g. one `cp -r`), showing the
 /// wrong thumbnail. mtime still forces a fresh render after an edit.
@@ -78,7 +128,7 @@ fn temp_png_for(prefix: &str, src: &Path) -> Option<PathBuf> {
         .duration_since(std::time::UNIX_EPOCH)
         .ok()?
         .as_secs();
-    Some(std::env::temp_dir().join(format!(
+    Some(cache_dir()?.join(format!(
         "explorenova-{prefix}-{:016x}-{mtime}.png",
         path_hash(src)
     )))
@@ -91,11 +141,12 @@ fn path_hash(p: &Path) -> u64 {
     h.finish()
 }
 
-/// Delete rasterized temp PNGs older than a day. Run once at startup on
-/// a detached thread — long sessions otherwise leak thumbnails in /tmp
-/// for the machine's uptime.
+/// Delete rasterized preview PNGs older than a day. Run once at startup
+/// on a detached thread — long sessions otherwise leak thumbnails in the
+/// cache dir indefinitely.
 pub fn cleanup_stale_temps() {
-    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
+    let Some(dir) = cache_dir() else { return };
+    let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
     let cutoff =
@@ -130,7 +181,7 @@ pub fn rasterize_pdf(pdf: &Path) -> Option<PathBuf> {
         .duration_since(std::time::UNIX_EPOCH)
         .ok()?
         .as_secs();
-    let stem = std::env::temp_dir().join(format!(
+    let stem = cache_dir()?.join(format!(
         "explorenova-pdf-{:016x}-{mtime}",
         path_hash(pdf)
     ));
@@ -181,4 +232,23 @@ pub fn video_thumbnail(src: &Path) -> Option<PathBuf> {
         return None;
     }
     out.exists().then_some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cache_dir_is_private_to_the_user() {
+        // The whole point of moving off /tmp: nobody else may traverse
+        // the directory, because the filenames inside it are guessable.
+        use std::os::unix::fs::PermissionsExt;
+        let home = tempfile::tempdir().unwrap();
+        std::env::set_var("XDG_CACHE_HOME", home.path());
+        let d = cache_dir().expect("cache dir should be created");
+        assert!(d.starts_with(home.path()));
+        let mode = std::fs::metadata(&d).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o700, "mode was {:o}", mode & 0o777);
+        std::env::remove_var("XDG_CACHE_HOME");
+    }
 }

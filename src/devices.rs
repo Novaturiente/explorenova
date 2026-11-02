@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DeviceKind {
@@ -80,14 +80,67 @@ pub fn build_rows(shares: &[crate::smb::SmbShare]) -> Vec<Device> {
     items
 }
 
+/// Ceiling on any udiskie call. These run on the UI thread, and udisks2
+/// talks to D-Bus: a dead gvfs mount or a stuck udisksd left `output()`
+/// blocked forever with no way out, freezing the whole event loop.
+const UDISKIE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// `Command::output()` with a hard deadline. Both pipes are drained on
+/// their own threads so a chatty child cannot deadlock against the wait
+/// loop, and the child is killed on expiry.
+fn output_with_timeout(mut cmd: Command) -> anyhow::Result<std::process::Output> {
+    use std::io::Read;
+    let mut child = cmd
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()?;
+    let drain = |mut pipe: Option<std::process::ChildStdout>| {
+        std::thread::spawn(move || {
+            let mut buf = Vec::new();
+            if let Some(p) = pipe.as_mut() {
+                let _ = p.read_to_end(&mut buf);
+            }
+            buf
+        })
+    };
+    let out_r = drain(child.stdout.take());
+    // Same shape for stderr; the types differ so it can't share `drain`.
+    let mut err_pipe = child.stderr.take();
+    let err_r = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(p) = err_pipe.as_mut() {
+            let _ = p.read_to_end(&mut buf);
+        }
+        buf
+    });
+    let t0 = std::time::Instant::now();
+    let status = loop {
+        match child.try_wait()? {
+            Some(st) => break st,
+            None if t0.elapsed() >= UDISKIE_TIMEOUT => {
+                let _ = child.kill();
+                let _ = child.wait();
+                anyhow::bail!("timed out after {}s", UDISKIE_TIMEOUT.as_secs());
+            }
+            None => std::thread::sleep(std::time::Duration::from_millis(20)),
+        }
+    };
+    Ok(std::process::Output {
+        status,
+        stdout: out_r.join().unwrap_or_default(),
+        stderr: err_r.join().unwrap_or_default(),
+    })
+}
+
 pub fn list() -> anyhow::Result<Vec<Device>> {
-    let out = Command::new("udiskie-info")
-        .args([
-            "-a",
-            "-o",
-            "{device_presentation}\t{is_mounted}\t{mount_paths}\t{device_size}\t{id_label}\t{id_type}",
-        ])
-        .output()
+    let mut cmd = Command::new("udiskie-info");
+    cmd.args([
+        "-a",
+        "-o",
+        "{device_presentation}\t{is_mounted}\t{mount_paths}\t{device_size}\t{id_label}\t{id_type}",
+    ]);
+    let out = output_with_timeout(cmd)
         .map_err(|e| anyhow::anyhow!("udiskie-info not available: {e}"))?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr).into_owned();
@@ -98,9 +151,9 @@ pub fn list() -> anyhow::Result<Vec<Device>> {
 }
 
 pub fn mount(device: &str) -> anyhow::Result<()> {
-    let out = Command::new("udiskie-mount")
-        .arg(device)
-        .output()
+    let mut cmd = Command::new("udiskie-mount");
+    cmd.arg(device);
+    let out = output_with_timeout(cmd)
         .map_err(|e| anyhow::anyhow!("udiskie-mount not available: {e}"))?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr).into_owned();
@@ -110,9 +163,9 @@ pub fn mount(device: &str) -> anyhow::Result<()> {
 }
 
 pub fn unmount(device: &str) -> anyhow::Result<()> {
-    let out = Command::new("udiskie-umount")
-        .arg(device)
-        .output()
+    let mut cmd = Command::new("udiskie-umount");
+    cmd.arg(device);
+    let out = output_with_timeout(cmd)
         .map_err(|e| anyhow::anyhow!("udiskie-umount not available: {e}"))?;
     if !out.status.success() {
         let err = String::from_utf8_lossy(&out.stderr).into_owned();

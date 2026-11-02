@@ -95,6 +95,12 @@ pub struct App {
     pub search_results: Vec<(PathBuf, Vec<u32>)>,
     pub search_idx: usize,
     pub pending: Option<Action>,
+    /// Paths captured when a Confirm/Input prompt opened. The debounced
+    /// fs refresh runs while a prompt is up and can move the cursor onto
+    /// a different row when the selected entry disappears, so the commit
+    /// must act on what the prompt NAMED, not on wherever the cursor
+    /// happens to sit by the time the user answers.
+    pub pending_targets: Vec<PathBuf>,
     pub dialog: Dialog,
     pub visual_mode: bool,
     pub cursor_moved_at: std::time::Instant,
@@ -121,6 +127,10 @@ pub struct App {
     /// Cached free-disk for current root. Refreshed on cwd change OR
     /// every 30s.
     pub disk_free: Option<(PathBuf, u64, std::time::Instant)>,
+    /// Where the detached `statvfs` worker leaves its answer, and whether
+    /// one is already out there. See [`App::refresh_disk_free`].
+    disk_free_slot: std::sync::Arc<std::sync::Mutex<Option<(PathBuf, u64)>>>,
+    disk_free_busy: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// Timestamp of last `set_status` call. Status text fades after 3s.
     pub status_set_at: std::time::Instant,
     /// Chord buffer awaiting more keys (vim `showcmd`-style). Mirrored
@@ -215,6 +225,7 @@ impl App {
             search_results: Vec::new(),
             search_idx: 0,
             pending: None,
+            pending_targets: Vec::new(),
             dialog: Dialog::None,
             visual_mode: false,
             cursor_moved_at: std::time::Instant::now(),
@@ -225,6 +236,8 @@ impl App {
             sort,
             line_mode,
             disk_free: None,
+            disk_free_slot: std::sync::Arc::new(std::sync::Mutex::new(None)),
+            disk_free_busy: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
             status_set_at: std::time::Instant::now(),
             pending_chord: String::new(),
             preview_scroll: 0,
@@ -325,19 +338,44 @@ impl App {
             .sum()
     }
 
-    /// Refresh `disk_free` if cache is stale (>30s) or cwd changed.
+    /// Refresh `disk_free` if the cache is stale (>30s) or the cwd changed.
+    ///
+    /// The measurement runs on a detached thread. `statvfs` blocks
+    /// uninterruptibly in the kernel on a gvfs mount whose server has gone
+    /// away, and this is called from the UI thread on every loop iteration —
+    /// the 30s throttle bounds how OFTEN that can happen, not how long each
+    /// call takes.
+    ///
+    /// ponytail: one worker at a time, and a worker that never returns simply
+    /// freezes the figure at its last known value instead of the whole UI. If
+    /// stuck mounts ever need a retry, give the guard a deadline.
     pub fn refresh_disk_free(&mut self) {
+        use std::sync::atomic::Ordering;
         use std::time::{Duration, Instant};
+        if let Ok(mut slot) = self.disk_free_slot.lock() {
+            if let Some((p, b)) = slot.take() {
+                self.disk_free = Some((p, b, Instant::now()));
+            }
+        }
         let cwd = self.arena.nodes[self.arena.root].path.clone();
         let stale = match &self.disk_free {
             None => true,
             Some((p, _, t)) => p != &cwd || t.elapsed() > Duration::from_secs(30),
         };
-        if stale {
-            if let Some(b) = crate::status::disk_free_bytes(&cwd) {
-                self.disk_free = Some((cwd, b, Instant::now()));
-            }
+        if !stale || self.disk_free_busy.swap(true, Ordering::Relaxed) {
+            return;
         }
+        let slot = self.disk_free_slot.clone();
+        let busy = self.disk_free_busy.clone();
+        std::thread::spawn(move || {
+            let measured = crate::status::disk_free_bytes(&cwd);
+            if let Some(b) = measured {
+                if let Ok(mut s) = slot.lock() {
+                    *s = Some((cwd, b));
+                }
+            }
+            busy.store(false, Ordering::Relaxed);
+        });
     }
 
     /// Push current sort to active arena AND each tab snapshot; re-flatten
@@ -853,8 +891,9 @@ impl App {
     /// arena and snap the cursor to the new entry. None on failure.
     pub fn commit_rename(&mut self) -> Option<PathBuf> {
         let mut out = None;
-        if let Some(&id) = self.visible.get(self.selected) {
-            let p = self.arena.nodes[id].path.clone();
+        // The path captured when the prompt opened, not the live cursor —
+        // see `pending_targets`.
+        if let Some(p) = std::mem::take(&mut self.pending_targets).into_iter().next() {
             match crate::fs_ops::rename(&p, &self.input.value()) {
                 Ok(np) => {
                     self.set_status(format!("renamed -> {}", np.display()));
@@ -989,7 +1028,7 @@ impl App {
 
     pub fn confirm_yes(&mut self) {
         if let Some(Action::PermanentDelete) = self.pending {
-            let targets = self.targets();
+            let targets = std::mem::take(&mut self.pending_targets);
             let n = targets.len();
             let mut ok = 0usize;
             let mut failed: Vec<String> = Vec::new();
@@ -1025,6 +1064,7 @@ impl App {
         // it before calling confirm_yes and routes through spawn_trash
         // (the background op) instead. One trash implementation.
         self.pending = None;
+        self.pending_targets.clear();
         self.mode = Mode::Normal;
     }
 

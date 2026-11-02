@@ -24,25 +24,32 @@ pub fn human_bytes(n: u64) -> String {
     }
 }
 
+/// Keep the tail of `s`, dropping the head behind a `…`, so the result
+/// fits in `max` DISPLAY CELLS. Counting cells rather than chars is what
+/// keeps a CJK path (2 cells per glyph) inside its segment. Shared with
+/// the tree pane's title — there used to be a second, char-counting copy
+/// of this in `ui::panes_render`.
 pub fn truncate_left(s: &str, max: usize) -> String {
-    if s.chars().count() <= max {
+    use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+    if s.width() <= max {
         return s.to_string();
     }
-    // Below 2 cols the "…/" prefix wouldn't fit; return the bare tail so
-    // the result never exceeds `max`.
-    if max < 2 {
-        let total = s.chars().count();
-        return s.chars().skip(total.saturating_sub(max)).collect();
+    if max == 0 {
+        return String::new();
     }
-    let keep = max.saturating_sub(2);
-    // Byte-safe truncation: skip from the start by char count.
-    let mut t = String::with_capacity(max + 2);
-    t.push_str("…/");
-    let total = s.chars().count();
-    let skip = total.saturating_sub(keep);
-    let tail: String = s.chars().skip(skip).collect();
-    t.push_str(&tail);
-    t
+    let budget = max - 1; // the ellipsis costs one cell
+    let mut tail_rev: Vec<char> = Vec::new();
+    let mut used = 0usize;
+    for c in s.chars().rev() {
+        let cw = c.width().unwrap_or(0);
+        if used + cw > budget {
+            break;
+        }
+        tail_rev.push(c);
+        used += cw;
+    }
+    let tail: String = tail_rev.into_iter().rev().collect();
+    format!("…{tail}")
 }
 
 #[cfg(unix)]
@@ -109,13 +116,35 @@ fn format_perms(_n: &crate::tree::node::Node) -> String {
     "".into()
 }
 
+/// Seconds to add to a UTC timestamp to get local wall-clock time, as
+/// libc reports it for that instant (so it follows $TZ *and* whether DST
+/// was in effect then). 0 if libc can't say.
+#[cfg(unix)]
+fn local_offset_secs(secs: u64) -> i64 {
+    let t = secs as libc::time_t;
+    let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+    // localtime_r, not gmtime_r: the whole point is the zone offset.
+    if unsafe { libc::localtime_r(&t, &mut tm) }.is_null() {
+        return 0;
+    }
+    tm.tm_gmtoff as i64
+}
+
+#[cfg(not(unix))]
+fn local_offset_secs(_secs: u64) -> i64 {
+    0
+}
+
 fn format_mtime(t: std::time::SystemTime) -> String {
     use std::time::UNIX_EPOCH;
     let secs = t
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
-    let (y, m, d) = days_to_ymd(secs / 86400);
+    // Epoch seconds are UTC; rendering them raw made an evening edit show
+    // tomorrow's date east of Greenwich (and yesterday's west of it).
+    let local = secs.saturating_add_signed(local_offset_secs(secs));
+    let (y, m, d) = days_to_ymd(local / 86400);
     format!("{:04}-{:02}-{:02}", y, m, d)
 }
 
@@ -239,24 +268,50 @@ mod tests {
 
     #[test]
     fn truncate_left_keeps_tail() {
+        use unicode_width::UnicodeWidthStr;
         let s = "/home/nova/personal/explorer/src/app.rs";
         let t = truncate_left(s, 20);
-        assert!(t.starts_with("…/"));
+        assert!(t.starts_with('…'));
         assert!(t.ends_with("src/app.rs"));
-        assert!(t.chars().count() <= 20);
+        assert!(t.width() <= 20);
+    }
+
+    #[test]
+    fn truncate_left_counts_cells_not_chars() {
+        use unicode_width::UnicodeWidthStr;
+        // 10 CJK chars = 20 cells. A char-counting truncator returned all
+        // ten for max=12 and overflowed the status segment by 8 columns.
+        let s = "/一二三四五六七八九十";
+        let t = truncate_left(s, 12);
+        assert!(t.width() <= 12, "{t:?} is {} cells", t.width());
+        assert!(t.ends_with('十'));
     }
 
     #[test]
     fn truncate_left_tiny_width_never_overflows() {
-        // Below 2 cols there's no room for "…/"; result must still fit.
-        assert!(truncate_left("/long/path", 1).chars().count() <= 1);
+        use unicode_width::UnicodeWidthStr;
+        assert!(truncate_left("/long/path", 1).width() <= 1);
         assert!(truncate_left("/long/path", 0).is_empty());
-        assert!(truncate_left("/long/path", 2).chars().count() <= 2);
+        assert!(truncate_left("/long/path", 2).width() <= 2);
     }
 
     #[test]
     fn truncate_left_shorter_than_max_returns_unchanged() {
         assert_eq!(truncate_left("/a/b", 20), "/a/b");
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn mtime_renders_in_local_time_not_utc() {
+        // 1700000000 = 2023-11-14 22:13:20 UTC. At UTC+5:30 the local date
+        // is already the 15th — the bug rendered the 14th.
+        // ponytail: libc caches the zone on its first localtime_r call and
+        // $TZ is process-global, so this sets TZ up front and stays the
+        // only test in the crate that reads a wall-clock date.
+        std::env::set_var("TZ", "XXX-5:30");
+        let t = std::time::UNIX_EPOCH + Duration::from_secs(1_700_000_000);
+        assert_eq!(format_mtime(t), "2023-11-15");
+        assert_eq!(local_offset_secs(1_700_000_000), 5 * 3600 + 1800);
     }
 
     #[test]

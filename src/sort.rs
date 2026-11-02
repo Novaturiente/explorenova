@@ -122,8 +122,10 @@ fn cmp_name_keys(a: &Key, b: &Key) -> Ordering {
 fn cmp_keys(a: &Key, b: &Key, mode: SortMode) -> Ordering {
     match mode {
         SortMode::Name => cmp_name_keys(a, b),
-        SortMode::Size => a.size.cmp(&b.size).then_with(|| cmp_name_keys(a, b)),
-        SortMode::Mtime => a.mtime.cmp(&b.mtime).then_with(|| cmp_name_keys(a, b)),
+        // Size and mtime lead with the biggest / newest (what you look for
+        // when sorting by them); the name tiebreak stays A-Z.
+        SortMode::Size => b.size.cmp(&a.size).then_with(|| cmp_name_keys(a, b)),
+        SortMode::Mtime => b.mtime.cmp(&a.mtime).then_with(|| cmp_name_keys(a, b)),
         SortMode::Ext => a.ext.cmp(&b.ext).then_with(|| cmp_name_keys(a, b)),
     }
 }
@@ -159,7 +161,7 @@ pub fn sort_children(indices: &mut [usize], arena_nodes: &[Node], sort: &SortSta
         let secondary = if sort.reverse { secondary.reverse() } else { secondary };
         primary.then(secondary)
     });
-    for (slot, k) in indices.iter_mut().zip(keyed.into_iter()) {
+    for (slot, k) in indices.iter_mut().zip(keyed) {
         *slot = k.idx;
     }
 }
@@ -299,7 +301,7 @@ mod tests {
     }
 
     #[test]
-    fn size_ascending_with_name_tiebreak() {
+    fn size_largest_first_with_name_tiebreak() {
         let nodes = vec![
             mk("c", NodeKind::File, 10, 0),
             mk("a", NodeKind::File, 10, 0),
@@ -312,12 +314,12 @@ mod tests {
             dir_first: false,
         };
         sort_children(&mut idx, &nodes, &s);
-        // 5 first, then 10s tied broken by name (a, c).
-        assert_eq!(idx, vec![2, 1, 0]);
+        // 10s first, tie broken by name (a, c), then 5.
+        assert_eq!(idx, vec![1, 0, 2]);
     }
 
     #[test]
-    fn mtime_ascending() {
+    fn mtime_newest_first() {
         let nodes = vec![
             mk("a", NodeKind::File, 0, 100),
             mk("b", NodeKind::File, 0, 50),
@@ -330,7 +332,7 @@ mod tests {
             dir_first: false,
         };
         sort_children(&mut idx, &nodes, &s);
-        assert_eq!(idx, vec![1, 0, 2]);
+        assert_eq!(idx, vec![2, 0, 1]); // c (200), a (100), b (50)
     }
 
     #[test]
