@@ -359,12 +359,13 @@ pub fn render_frame(
     use crate::ui::overlays;
     use crate::ui::panes_render;
     let theme = app.theme.clone();
+    let bar_h = if app.tree_only { 0 } else { 1 };
     let outer = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Min(0),
-            Constraint::Length(1),
-            Constraint::Length(1),
+            Constraint::Length(bar_h),
+            Constraint::Length(bar_h),
         ])
         .split(f.area());
     let (body, footer_area) = if crate::ui::footer::shown(app, outer[0].height) {
@@ -427,8 +428,10 @@ pub fn render_frame(
 
     // 3-segment status bar (Left: cursor meta/status, Center: selection,
     // Right: items + free disk). VISUAL flag is folded into Left segment.
-    crate::status::render(prompt_area, f, app);
-    crate::ui::keyhints::render(keyhints_area, f, app, keymap, &theme);
+    if !app.tree_only {
+        crate::status::render(prompt_area, f, app);
+        crate::ui::keyhints::render(keyhints_area, f, app, keymap, &theme);
+    }
 
     overlays::render_overlay(f, body, app, &theme, keymap);
 }

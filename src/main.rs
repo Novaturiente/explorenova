@@ -77,14 +77,24 @@ fn state_path() -> PathBuf {
 /// Capture the parts of `App` that belong in `state.toml` and serialize.
 /// Returns `None` when the state cannot be represented (see
 /// [`State::to_toml`]), in which case the caller must NOT write.
-fn state_snapshot(app: &mut App, tree_only: bool) -> Option<String> {
+///
+/// `tree_only_footer` is `Some(saved hide_footer)` in a `--tree-only`
+/// session: the forced-hidden footer and pane layout are not persisted.
+fn state_snapshot(app: &mut App, tree_only_footer: Option<bool>) -> Option<String> {
     // Persist the directory the user is actually in, not the one we
     // happened to start in.
     app.state.last_cwd = Some(app.arena.nodes[app.arena.root].path.clone());
-    if !tree_only {
-        app.state.capture_panes(&app.config.panes);
+    match tree_only_footer {
+        None => {
+            app.state.capture_panes(&app.config.panes);
+            app.state.to_toml()
+        }
+        Some(hide_footer) => {
+            let mut s = app.state.clone();
+            s.hide_footer = hide_footer;
+            s.to_toml()
+        }
     }
-    app.state.to_toml()
 }
 
 /// Collect the dirs the fs-watcher should currently cover: every on-screen
@@ -218,7 +228,12 @@ fn main() -> Result<()> {
     }));
 
     let arena = Arena::new(&start)?;
+    let tree_only_footer = args.tree_only.then_some(state.hide_footer);
     let mut app = App::new(arena, config, state.clone());
+    if args.tree_only {
+        app.state.hide_footer = true;
+        app.tree_only = true;
+    }
     if let Some(e) = config_err {
         app.set_err(format!("config error: {e} (using defaults)"));
     }
@@ -597,7 +612,7 @@ fn main() -> Result<()> {
         // The snapshot compare below keeps unchanged keys write-free.
         if key_handled || last_save_at.elapsed() >= STATE_SAVE_INTERVAL {
             last_save_at = Instant::now();
-            if let Some(toml) = state_snapshot(&mut app, args.tree_only) {
+            if let Some(toml) = state_snapshot(&mut app, tree_only_footer) {
                 if last_saved.as_deref() != Some(toml.as_str()) {
                     if let Some(parent) = sp.parent() {
                         let _ = std::fs::create_dir_all(parent);
@@ -613,7 +628,7 @@ fn main() -> Result<()> {
         }
     }
 
-    if let Some(toml) = state_snapshot(&mut app, args.tree_only) {
+    if let Some(toml) = state_snapshot(&mut app, tree_only_footer) {
         if let Some(parent) = sp.parent() {
             let _ = std::fs::create_dir_all(parent);
         }

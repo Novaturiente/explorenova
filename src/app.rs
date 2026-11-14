@@ -74,6 +74,8 @@ pub struct App {
     /// Parsed color theme, built once from `config.theme` in `App::new`.
     pub theme: crate::ui::theme::Theme,
     pub state: State,
+    /// `--tree-only` session: status line and key-hint bar are not drawn.
+    pub tree_only: bool,
     pub clipboard: Option<(Vec<PathBuf>, bool)>, // (paths, is_cut) — batch (shared across tabs)
     /// A cut clipboard stashed while its move is in flight, restored if the
     /// move fails so the user can retry without re-selecting the sources.
@@ -218,6 +220,7 @@ impl App {
             config,
             theme,
             state,
+            tree_only: false,
             clipboard: None,
             cut_restore: None,
             marks: BTreeSet::new(),

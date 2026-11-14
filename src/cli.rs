@@ -6,7 +6,7 @@ use std::path::PathBuf;
 pub struct Args {
     /// Directory to start in
     pub path: Option<PathBuf>,
-    /// Launch with the tree pane only (bookmarks + preview hidden this session)
+    /// Launch with the tree pane only (bookmarks, preview, footer and status bars hidden this session)
     #[arg(short = 't', long = "tree-only")]
     pub tree_only: bool,
     /// On quit, write the final directory to this file (for a shell

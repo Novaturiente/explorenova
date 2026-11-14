@@ -16,8 +16,9 @@ The binary is `target/release/explorenova`.
     explorenova [PATH] [--tree-only|-t]
 
 - `PATH` — directory to start in (default: last cwd, else `$PWD`)
-- `--tree-only` / `-t` — launch with only the tree pane (bookmarks +
-  preview hidden for this session; re-enable at runtime with `B` / `P`)
+- `--tree-only` / `-t` — launch with only the tree pane (bookmarks,
+  preview, footer and status/key-hint bars hidden for this session;
+  re-enable panes at runtime with `B` / `P` / `F`)
 
 ## Configuration
 
